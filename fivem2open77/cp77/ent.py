@@ -97,11 +97,19 @@ def _fit_slots(c, comp_name, vehicle, base_z, dctr, dsize, nctr, nsize):
         "fx_exhaust_r2": (right[1:] or right or mid or left or [None])[0],
         "fx_exhaust": tuple(np.mean(np.array(exhausts), 0)) if exhausts else None,
     }
+    fit = getattr(vehicle, "seat_fit", None)
     for s in c.get("slots", []):
         sname = value_of(s.get("slotName"))
         bone = value_of(s.get("boneName"))
         rp = s["relativePosition"]
         p = np.array([rp["X"], rp["Y"], rp["Z"]], float)
+        # the spot a seat's exit is checked at: outside the body, at road level (seat bones have
+        # no rotation, so the offset is a plain difference)
+        if comp_name == "InteractionSlots" and fit is not None and sname == f"{bone}_interaction" and bone in fit.seats:
+            info = fit.seats[bone]
+            q = np.asarray(info["exit"], float) - np.asarray(info["position"], float)
+            rp["X"], rp["Y"], rp["Z"] = (float(v) for v in q)
+            continue
         # bone-relative slots on bones that already moved with the rig stay as they are
         if bone not in (None, "None", "Base", "Root", "Trajectory"):
             continue

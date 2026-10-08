@@ -34,6 +34,8 @@ DONORS = {
         "lid_ends": {"trunk_a": "front", "hood_a": "rear"},
         # engine sound (TweakDB player_audio_resource the record inherits)
         "sound": "v_car_porsche_911_turbo",
+        # how the player sits (vehDataPackage.seatingTemplateOverride, see model/seats.py)
+        "seating": "sport2",
         # additive animation delta axes (bone-local, positive angle opens) decoded from the donor .anims
         "open_axes": {
             "door_front_left_a": (0, 0, -1),
@@ -52,6 +54,7 @@ DONORS = {
             "wheel_dims_back": f"Vehicle.{PORSCHE}_inline55",
             "engine": f"Vehicle.{PORSCHE}_inline0",
             "gears": [f"Vehicle.{PORSCHE}_inline{i}" for i in range(1, 7)],
+            "data_package": f"Vehicle.{PORSCHE}_inline7",
             "chassis_mass": 1290.0,
             "com_offset": (0.0, -0.16, 0.14),
             "moment_of_inertia": (1890.0, 600.0, 2010.0),

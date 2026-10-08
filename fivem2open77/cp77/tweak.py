@@ -148,7 +148,8 @@ def _gear_table(prof, n, top):
 
 
 def build_tweak(vehicle, prof, *, record: str, ent_path: str, appearance: str, name_key: str,
-                handling=None, sound=None, destroyed_appearance: str | None = None) -> tuple[str, dict]:
+                handling=None, sound=None, destroyed_appearance: str | None = None,
+                seating=None) -> tuple[str, dict]:
     """Returns (yaml text, handling profile).
 
     handling: the profile's handling overrides; sound: cp77.sound.resolve() result (written when it
@@ -182,7 +183,22 @@ def build_tweak(vehicle, prof, *, record: str, ent_path: str, appearance: str, n
         # engine/wheel/bump sounds: names of sound setups in the game's audio metadata
         main["player_audio_resource"] = sound["player"]
         main["traffic_audio_resource"] = sound["traffic"]
+    package = None
+    if seating is not None and t.get("data_package") and seating.template != prof.get("seating", "sport2"):
+        # the sitting animation set: a low car gets the hypercars' lower, reclined posture
+        package = f"{rid}_data_package"
+        main["vehDataPackage"] = package
     y.record(rid, main, comment=f"{vehicle.display_name} converted from FiveM by fivem2open77 (donor: {base})")
+    if package:
+        tpl = seating.tweak_template
+        y.record(package, {
+            "$base": t["data_package"],
+            "seatingTemplateOverride": tpl,
+            "animVars": [f"{tpl}_seat_front_left", f"{tpl}_seat_front_right", f"{tpl}_seat_back_left",
+                         f"{tpl}_seat_back_right"],
+            # the donor's Porsche-specific corrective pose does not belong to another posture
+            "additionalAnimFeatures": [],
+        }, comment=f"seating: {seating.template} ({seating.template_reason})")
 
     # wheel dimensions (visual tyre size used by the simulation)
     y.record(wheel_dims, {"$type": "VehicleWheelDimensionsSetup",

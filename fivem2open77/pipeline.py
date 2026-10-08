@@ -29,6 +29,7 @@ from .cp77.wkjson import depot, save, value_of
 from .cp77.xbm import xbm_document
 from .gta.resource import scan_resource
 from .model import neon as neon_mod
+from .model import seats as seats_mod
 from .model.build import SIDE_NAMES, VehicleBuilder
 
 MOD_ROOT = "fivem2open77"
@@ -59,6 +60,8 @@ def build_ir(src, prof: dict, log=print):
     apply_light_overrides(v, prof["lights"])
     if prof["paint"]["primary"] != "auto":
         v.paint_colors = (profile_mod.parse_color(prof["paint"]["primary"]), v.paint_colors[1])
+    donor = choose_donor(v, None if prof["donor"] == "auto" else prof["donor"])
+    v.seat_fit = seats_mod.fit_seats(v, prof.get("seats") or {}, DONORS[donor].get("seating", "sport2"))
     neon_conf = prof.get("neon") or {}
     if neon_conf.get("enabled", True):
         kit = neon_mod.plan_neon(v, v.markers, neon_conf)
@@ -271,6 +274,10 @@ class Converter:
         # ---------------------------------------------------------- app / ent / phys / localisation
         save(app_mod.build_app(v, self.cache.load(prof["app"]), mesh_paths, app_name="default",
                                neon_meshes=neon_meshes), jpath(paths["app"]))
+        if v.seat_fit is not None:
+            sf = v.seat_fit
+            low = [f"{k} {100 * i['lowered']:.0f} cm lower" for k, i in sf.seats.items() if i.get("lowered")]
+            log(f"[{name}] seating: {sf.template} ({sf.template_reason})" + (f"; {', '.join(low)}" if low else ""))
         if v.neon is not None:
             log(f"[{name}] neon kit: {', '.join(f'{t.side} {t.length:.2f} m' for t in v.neon.tubes)}; "
                 f"{len(v.neon.colors)} colours, starts {v.neon.default}")
@@ -329,7 +336,7 @@ class Converter:
         spawn_look = name if v.neon is None or v.neon.default == "off" else f"{name}_neon_{v.neon.default}"
         tweak_text, hp = build_tweak(v, prof, record=record, ent_path=paths["ent"], appearance=spawn_look,
                                      name_key=name_key, handling=self.profile["handling"], sound=sound,
-                                     destroyed_appearance=name)
+                                     destroyed_appearance=name, seating=v.seat_fit)
         tweak_file = os.path.join(work, f"{name}.yaml")
         with open(tweak_file, "w", encoding="utf-8", newline="\n") as f:
             f.write(tweak_text)
@@ -366,6 +373,7 @@ class Converter:
             "sound": {k: sound[k] for k in ("player", "traffic", "label", "source")},
             "gta_sound": v.audio_name,
             "lids": lids,
+            "seats": v.seat_fit.summary() if v.seat_fit is not None else None,
             "neon": None if v.neon is None else dict(
                 v.neon.summary(), appearances={key: f"{name}_neon_{key}" for key, _, _ in v.neon.colors},
                 labels={key: label for key, label, _ in v.neon.colors}, base_appearance=name),

@@ -40,6 +40,9 @@ Your end-to-end job, unless the user asks for something narrower:
    magenta tubes sit just under the body, between the wheels, not through a wheel or floating; inspect_car's
    neon section says how each tube was placed. Adjust neon.sides/height_offset only when a render shows a
    problem. Players switch colours in game with /neon <colour> (driver only).
+   inspect_car's seating section says how the player sits (posture), the head room under a closed roof
+   and whether the spot players get out at had to move; a warning there means the head may touch the
+   roof: try seats.template sport1 or seats.lower.
 4. build_car and read its QA. If QA fails, fix the cause and rebuild (at most twice), otherwise report it.
 5. Deploy only when the user asked for it or agreed: deploy_car with mode "stage" (test server first when
    there is one), then server_status to confirm the car is installed and queued, and read_server_log after a

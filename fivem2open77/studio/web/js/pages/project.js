@@ -231,7 +231,9 @@ function overview(root, ctx) {
             fact("Length", `${d.dimensions.length.toFixed(2)} m`), fact("Width", `${d.dimensions.width.toFixed(2)} m`),
             fact("Donor", d.donor.label.split(" (")[0]), fact("Engine sound", d.sound.label),
             fact("GTA sound", d.gta_sound || "-"), fact("Parts", Object.keys(d.parts).length),
-            fact("Textures", d.textures.used), fact("Lights", d.lights.length), fact("Top speed", `${Math.round(d.handling.cyberpunk.top_speed * 3.6)} km/h`))),
+            fact("Textures", d.textures.used), fact("Lights", d.lights.length), fact("Top speed", `${Math.round(d.handling.cyberpunk.top_speed * 3.6)} km/h`),
+            fact("Seating", d.seating ? d.seating.template : "-"))),
+        d.seating ? seatsCard(ctx) : null,
         h("div.card", h("h3", "Name and paint"),
           h("label.field", "Name players see in game", h("div.row", name, h("button.btn", { onclick: async () => {
             await ctx.patch({ display_name: name.value.trim() || null });
@@ -250,6 +252,36 @@ function overview(root, ctx) {
             h("a.btn.cyan", { href: `#/project/${ctx.pid}/agent` }, "Let the AI do it"))),
         d.warnings.length || (d.resource_warnings || []).length ? h("div.card", h("h3", h("span.warn", "⚠"), "Warnings"),
           [...(d.resource_warnings || []), ...d.warnings].map((w) => h("div.help", { style: { padding: "3px 0" } }, w))) : null)));
+}
+
+// ------------------------------------------------------------------ seats
+const SEAT_LABELS = { seat_front_left: "driver", seat_front_right: "front passenger", seat_back_left: "rear left", seat_back_right: "rear right" };
+const TEMPLATE_LABELS = { sport1: "sport1 (hypercar: low, reclined)", sport2: "sport2 (sports car)", standard2: "standard2 (ordinary car)",
+  standard25: "standard25 (pickup / van)", standard3: "standard3 (SUV / truck)" };
+
+function seatsCard(ctx) {
+  const st = ctx.inspect.seating;
+  const conf = Object.assign({ template: "auto", lower: 0 }, ctx.profile.seats || {});
+  const sel = h("select", h("option", { value: "auto" }, `automatic (now ${st.template})`),
+    Object.entries(TEMPLATE_LABELS).map(([k, l]) => h("option", { value: k }, l)));
+  sel.value = conf.template;
+  const lower = h("input", { type: "range", min: 0, max: 20, step: 1, value: Math.round((conf.lower || 0) * 100) });
+  const lowerO = h("output", `${lower.value} cm`);
+  lower.oninput = () => { lowerO.textContent = `${lower.value} cm`; };
+  const rows = Object.entries(st.seats).map(([k, s]) => h("tr", h("td", SEAT_LABELS[k] || k),
+    h("td", s.headroom == null ? "open top" : `${Math.round(s.headroom * 100)} cm`),
+    h("td", s.lowered ? `${Math.round(s.lowered * 100)} cm lower` : "-"),
+    h("td.muted", s.exit_moved ? `exit spot moved ${s.exit_moved}` : "donor exit spot")));
+  return h("div.card", h("h3", "Seats"),
+    h("div.help", `Posture: ${TEMPLATE_LABELS[st.template] || st.template} — ${st.reason}.`),
+    h("table.tbl", h("thead", h("tr", h("th", "seat"), h("th", "head room"), h("th", "seat"), h("th", "getting out"))), h("tbody", rows)),
+    st.warnings.length ? st.warnings.map((w) => h("div.help.warn", w)) : null,
+    h("div.form", { style: { marginTop: "10px" } }, h("label.field", "Posture", sel), h("label.field", "Lower every seat by", h("div.row", lower, lowerO))),
+    h("div.row", { style: { marginTop: "8px" } }, h("div.grow"), h("button.btn.small", { onclick: async () => {
+      await ctx.patch({ seats: { template: sel.value, lower: Number(lower.value) / 100 } });
+      await ctx.reload("inspect");
+      location.reload();
+    } }, "Save")));
 }
 
 // ------------------------------------------------------------------ parts

@@ -34,6 +34,10 @@ the same result as the bare command line.  ``normalize`` fills defaults and chec
         "default": "off",                 colour the car spawns with ("off" = kit installed, lights off)
         "brightness": 1.0,                0.2..4
         "height_offset": 0.0              metres: + raises the tubes, - lowers them (-0.1..0.1)
+      },
+      "seats": {                          how the player sits (see model/seats.py)
+        "template": "auto",               auto (GTA LOW layouts: sport1) | sport1 | sport2 | standard2 | standard25 | standard3
+        "lower": 0.0                      extra metres to lower every seat (0..0.2)
       }
     }
 """
@@ -63,6 +67,7 @@ DEFAULTS = {
     "chime": {"enabled": False, "file": None, "volume": 0.8, "range": 12.0},
     "neon": {"enabled": True, "sides": ["left", "right", "front", "back"], "colors": "gta", "default": "off",
              "brightness": 1.0, "height_offset": 0.0},
+    "seats": {"template": "auto", "lower": 0.0},
     "notes": "",
 }
 NEON_SIDES = ("left", "right", "front", "back")
@@ -276,6 +281,14 @@ def normalize(p: dict, *, donors=None, sounds=None) -> dict:
             n["default"] = k
     n["brightness"] = _num(errors, "neon.brightness", n.get("brightness"), 0.2, 4.0, allow_none=False) or 1.0
     n["height_offset"] = _num(errors, "neon.height_offset", n.get("height_offset"), -0.1, 0.1, allow_none=False) or 0.0
+    st = p["seats"]
+    extra = set(st) - set(DEFAULTS["seats"])
+    if extra:
+        errors.append("seats: unknown settings " + ", ".join(sorted(extra)))
+    from .model.seats import TEMPLATES
+    if st.get("template") not in ("auto", *TEMPLATES):
+        errors.append(f"seats.template: auto or one of {', '.join(TEMPLATES)}")
+    st["lower"] = _num(errors, "seats.lower", st.get("lower"), 0.0, 0.2, allow_none=False) or 0.0
     if not isinstance(p.get("notes", ""), str):
         errors.append("notes: text")
     if errors:

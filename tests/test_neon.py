@@ -33,11 +33,11 @@ def _box(x0, x1, y0, y1, z0, z1):
     return v, np.array(f, np.uint32).reshape(-1)
 
 
-def _car(floor=-0.20, skirt=None, body_frame=(0.0, 0.0, 0.44)):
+def _car(floor=-0.20, skirt=None, body_frame=(0.0, 0.0, 0.44), top=0.9):
     """A 4.4 m x 1.9 m car: body from `floor` up, wheels r=0.35 at y=+-1.4 (Root space, wheel
     centres at z=0), body geometry expressed in a frame at `body_frame` like the real converter."""
     parts = []
-    parts.append(_box(-0.95, 0.95, -2.2, 2.2, floor, 0.9))
+    parts.append(_box(-0.95, 0.95, -2.2, 2.2, floor, top))
     if skirt is not None:   # side skirts hanging lower than the floor
         parts.append(_box(-0.95, -0.85, -0.9, 0.9, skirt, floor))
         parts.append(_box(0.85, 0.95, -0.9, 0.9, skirt, floor))
@@ -338,3 +338,83 @@ def test_display_names():
     labels = {joaat("biome"): "Biome"}
     assert display_name_of(_Src("biome", _Info("biome", "Biome"), labels, "Mercedes-Benz Biome Concept"))[0] == \
         "Mercedes-Benz Biome Concept"
+
+
+# ----------------------------------------------------------------------------- seats, exits, hull
+from fivem2open77.cp77 import phys  # noqa: E402
+from fivem2open77.model import seats  # noqa: E402
+
+
+def _seated(v, seats_at, roof_z=None):
+    """Add seat bones (and optionally a closed roof slab over the cabin) to a box car."""
+    for name, pos in seats_at.items():
+        v.bones[name] = {"t": np.array(pos, float), "r": np.eye(3), "parent": "Base", "open_axis": None}
+        v.seats[name] = tuple(pos)
+    if roof_z is not None:
+        p, i = _box(-0.8, 0.8, -1.2, 1.0, roof_z, roof_z + 0.03)
+        p = p - np.array([0.0, 0.0, 0.44], np.float32)
+        n = np.zeros_like(p)
+        n[:, 2] = 1
+        v.parts["body_01"].submeshes.append(SubMesh(material="m", positions=p, normals=n, tangents=np.zeros((len(p), 4), np.float32),
+                                                    uv0=np.zeros((len(p), 2), np.float32), uv1=None, colors=None, indices=i, lod=1))
+    return v
+
+
+def test_seats_keep_the_donor_posture_when_the_head_fits():
+    v = _seated(_car(top=0.3), {"seat_front_left": (-0.4, 0.0, 0.12), "seat_front_right": (0.4, 0.0, 0.12)})
+    fit = seats.fit_seats(v, {}, "sport2")
+    assert fit.template == "sport2" and not fit.warnings
+    assert fit.seats["seat_front_left"]["lowered"] == 0.0
+    # the donor's exit spot (1 m out, 0.5 m down) is outside this 1.9 m body: unchanged
+    ex = fit.seats["seat_front_left"]["exit"]
+    assert abs(ex[0] + 1.4) < 1e-6 and abs(ex[2] - (0.12 - 0.5)) < 1e-6
+
+
+def test_low_roof_gets_hypercar_posture_and_a_lower_seat():
+    # roof inside at ~0.78 over a seat at 0.0: sport2 (0.90 head) cannot fit even 10 cm lower
+    v = _seated(_car(top=0.3), {"seat_front_left": (-0.4, 0.0, 0.0)}, roof_z=0.80)
+    fit = seats.fit_seats(v, {}, "sport2")
+    assert fit.template == "sport1"
+    s = fit.seats["seat_front_left"]
+    assert s["lowered"] > 0 and v.bones["seat_front_left"]["t"][2] < 0
+    assert s["headroom"] >= seats.TEMPLATES["sport1"][1] - 0.02
+    # an explicit template wins
+    v2 = _seated(_car(top=0.3), {"seat_front_left": (-0.4, 0.0, 0.0)}, roof_z=0.80)
+    assert seats.fit_seats(v2, {"template": "standard2"}, "sport2").template == "standard2"
+
+
+def test_exit_spot_moves_out_of_a_wide_body_and_up_to_the_road():
+    # a centre driving seat in a 1.9 m car, low enough that 0.5 m down is under the road
+    v = _seated(_car(top=0.3), {"seat_front_left": (0.0, 0.0, -0.05)})
+    s = seats.fit_seats(v, {}, "sport2").seats["seat_front_left"]
+    ex = s["exit"]
+    assert ex[0] <= -(0.95 + seats.EXIT_MARGIN) + 1e-6, "outside the body"
+    assert abs(ex[2] - (-0.35 - 0.02)) < 1e-6, "at road level"
+    assert "out of the body" in s["exit_moved"] and "up to the road" in s["exit_moved"]
+
+
+def test_collision_hull_stays_off_the_road():
+    v = _car(floor=-0.32, skirt=-0.34)          # body 1 cm off the road
+    cols = phys.build_colliders(v)
+    road = phys.road_height(v)
+    for tag, verts in cols:
+        zmin = float(verts[:, 2].min()) + phys.CHASSIS_OFFSET_Z
+        assert zmin >= road + phys.HULL_CLEARANCE - 1e-9, (tag, zmin)
+    assert any(tag == "chassis_bottom" for tag, _ in cols)
+
+
+def test_seating_profile_and_tweak_package():
+    from fivem2open77.cp77.donor import DONORS
+    from fivem2open77.cp77.tweak import build_tweak
+    with pytest.raises(ProfileError):
+        normalize({"seats": {"template": "bus"}})
+    v = _seated(_car(top=0.3), {"seat_front_left": (-0.4, 0.0, 0.0)}, roof_z=0.80)
+    fit = seats.fit_seats(v, {}, "sport2")
+    text, _ = build_tweak(v, DONORS["porsche_911"], record="Vehicle.boxcar", ent_path=r"x\boxcar.ent",
+                          appearance="boxcar", name_key="k", seating=fit)
+    assert "vehDataPackage: Vehicle.boxcar_data_package" in text
+    assert "seatingTemplateOverride: sport1_vehicle" in text and "- sport1_vehicle_seat_front_left" in text
+    plain = seats.fit_seats(_seated(_car(top=0.3), {"seat_front_left": (-0.4, 0.0, 0.12)}), {}, "sport2")
+    text2, _ = build_tweak(_car(), DONORS["porsche_911"], record="Vehicle.boxcar", ent_path=r"x\boxcar.ent",
+                           appearance="boxcar", name_key="k", seating=plain)
+    assert "vehDataPackage" not in text2, "the donor's own posture needs no package"

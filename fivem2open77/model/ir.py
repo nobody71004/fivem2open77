@@ -124,6 +124,7 @@ class Vehicle:
     part_frames: dict = field(default_factory=dict)  # part -> (translation, 3x3) of the bone it is expressed in
     markers: dict = field(default_factory=dict)      # GTA helper bones (neon_l ...) -> Root-space position
     neon: object = None                              # model.neon.NeonKit when the car has an underglow kit
+    seat_fit: object = None                          # model.seats.SeatFit: posture, head room, exits
     warnings: list = field(default_factory=list)
     report: dict = field(default_factory=dict)
 

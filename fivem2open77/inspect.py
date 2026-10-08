@@ -87,6 +87,7 @@ def summarize(src, v, prof: dict) -> dict:
         "textures": {"used": len(v.textures), "missing": v.report.get("textures_missing", []),
                      "formats": sorted({t.format_name for t in v.textures.values()})},
         "neon": _neon(v, prof),
+        "seating": v.seat_fit.summary() if getattr(v, "seat_fit", None) is not None else None,
         "warnings": list(v.warnings),
     }
 

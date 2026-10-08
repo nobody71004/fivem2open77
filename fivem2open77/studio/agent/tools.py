@@ -102,6 +102,7 @@ def _compact_inspect(d, detail="summary"):
         out["bones_with_geometry"] = [f"{b['name']}: {b['role']}{' (override)' if b['override'] else ''} -> {b['part']} ({b['verts']} v)"
                                       for b in bones if b["verts"]]
     out["textures"] = d["textures"]
+    out["seating"] = d.get("seating")
     n = d.get("neon") or {}
     kit = n.get("kit")
     out["neon"] = {"enabled": n.get("enabled"), "gta_bones": n.get("gta_bones"),
@@ -308,7 +309,8 @@ def registry() -> dict:
              "grip, spring, drag: 0.25-4}}, sound.engine (auto|donor|name), paint.primary (auto|#rrggbb), "
              "chime {enabled, volume 0-1, range m}, neon {enabled, sides [left,right,front,back], colors ('gta' "
              "or a list of GTA colour names / '#rrggbb' / {name, color}), default ('off' or a colour), brightness "
-             "0.2-4, height_offset -0.1..0.1 m}. Returns what changed.",
+             "0.2-4, height_offset -0.1..0.1 m}, seats {template auto|sport1|sport2|standard2|standard25|standard3, "
+             "lower 0-0.2 m}. Returns what changed.",
              _obj({"patch": {"type": "object"}}, ["patch"]), "change", t_update_profile),
         Tool("build_car", "Build the car with WolvenKit (2-5 minutes) and check the output. Returns the build number, "
              "packages, warnings and QA result.", _obj(), "change", t_build),

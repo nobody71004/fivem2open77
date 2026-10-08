@@ -12,6 +12,9 @@ import copy
 import numpy as np
 
 CHASSIS_OFFSET_Z = 0.5      # vehicleChassisComponent sits 0.5 m above the entity root
+HULL_CLEARANCE = 0.15       # m the collision hull stays above the road (the donor's is ~0.23 m): a
+                            # hull that reaches down to a low body scrapes every bump and kerb and
+                            # the car hops; the wheels and suspension are what should meet the road
 
 
 def _directions(n=58):
@@ -66,6 +69,12 @@ def body_points(vehicle) -> np.ndarray:
     return np.concatenate(pts)
 
 
+def road_height(vehicle) -> float:
+    """Highest road level under the car in Root space (front and rear tyres can differ)."""
+    radii = [a.radius for a in vehicle.axles.values()] or [0.34]
+    return -min(radii)
+
+
 def build_colliders(vehicle, slices=3):
     """[(tag, vertices in chassis space)]"""
     p = body_points(vehicle)
@@ -74,6 +83,9 @@ def build_colliders(vehicle, slices=3):
     lo = np.percentile(p, 0.1, axis=0)
     hi = np.percentile(p, 99.9, axis=0)
     p = p[((p >= lo - 0.02) & (p <= hi + 0.02)).all(1)]
+    floor = road_height(vehicle) + HULL_CLEARANCE
+    p = p.copy()
+    p[:, 2] = np.maximum(p[:, 2], floor)
     p = p - [0.0, 0.0, CHASSIS_OFFSET_Z]
     out = []
     y0, y1 = p[:, 1].min(), p[:, 1].max()
