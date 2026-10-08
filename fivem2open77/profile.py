@@ -36,7 +36,7 @@ the same result as the bare command line.  ``normalize`` fills defaults and chec
         "height_offset": 0.0              metres: + raises the tubes, - lowers them (-0.1..0.1)
       },
       "seats": {                          how the player sits (see model/seats.py)
-        "template": "auto",               auto (GTA LOW layouts: sport1) | sport1 | sport2 | standard2 | standard25 | standard3
+        "template": "auto",               auto (the donor's; sport1 if the head hits the roof) | sport1 | sport2 | standard2 | standard25 | standard3
         "lower": 0.0                      extra metres to lower every seat (0..0.2)
       }
     }

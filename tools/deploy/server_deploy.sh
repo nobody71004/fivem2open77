@@ -460,7 +460,9 @@ inspect_one() {
   for r in "${BRES[@]}"; do
     local rn; rn=$(basename "$r")
     local found; found=$(find "$dir/resources" -mindepth 1 -maxdepth 4 -type d -name "$rn" 2>/dev/null | head -1)
-    say "    $rn: bundle $(res_version "$WORK/$r") / server ${found:+$(res_version "$found") at ${found#$dir/}}${found:-absent}"
+    local have=absent
+    [ -n "$found" ] && have="$(res_version "$found") at ${found#$dir/}"
+    say "    $rn: bundle $(res_version "$WORK/$r") / server $have"
   done
 }
 

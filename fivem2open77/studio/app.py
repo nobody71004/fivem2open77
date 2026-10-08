@@ -24,7 +24,7 @@ from .secrets import SecretStore
 from .settings import Settings
 from .tools import Toolbox
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 SECRET_KEYS = re.compile(r"^(anthropic_api_key|server:[a-z0-9_-]{1,32}:(password|passphrase))$")
 
 

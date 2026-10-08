@@ -11,7 +11,7 @@
     <RootNamespace>Fivem2Open77.Studio</RootNamespace>
     <ApplicationIcon>app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>1.1.0</Version>
+    <Version>1.1.1</Version>
     <Company>fivem2open77</Company>
     <Product>fivem2open77 Studio</Product>
     <Description>Converts FiveM cars into Open77 (Cyberpunk 2077 multiplayer) cars</Description>

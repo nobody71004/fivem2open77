@@ -145,6 +145,29 @@ with `Open77.vehicles.setAppearance` and every player sees the same kit: `/neon`
 `/neon hot pink`, `/neon next`, `/neon off` (driver only; needs the car hub 1.1+). A tube is an
 emissive mesh; the glow on the road comes from point lights under the car.
 
+## Seats, getting out and ground clearance
+
+* **Posture.** Cyberpunk takes the sitting posture from the car's data package
+  (`seatingTemplateOverride`): the Porsche donor's `sport2`, the hypercars' lower, reclined `sport1`,
+  or the `standard*` postures of ordinary cars. Each seat is checked against the car's own roof: when
+  the head would come through a closed roof the seat is lowered (up to 10 cm, never closer than 12 cm
+  to the road), and when that is not enough the car gets `sport1`. Anything still missing shows on
+  the Studio's **Seats** card.
+* **Getting out.** The game lets a player out only where a standing spot beside the seat is free
+  (the donor's: 1 m to the side, 0.5 m down). On a wide or low car that spot is inside the body or
+  under the road, so the exit is refused and the player slides across the seats instead. Each seat's
+  spot is moved to just outside the body, at road level.
+* **Ground clearance.** The collision hull keeps at least 15 cm off the road (Cyberpunk's own cars
+  keep about 23 cm), so a low body doesn't catch speed bumps, kerbs and road clutter; the visible
+  bodywork still sits where GTA put it.
+
+```json
+"seats": {"template": "auto", "lower": 0.0}
+```
+
+`template`: `auto`, `sport1`, `sport2`, `standard2`, `standard25` or `standard3`; `lower` moves every
+seat further down (0-0.2 m).
+
 ## Notes for Open77 servers
 
 * Packages are reproducible: the archive's per-file timestamps (WolvenKit stamps the packing time)

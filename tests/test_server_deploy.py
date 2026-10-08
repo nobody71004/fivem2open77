@@ -221,6 +221,15 @@ def test_stage_live_and_restart():
         out = fake.run("logs", "-", "open77-test", "5")
         assert "listening on UDP" in out
 
+        # 9b. inspect: installed version and relative path once, "absent" for what the server lacks
+        b5 = make_bundle(os.path.join(tmp, "car5.tgz"), build_out=_build(tmp, "1.0.3", b"v5"), include_hub=True)
+        shutil.rmtree(os.path.join(fake.dir, "resources", "assets", "vehicles", "testcar_chime"))
+        out = fake.run("inspect", b5["path"], "open77-test")
+        line = [l for l in out.splitlines() if "testcar: bundle" in l][0]
+        assert line.endswith("testcar: bundle 1.0.3 / server 1.0.2 at resources/assets/vehicles/testcar"), line
+        assert fake.dir not in out, out
+        assert [l for l in out.splitlines() if "testcar_chime: bundle" in l][0].endswith("/ server absent"), out
+
         # 10. bad names are refused before anything runs
         r = subprocess.run(["bash", SCRIPT, "status", "-", "../etc"], env=fake.env, capture_output=True, text=True)
         assert r.returncode == 2 and "bad server name" in r.stderr
