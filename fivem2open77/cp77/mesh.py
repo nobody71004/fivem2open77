@@ -1,0 +1,67 @@
+"""Mesh (.mesh) generation: a template CMesh JSON carrying our materials, plus a glb that
+WolvenKit imports over it (geometry, LODs, quantisation, vertex streams)."""
+from __future__ import annotations
+
+import copy
+
+import numpy as np
+
+from .glb import GlbWriter, submesh_node_name
+from .wkjson import cname
+
+
+def ordered_submeshes(part):
+    """Submeshes in the order they become render chunks: by LOD then material."""
+    return sorted(part.submeshes, key=lambda s: (s.lod, s.material))
+
+
+def write_glb(part, path, transform=None):
+    """transform: optional 3x3 applied to positions/normals/tangents (row vectors: v @ transform)."""
+    w = GlbWriter()
+    for i, sm in enumerate(ordered_submeshes(part)):
+        p, n, t = sm.positions, sm.normals, sm.tangents
+        if transform is not None:
+            q = np.asarray(transform, np.float64)
+            p = (p.astype(np.float64) @ q).astype(np.float32)
+            n = (n.astype(np.float64) @ q).astype(np.float32)
+            t = np.concatenate([(t[:, :3].astype(np.float64) @ q), t[:, 3:4]], 1).astype(np.float32)
+        colors = sm.colors
+        if colors is None:
+            colors = np.ones((len(p), 4), np.float32)
+        w.add_submesh(submesh_node_name(i, sm.lod), p, n, t, sm.uv0, sm.uv1, colors, sm.indices, sm.material)
+    w.save(path)
+
+
+def template_doc(donor_mesh_doc, materials: dict, chunk_materials: list, shadow=False) -> dict:
+    """materials: ordered {name: CMaterialInstance json}; chunk_materials: material name per chunk."""
+    doc = copy.deepcopy(donor_mesh_doc)
+    r = doc["Data"]["RootChunk"]
+    names = list(materials)
+    r["materialEntries"] = [{"$type": "CMeshMaterialEntry", "index": i, "isLocalInstance": 1, "name": cname(n)}
+                            for i, n in enumerate(names)]
+    mats = [materials[n] for n in names]
+    lmb = r["localMaterialBuffer"]
+    lmb["materials"] = mats
+    raw = lmb.get("rawData") or {}
+    raw.setdefault("BufferId", "0")
+    raw.setdefault("Flags", 4063232)
+    raw["Type"] = "WolvenKit.RED4.Archive.Buffer.CR2WList, WolvenKit.RED4, Version=8.17.4.0, Culture=neutral, PublicKeyToken=null"
+    raw["Data"] = {"Files": [{"Version": 195, "BuildVersion": 0, "RootChunk": m, "EmbeddedFiles": []} for m in mats]}
+    lmb["rawData"] = raw
+    lmb["rawDataHeaders"] = []
+    for key in ("localMaterialInstances", "preloadLocalMaterialInstances", "externalMaterials", "preloadExternalMaterials"):
+        if key in r:
+            r[key] = []
+    app = copy.deepcopy(r["appearances"][0])
+    app["Data"]["chunkMaterials"] = [cname(m) for m in chunk_materials]
+    app["Data"]["name"] = cname("default")
+    r["appearances"] = [app]
+    r["parameters"] = []
+    r["boneNames"] = []
+    r["boneRigMatrices"] = []
+    r["boneVertexEpsilons"] = []
+    r["lodBoneMask"] = []
+    r["floatTrackNames"] = []
+    if "isShadowMesh" in r:
+        r["isShadowMesh"] = 1 if shadow else 0
+    return doc

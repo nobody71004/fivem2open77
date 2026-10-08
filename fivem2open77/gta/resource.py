@@ -1,0 +1,348 @@
+"""Discovery of vehicles inside a FiveM resource (folder or archive).
+
+A FiveM add-on vehicle resource normally looks like::
+
+    mycar/
+      fxmanifest.lua | __resource.lua
+      stream/ mycar.yft  mycar_hi.yft  mycar.ytd  [extra .ytd / mod-kit .yft]
+      data/   vehicles.meta handling.meta carvariations.meta carcols.meta ...
+
+Packs may contain several cars and several resources.  We do not require the manifest:
+metas are found by declaration first and by name second.
+"""
+from __future__ import annotations
+
+import fnmatch
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+import zipfile
+from dataclasses import dataclass, field
+
+from . import rpf
+from .gxt2 import parse_gxt2, parse_lua_text_entries
+from .meta import (parse_carcols, parse_carvariations, parse_handling_meta,
+                   parse_vehicles_meta)
+from .rsc7 import EscrowProtectedError
+
+STREAM_EXTS = (".yft", ".ytd", ".ydr", ".ydd")
+META_KINDS = {
+    "VEHICLE_METADATA_FILE": "vehicles",
+    "HANDLING_FILE": "handling",
+    "VEHICLE_VARIATION_FILE": "carvariations",
+    "CARCOLS_FILE": "carcols",
+    "VEHICLE_LAYOUTS_FILE": "layouts",
+}
+
+
+class ResourceInputError(Exception):
+    pass
+
+
+@dataclass
+class VehicleSource:
+    model: str
+    yft: str                    # path to the drawable fragment used for conversion (_hi preferred)
+    yft_lod: str | None         # the non-hi yft when both exist and differ
+    ytds: list                  # candidate texture dictionaries, primary first
+    info: object | None         # VehicleModelInfo
+    handling: object | None
+    variation: object | None
+    resource_dir: str
+    warnings: list = field(default_factory=list)
+    labels: dict = field(default_factory=dict)   # text label hash -> display text
+    pack_name: str = ""                          # name of the download (folder or archive)
+
+
+@dataclass
+class ScannedResource:
+    root: str
+    manifests: list
+    vehicles: list
+    meta_files: dict
+    stream_files: list
+    txd_parents: dict
+    warnings: list = field(default_factory=list)
+    tmpdir: str | None = None
+
+    def cleanup(self):
+        if self.tmpdir and os.path.isdir(self.tmpdir):
+            shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+
+def _extract_archive(path: str) -> str:
+    tmp = tempfile.mkdtemp(prefix="fivem2open77_")
+    low = path.lower()
+    if low.endswith(".zip"):
+        with zipfile.ZipFile(path) as z:
+            for m in z.infolist():
+                target = os.path.realpath(os.path.join(tmp, m.filename))
+                if not target.startswith(os.path.realpath(tmp) + os.sep) and target != os.path.realpath(tmp):
+                    raise ResourceInputError(f"refusing archive entry outside the target folder: {m.filename}")
+            z.extractall(tmp)
+        return tmp
+    # rar / 7z: use whatever extractor the system has
+    tools = []
+    # -p<dummy>: a password-protected archive fails at once instead of waiting for a password
+    custom = os.environ.get("FIVEM2OPEN77_7Z")
+    if custom:
+        tools.append([custom, "x", "-y", "-pfivem2open77", f"-o{tmp}", path])
+    tools += [
+        ["7z", "x", "-y", "-pfivem2open77", f"-o{tmp}", path],
+        ["7zz", "x", "-y", "-pfivem2open77", f"-o{tmp}", path],     # 7-Zip for Linux (standalone binary)
+        ["7za", "x", "-y", "-pfivem2open77", f"-o{tmp}", path],
+        ["bsdtar", "-xf", path, "-C", tmp],
+        ["unrar", "x", "-o+", path, tmp + os.sep],
+        ["tar", "-xf", path, "-C", tmp],  # Windows 10+ tar.exe is libarchive and reads rar/7z
+    ]
+    for cmd in tools:
+        if shutil.which(cmd[0]) is None and not os.path.isfile(cmd[0]):
+            continue
+        try:
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                           stdin=subprocess.DEVNULL, timeout=600,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            if any(os.scandir(tmp)):
+                return tmp
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+            continue
+    shutil.rmtree(tmp, ignore_errors=True)
+    raise ResourceInputError(
+        f"cannot extract {os.path.basename(path)}: install 7-Zip (7z) or extract it yourself and pass the folder")
+
+
+_DATA_FILE_RE = re.compile(r"data_file\s*\(?\s*['\"]([A-Z_]+)['\"]\s*\)?\s*\(?\s*['\"]([^'\"]+)['\"]")
+
+
+def _parse_manifest(path: str) -> list:
+    try:
+        text = open(path, "r", encoding="utf-8", errors="replace").read()
+    except OSError:
+        return []
+    text = re.sub(r"--\[\[.*?\]\]", "", text, flags=re.S)
+    text = re.sub(r"--[^\n]*", "", text)
+    return _DATA_FILE_RE.findall(text)
+
+
+def _find_files(root: str):
+    for dp, dn, fn in os.walk(root):
+        # skip version-control and tool folders
+        dn[:] = [d for d in dn if not d.startswith(".")]
+        for f in fn:
+            yield os.path.join(dp, f)
+
+
+_PACK_ID = re.compile(r"^(?:[a-z]?\d{3,}[-_ ]+)", re.I)
+
+
+def _pack_name(path: str, root: str) -> str:
+    """A readable name for the download: its single top folder, else the file/folder name."""
+    name = os.path.basename(os.path.normpath(path))
+    if os.path.isfile(path):
+        name = os.path.splitext(name)[0]
+        try:
+            tops = [e for e in os.listdir(root) if not e.startswith(".")]
+        except OSError:
+            tops = []
+        if len(tops) == 1 and os.path.isdir(os.path.join(root, tops[0])):
+            name = tops[0]
+    name = re.sub(r"\s*\(\d+\)$", "", name)          # "car (1)" from a repeated download
+    name = _PACK_ID.sub("", name).replace("_", " ").strip()
+    return name
+
+
+def _expand_rpfs(files, root, tmpdir, warnings):
+    """Unpack single-player dlc.rpf archives next to the other files (into tmpdir)."""
+    out = []
+    for f in files:
+        if not f.lower().endswith(".rpf"):
+            continue
+        rel = os.path.relpath(f, root)
+        dest = os.path.join(tmpdir, "rpf", rel)
+        try:
+            out.extend(rpf.extract(f, dest))
+        except rpf.RpfError as e:
+            warnings.append(str(e))
+    return out
+
+
+def scan_resource(path: str) -> ScannedResource:
+    tmpdir = None
+    if os.path.isfile(path):
+        tmpdir = _extract_archive(path)
+        root = tmpdir
+    elif os.path.isdir(path):
+        root = path
+    else:
+        raise ResourceInputError(f"input not found: {path}")
+
+    files = list(_find_files(root))
+    warnings = []
+    pack_name = _pack_name(path, root)
+    if any(f.lower().endswith(".rpf") for f in files):
+        if tmpdir is None:
+            tmpdir = tempfile.mkdtemp(prefix="fivem2open77_")
+        files += _expand_rpfs(files, root, tmpdir, warnings)
+    lower = {f.lower(): f for f in files}
+
+    if any(f.lower().endswith(".fxap") for f in files):
+        raise EscrowProtectedError(
+            "this resource is protected by Cfx.re asset escrow (.fxap found). Escrowed assets are "
+            "encrypted for one server licence and cannot be converted.")
+
+    manifests = [f for f in files if os.path.basename(f).lower() in ("fxmanifest.lua", "__resource.lua")]
+    meta_files = {"vehicles": [], "handling": [], "carvariations": [], "carcols": [], "layouts": []}
+    declared = set()
+    for man in manifests:
+        base = os.path.dirname(man)
+        for kind, rel in _parse_manifest(man):
+            k = META_KINDS.get(kind)
+            if not k:
+                continue
+            pattern = os.path.normpath(os.path.join(base, rel)).lower()
+            matched = [lower[p] for p in lower if fnmatch.fnmatch(p, pattern)]
+            if not matched:
+                warnings.append(f"{os.path.relpath(man, root)} declares {kind} '{rel}' but the file is missing")
+            for m in matched:
+                if m not in meta_files[k]:
+                    meta_files[k].append(m)
+                    declared.add(m)
+    # undeclared metas found by name
+    for f in files:
+        b = os.path.basename(f).lower()
+        if not b.endswith(".meta") or f in declared:
+            continue
+        for key in ("carvariations", "carcols", "handling", "vehicles"):
+            if key in b:
+                if key == "vehicles" and ("layout" in b or "variation" in b):
+                    continue
+                if f not in meta_files[key]:
+                    meta_files[key].append(f)
+                break
+
+    labels = {}
+    gxts = sorted((f for f in files if f.lower().endswith(".gxt2")),
+                  key=lambda f: (0 if "american" in f.lower() else 1, f))
+    for f in reversed(gxts):                 # American English wins
+        try:
+            labels.update(parse_gxt2(open(f, "rb").read()))
+        except OSError:
+            pass
+    for f in files:
+        if f.lower().endswith(".lua"):
+            try:
+                labels.update(parse_lua_text_entries(open(f, "r", encoding="utf-8", errors="replace").read()))
+            except OSError:
+                pass
+
+    stream = [f for f in files if f.lower().endswith(STREAM_EXTS)]
+    by_name = {}
+    for f in stream:
+        by_name.setdefault(os.path.basename(f).lower(), []).append(f)
+
+    infos, txd_parents, info_src = [], {}, {}
+    for mf in meta_files["vehicles"]:
+        try:
+            items, rel = parse_vehicles_meta(open(mf, "rb").read(), mf)
+            infos.extend(items)
+            for it in items:
+                info_src.setdefault(it.model_name.lower(), mf)
+            txd_parents.update(rel)
+        except Exception as e:  # noqa: BLE001 - report and continue
+            warnings.append(f"cannot parse {os.path.basename(mf)}: {e}")
+    handlings = {}
+    for mf in meta_files["handling"]:
+        try:
+            handlings.update(parse_handling_meta(open(mf, "rb").read(), mf))
+        except Exception as e:  # noqa: BLE001
+            warnings.append(f"cannot parse {os.path.basename(mf)}: {e}")
+    variations = {}
+    for mf in meta_files["carvariations"]:
+        try:
+            variations.update(parse_carvariations(open(mf, "rb").read(), mf))
+        except Exception as e:  # noqa: BLE001
+            warnings.append(f"cannot parse {os.path.basename(mf)}: {e}")
+    for mf in meta_files["carcols"]:
+        try:
+            parse_carcols(open(mf, "rb").read(), mf)
+        except Exception as e:  # noqa: BLE001
+            warnings.append(f"cannot parse {os.path.basename(mf)}: {e}")
+
+    vehicles = []
+    seen = set()
+    all_ytds = [f for f in stream if f.lower().endswith(".ytd")]
+
+    def near(cands, anchor):
+        """The candidate that shares the longest path with anchor (the meta that names the car):
+        a pack with both a replace folder and an add-on dlc.rpf uses the add-on's own files."""
+        if not cands:
+            return None
+        if not anchor or len(cands) == 1:
+            return cands[0]
+        a = os.path.normcase(os.path.abspath(anchor))
+        return max(cands, key=lambda c: len(os.path.commonpath([a, os.path.normcase(os.path.abspath(c))])))
+
+    def make(model, info):
+        m = model.lower()
+        anchor = info_src.get(m)
+        hi = near(by_name.get(m + "_hi.yft"), anchor)
+        base = near(by_name.get(m + ".yft"), anchor)
+        if not hi and not base:
+            return None
+        yft = hi or base
+        yft_lod = base if hi and base and os.path.getsize(hi) != os.path.getsize(base) else None
+        txd = (info.txd_name if info else model).lower()
+        ytds = []
+        chain = [txd]
+        # follow txd relationship chain upwards (children inherit parents)
+        p = txd_parents.get(txd)
+        while p and p not in chain and len(chain) < 8:
+            chain.append(p)
+            p = txd_parents.get(p)
+        for t in chain:
+            group = by_name.get(t + ".ytd", []) + by_name.get(t + "+hi.ytd", [])
+            if anchor:
+                group = sorted(group, key=lambda c: -len(os.path.commonpath(
+                    [os.path.normcase(os.path.abspath(anchor)), os.path.normcase(os.path.abspath(c))])))
+            for f in group:
+                if f not in ytds:
+                    ytds.append(f)
+        # any other ytd in the same resource can hold textures the model references
+        for f in all_ytds:
+            if f not in ytds:
+                ytds.append(f)
+        handling = handlings.get((info.handling_id if info else model).lower())
+        res_dir = os.path.dirname(os.path.dirname(yft)) if os.path.basename(os.path.dirname(yft)).lower() == "stream" else os.path.dirname(yft)
+        v = VehicleSource(model=model, yft=yft, yft_lod=yft_lod, ytds=ytds, info=info, handling=handling,
+                          variation=variations.get(m), resource_dir=res_dir, labels=labels, pack_name=pack_name)
+        if info is None:
+            v.warnings.append("no vehicles.meta entry; using defaults")
+        if handling is None:
+            v.warnings.append("no handling.meta entry; using the donor car's handling")
+        return v
+
+    for info in infos:
+        if info.model_name.lower() in seen:
+            continue
+        v = make(info.model_name, info)
+        if v is None:
+            warnings.append(f"vehicles.meta lists '{info.model_name}' but no {info.model_name}.yft is streamed")
+            continue
+        seen.add(info.model_name.lower())
+        vehicles.append(v)
+    if not infos:
+        # no metas: every top-level yft (not _hi, not mod-kit parts) is a vehicle
+        for name in sorted(by_name):
+            if not name.endswith(".yft") or name.endswith("_hi.yft"):
+                continue
+            model = name[:-4]
+            if "_" in model and model.rsplit("_", 1)[0] + ".yft" in by_name:
+                continue  # mod-kit part such as mycar_bumf_1
+            v = make(model, None)
+            if v:
+                vehicles.append(v)
+
+    return ScannedResource(root=root, manifests=manifests, vehicles=vehicles, meta_files=meta_files,
+                           stream_files=stream, txd_parents=txd_parents, warnings=warnings, tmpdir=tmpdir)

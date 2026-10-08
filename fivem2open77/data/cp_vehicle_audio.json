@@ -1,0 +1,491 @@
+{
+ "_about": "Cyberpunk 2077 vehicle engine sounds: TweakDB player_audio_resource -> the traffic_audio_resource vanilla cars pair with it (game 2.31 tweakdb_ep1.bin) and an example record using it.",
+ "sounds": {
+  "v_car_archer_hella": {
+   "label": "Archer Hella",
+   "kind": "compact",
+   "traffic": "v_car_archer_hella_traffic",
+   "example": "Vehicle.rcr_03_escape_car"
+  },
+  "v_car_archer_hella_jacky": {
+   "label": "Archer Hella (Jackie's)",
+   "kind": "compact",
+   "traffic": "v_car_archer_hella_traffic",
+   "example": "Vehicle.q000_hym_player_car"
+  },
+  "v_car_archer_hella_police": {
+   "label": "Archer Hella police",
+   "kind": "police",
+   "traffic": "v_car_archer_hella_police_traffic",
+   "example": "Vehicle.q301_border_ncpd_car"
+  },
+  "v_car_archer_hella_poor": {
+   "label": "Archer Hella (worn)",
+   "kind": "compact",
+   "traffic": "v_car_archer_hella_traffic",
+   "example": "Vehicle.ma_bls_ina_se1_08_trapped_car"
+  },
+  "v_car_archer_hella_scavenger": {
+   "label": "Archer Hella scavenger",
+   "kind": "compact",
+   "traffic": "v_car_archer_hella_traffic",
+   "example": "Vehicle.v_standard2_archer_hella_scavengers"
+  },
+  "v_car_archer_quartz": {
+   "label": "Archer Quartz",
+   "kind": "compact",
+   "traffic": "v_car_archer_quartz_traffic",
+   "example": "Vehicle.v_standard2_archer_quartz_base_player"
+  },
+  "v_car_archer_quartz_bandit": {
+   "label": "Archer Quartz Bandit",
+   "kind": "compact",
+   "traffic": "v_car_archer_quartz_bandit_traffic",
+   "example": "Vehicle.v_standard2_archer_bandit_player"
+  },
+  "v_car_archer_quartz_gt": {
+   "label": "Archer Quartz GT",
+   "kind": "sport",
+   "traffic": "v_car_archer_quartz_traffic",
+   "example": "Vehicle.v_standard2_archer_quartz_player"
+  },
+  "v_car_archer_quartz_nomad": {
+   "label": "Archer Quartz nomad",
+   "kind": "compact",
+   "traffic": "v_car_archer_quartz_nomad_traffic",
+   "example": "Vehicle.v_standard2_archer_quartz_nomad_player"
+  },
+  "v_car_chevalier_centurion": {
+   "label": "Chevalier Centurion",
+   "kind": "sedan",
+   "traffic": "v_car_chevalier_centurion_traffic",
+   "example": "Vehicle.v_utility4_chevalier_legatus_player"
+  },
+  "v_car_chevalier_emperor": {
+   "label": "Chevalier Emperor",
+   "kind": "sedan",
+   "traffic": "v_car_chevalier_emperor_traffic",
+   "example": "Vehicle.v_standard3_chevalier_emperor_player"
+  },
+  "v_car_chevalier_emperor_police": {
+   "label": "Chevalier Emperor police",
+   "kind": "police",
+   "traffic": "v_car_chevalier_emperor_police_traffic",
+   "example": "Vehicle.sq023_companys_car"
+  },
+  "v_car_chevalier_thrax": {
+   "label": "Chevalier Thrax",
+   "kind": "luxury",
+   "traffic": "v_car_chevalier_thrax_traffic",
+   "example": "Vehicle.v_standard2_chevalier_thrax_player"
+  },
+  "v_car_chevalier_thrax_scavenger": {
+   "label": "Chevalier Thrax scavenger",
+   "kind": "luxury",
+   "traffic": "v_car_chevalier_thrax_traffic",
+   "example": "Vehicle.v_standard2_chevalier_thrax_scavengers"
+  },
+  "v_car_herrera_outlaw": {
+   "label": "Herrera Outlaw GTS",
+   "kind": "super",
+   "traffic": "v_car_herrera_outlaw_traffic",
+   "example": "Vehicle.v_sport1_herrera_outlaw_player"
+  },
+  "v_car_herrera_riptide": {
+   "label": "Herrera Riptide",
+   "kind": "sport",
+   "traffic": "v_car_herrera_riptide_traffic",
+   "example": "Vehicle.v_sport1_herrera_riptide_player"
+  },
+  "v_car_kaukaz_bratsk": {
+   "label": "Kaukaz Bratsk",
+   "kind": "truck",
+   "traffic": "v_car_kaukaz_bratsk_traffic",
+   "example": "Vehicle.sq023_cargo_truck"
+  },
+  "v_car_kaukaz_zeya": {
+   "label": "Kaukaz Zeya",
+   "kind": "truck",
+   "traffic": "v_car_kaukaz_zeya_traffic",
+   "example": "Vehicle.v_kaukaz_z71_aras"
+  },
+  "v_car_mahir_supron": {
+   "label": "Mahir Supron",
+   "kind": "suv",
+   "traffic": "v_car_mahir_supron_traffic",
+   "example": "Vehicle.v_standard25_mahir_supron_player"
+  },
+  "v_car_mahir_supron_gt": {
+   "label": "Mahir Supron GT",
+   "kind": "suv",
+   "traffic": "v_car_mahir_supron_traffic",
+   "example": "Vehicle.v_standard25_mahir_supron_gt_player"
+  },
+  "v_car_mahir_supron_kurtz": {
+   "label": "Mahir Supron Kurtz",
+   "kind": "suv",
+   "traffic": "v_car_mahir_supron_kurtz_traffic",
+   "example": "Vehicle.v_standard3_mahir_supron_kurtz_player"
+  },
+  "v_car_makigai_maimai": {
+   "label": "Makigai MaiMai",
+   "kind": "micro",
+   "traffic": "v_car_makigai_maimai_traffic",
+   "example": "Vehicle.v_standard2_makigai_maimai_player"
+  },
+  "v_car_makigai_maimai_poor": {
+   "label": "Makigai MaiMai (worn)",
+   "kind": "micro",
+   "traffic": "v_car_makigai_maimai_traffic",
+   "example": "Vehicle.v_standard2_makigai_maimai_poor"
+  },
+  "v_car_makigai_tanishi": {
+   "label": "Makigai Tanishi",
+   "kind": "offroad",
+   "traffic": "v_car_makigai_tanishi_traffic",
+   "example": "Vehicle.v_standard3_makigai_tanishi_player"
+  },
+  "v_car_militech_atilla": {
+   "label": "Militech APC",
+   "kind": "military",
+   "traffic": "v_car_militech_atilla_traffic",
+   "example": "Vehicle.q305_apc"
+  },
+  "v_car_militech_hellhound": {
+   "label": "Militech Hellhound",
+   "kind": "military",
+   "traffic": "v_car_militech_hellhound_traffic",
+   "example": "Vehicle.v_standard3_militech_hellhound_player"
+  },
+  "v_car_militech_hellhound_police": {
+   "label": "Militech Hellhound police",
+   "kind": "police",
+   "traffic": "v_car_militech_hellhound_police_traffic",
+   "example": "Vehicle.ncpd_hellhound_heat_5"
+  },
+  "v_car_mizutani_hozuki": {
+   "label": "Mizutani Hozuki",
+   "kind": "jdm",
+   "traffic": "v_car_mizutani_hozuki_traffic",
+   "example": "Vehicle.v_standard2_mizutani_hozuki"
+  },
+  "v_car_mizutani_hozuki_sport": {
+   "label": "Mizutani Hozuki sport",
+   "kind": "jdm",
+   "traffic": "v_car_mizutani_hozuki_traffic",
+   "example": "Vehicle.v_standard2_mizutani_hozuki_gt_player"
+  },
+  "v_car_mizutani_hozuki_sti": {
+   "label": "Mizutani Hozuki STI",
+   "kind": "jdm",
+   "traffic": "v_car_mizutani_hozuki_traffic",
+   "example": "Vehicle.v_standard2_mizutani_hozuki_player"
+  },
+  "v_car_mizutani_shion": {
+   "label": "Mizutani Shion",
+   "kind": "jdm",
+   "traffic": "v_car_mizutani_shion_traffic",
+   "example": "Vehicle.v_sport2_mizutani_shion_base_player"
+  },
+  "v_car_mizutani_shion_nomad": {
+   "label": "Mizutani Shion nomad",
+   "kind": "jdm",
+   "traffic": "v_car_mizutani_shion_nomad_traffic",
+   "example": "Vehicle.v_sport2_mizutani_shion_nomad_player"
+  },
+  "v_car_mizutani_shion_sport": {
+   "label": "Mizutani Shion sport",
+   "kind": "jdm",
+   "traffic": "v_car_mizutani_shion",
+   "example": "Vehicle.v_sport2_mizutani_shion_player"
+  },
+  "v_car_mizutani_shion_targa": {
+   "label": "Mizutani Shion targa",
+   "kind": "jdm",
+   "traffic": "v_car_mizutani_shion_targa_traffic",
+   "example": "Vehicle.v_sport2_mizutani_shion_targa_player"
+  },
+  "v_car_mizutani_shion_tygerclaw": {
+   "label": "Mizutani Shion Tyger Claws",
+   "kind": "jdm",
+   "traffic": "v_car_mizutani_shion_tygerclaw_traffic",
+   "example": "Vehicle.ma_pac_cvi_08_shion"
+  },
+  "v_car_porsche_911_turbo": {
+   "label": "Porsche 911 Turbo",
+   "kind": "sport",
+   "traffic": "v_car_porsche_911_turbo_traffic",
+   "example": "Vehicle.v_sport2_porsche_911turbo_player"
+  },
+  "v_car_porsche_911_turbo_targa": {
+   "label": "Porsche 911 Turbo cabrio",
+   "kind": "sport",
+   "traffic": "v_car_porsche_911_turbo_traffic",
+   "example": "Vehicle.v_sport2_porsche_911turbo_cabrio_player"
+  },
+  "v_car_quadra_sport_r7": {
+   "label": "Quadra Sport R-7",
+   "kind": "sport",
+   "traffic": "v_car_quadra_sport_r7_traffic",
+   "example": "Vehicle.q304_get_away_car"
+  },
+  "v_car_quadra_sport_r7_gt": {
+   "label": "Quadra Sport R-7 GT",
+   "kind": "sport",
+   "traffic": "v_car_quadra_sport_r7_traffic",
+   "example": "Vehicle.v_sport1_quadra_sport_r7_gt"
+  },
+  "v_car_quadra_sport_r7_poor": {
+   "label": "Quadra Sport R-7 (worn)",
+   "kind": "sport",
+   "traffic": "v_car_quadra_sport_r7_traffic",
+   "example": "Vehicle.v_sport1_quadra_sport_r7_poor"
+  },
+  "v_car_quadra_sport_r7_rocket": {
+   "label": "Quadra Sport R-7 Rocket",
+   "kind": "sport",
+   "traffic": "v_car_quadra_sport_r7_traffic",
+   "example": "Vehicle.v_sport1_quadra_sport_r7_player"
+  },
+  "v_car_quadra_turbo_r": {
+   "label": "Quadra Turbo-R",
+   "kind": "super",
+   "traffic": "v_car_quadra_turbo_r_traffic",
+   "example": "Vehicle.v_sport1_quadra_turbo_player"
+  },
+  "v_car_quadra_turbo_r_vtek": {
+   "label": "Quadra Turbo-R V-Tech",
+   "kind": "super",
+   "traffic": "v_car_quadra_turbo_r_traffic",
+   "example": "Vehicle.v_sport1_quadra_turbo_r_player"
+  },
+  "v_car_quadra_type_66": {
+   "label": "Quadra Type-66",
+   "kind": "muscle",
+   "traffic": "v_car_quadra_type_66_traffic",
+   "example": "Vehicle.v_sport2_quadra_type66_02_player"
+  },
+  "v_car_quadra_type_66_avenger": {
+   "label": "Quadra Type-66 Avenger",
+   "kind": "muscle",
+   "traffic": "v_car_quadra_type_66_avenger_traffic",
+   "example": "Vehicle.v_sport2_quadra_type66_avenger_player"
+  },
+  "v_car_quadra_type_66_ncu": {
+   "label": "Quadra Type-66 NCU",
+   "kind": "muscle",
+   "traffic": "v_car_quadra_type_66_ncu_traffic",
+   "example": "Vehicle.v_sport2_quadra_type66_nomad_ncu_player"
+  },
+  "v_car_quadra_type_66_nomad": {
+   "label": "Quadra Type-66 nomad",
+   "kind": "muscle",
+   "traffic": "v_car_quadra_type_66_nomad_traffic",
+   "example": "Vehicle.v_sport2_quadra_type66_nomad_player"
+  },
+  "v_car_quadra_type_66_rogue": {
+   "label": "Quadra Type-66 (Rogue's)",
+   "kind": "muscle",
+   "traffic": "v_car_quadra_type_66_rogue_traffic",
+   "example": "Vehicle.v_sport2_quadra_type66_player"
+  },
+  "v_car_rayfield_aerondight": {
+   "label": "Rayfield Aerondight",
+   "kind": "electric",
+   "traffic": "v_car_rayfield_aerondight_traffic",
+   "example": "Vehicle.v_sport1_rayfield_aerondight_player"
+  },
+  "v_car_rayfield_caliburn": {
+   "label": "Rayfield Caliburn",
+   "kind": "super",
+   "traffic": "v_car_rayfield_caliburn_traffic",
+   "example": "Vehicle.v_sport1_yaiba_semimaru_player"
+  },
+  "v_car_thorton_colby": {
+   "label": "Thorton Colby",
+   "kind": "muscle",
+   "traffic": "v_car_thorton_colby_traffic",
+   "example": "Vehicle.v_standard2_thorton_colby_player"
+  },
+  "v_car_thorton_colby_aldecaldo": {
+   "label": "Thorton Colby Aldecaldo",
+   "kind": "muscle",
+   "traffic": "v_car_thorton_colby_aldecaldo_traffic",
+   "example": "Vehicle.hackable_thorton_colby_valentinos"
+  },
+  "v_car_thorton_colby_gt": {
+   "label": "Thorton Colby GT",
+   "kind": "muscle",
+   "traffic": "v_car_thorton_colby_traffic",
+   "example": "Vehicle.v_standard2_thorton_colby_gt_player"
+  },
+  "v_car_thorton_colby_kurtz": {
+   "label": "Thorton Colby Kurtz",
+   "kind": "offroad",
+   "traffic": "v_car_thorton_colby_kurtz_traffic",
+   "example": "Vehicle.v_standard25_thorton_colby_pickup_kurtz_player"
+  },
+  "v_car_thorton_colby_nomad": {
+   "label": "Thorton Colby nomad",
+   "kind": "offroad",
+   "traffic": "v_car_thorton_colby_nomad_traffic",
+   "example": "Vehicle.v_standard25_thorton_colby_nomad_player"
+  },
+  "v_car_thorton_colby_pickup": {
+   "label": "Thorton Colby pickup",
+   "kind": "pickup",
+   "traffic": "v_car_thorton_colby_pickup_traffic",
+   "example": "Vehicle.v_standard25_thorton_colby_pickup_player"
+  },
+  "v_car_thorton_colby_scavenger": {
+   "label": "Thorton Colby scavenger",
+   "kind": "muscle",
+   "traffic": "v_car_thorton_colby_traffic",
+   "example": "Vehicle.v_standard2_thorton_colby_scavengers"
+  },
+  "v_car_thorton_galena": {
+   "label": "Thorton Galena",
+   "kind": "compact",
+   "traffic": "v_car_thorton_galena_traffic",
+   "example": "Vehicle.v_standard2_thorton_galena_player"
+  },
+  "v_car_thorton_galena_gt": {
+   "label": "Thorton Galena GT",
+   "kind": "sport",
+   "traffic": "v_car_thorton_galena_traffic",
+   "example": "Vehicle.v_standard2_thorton_galena_gt_player"
+  },
+  "v_car_thorton_galena_nomad": {
+   "label": "Thorton Galena nomad",
+   "kind": "offroad",
+   "traffic": "v_car_thorton_galena_nomad_traffic",
+   "example": "Vehicle.v_standard2_thorton_galena_nomad_player"
+  },
+  "v_car_thorton_galena_poor": {
+   "label": "Thorton Galena (worn)",
+   "kind": "compact",
+   "traffic": "v_car_thorton_galena_traffic",
+   "example": "Vehicle.v_standard2_thorton_galena_poor"
+  },
+  "v_car_thorton_galena_red": {
+   "label": "Thorton Galena (red)",
+   "kind": "compact",
+   "traffic": "v_car_thorton_galena_red_traffic",
+   "example": "Vehicle.v_standard2_thorton_galena_bobas_player"
+  },
+  "v_car_thorton_larimore": {
+   "label": "Thorton Larimore",
+   "kind": "pickup",
+   "traffic": "v_car_thorton_larimore_traffic",
+   "example": "Vehicle.v_utility4_thorton_mackinaw_bmf_player"
+  },
+  "v_car_thorton_mackinaw": {
+   "label": "Thorton Mackinaw",
+   "kind": "pickup",
+   "traffic": "v_car_thorton_mackinaw_traffic",
+   "example": "Vehicle.v_standard3_thorton_mackinaw_player"
+  },
+  "v_car_thorton_mackinaw_nomad": {
+   "label": "Thorton Mackinaw nomad",
+   "kind": "offroad",
+   "traffic": "v_car_thorton_mackinaw_nomad_traffic",
+   "example": "Vehicle.v_standard3_thorton_mackinaw_02_player"
+  },
+  "v_car_thorton_mackinaw_nomad_alt": {
+   "label": "Thorton Mackinaw (Panam's)",
+   "kind": "offroad",
+   "traffic": "v_car_thorton_mackinaw_nomad_alt_traffic",
+   "example": "Vehicle.panam_vehicle"
+  },
+  "v_car_thorton_merrimac": {
+   "label": "Thorton Merrimac",
+   "kind": "van",
+   "traffic": "v_car_thorton_merrimac_traffic",
+   "example": "Vehicle.v_standard25_thorton_merrimac_player"
+  },
+  "v_car_thorton_merrimac_maxtac": {
+   "label": "Thorton Merrimac MaxTac",
+   "kind": "police",
+   "traffic": "v_car_thorton_merrimac_maxtac_traffic",
+   "example": "Vehicle.ncpd_suv_thorton_merrimac_maxtac"
+  },
+  "v_car_thorton_merrimac_police": {
+   "label": "Thorton Merrimac police",
+   "kind": "police",
+   "traffic": "v_car_thorton_merrimac_police_traffic",
+   "example": "Vehicle.ncpd_thorton_merrimac_police_heat_4"
+  },
+  "v_car_villefort_alvarado": {
+   "label": "Villefort Alvarado",
+   "kind": "classic",
+   "traffic": "v_car_villefort_alvarado_traffic",
+   "example": "Vehicle.v_sport2_villefort_alvarado_player"
+  },
+  "v_car_villefort_alvarado_cabrio": {
+   "label": "Villefort Alvarado cabrio",
+   "kind": "classic",
+   "traffic": "v_car_villefort_alvarado_cabrio_traffic",
+   "example": "Vehicle.v_sport2_villefort_alvarado_valentinos_player"
+  },
+  "v_car_villefort_alvarado_wagon": {
+   "label": "Villefort Alvarado wagon",
+   "kind": "classic",
+   "traffic": "v_car_villefort_alvarado_wagon_traffic",
+   "example": "Vehicle.v_sport2_villefort_alvarado_hearse_player"
+  },
+  "v_car_villefort_columbus": {
+   "label": "Villefort Columbus",
+   "kind": "van",
+   "traffic": "v_car_villefort_columbus_traffic",
+   "example": "Vehicle.v_standard25_villefort_columbus_player"
+  },
+  "v_car_villefort_cortes": {
+   "label": "Villefort Cortes",
+   "kind": "sedan",
+   "traffic": "v_car_villefort_cortes_traffic",
+   "example": "Vehicle.q304_songbird_escape_player"
+  },
+  "v_car_villefort_cortes_police": {
+   "label": "Villefort Cortes police",
+   "kind": "police",
+   "traffic": "v_car_villefort_cortes_police_traffic",
+   "example": "Vehicle.mq005_police_car"
+  },
+  "v_car_villefort_deleon": {
+   "label": "Villefort Deleon",
+   "kind": "luxury",
+   "traffic": "v_car_villefort_deleon_traffic",
+   "example": "Vehicle.v_sport2_villefort_deleon_player"
+  },
+  "v_mbike_arch_nazare": {
+   "label": "Arch Nazare (motorbike)",
+   "kind": "bike",
+   "traffic": "v_mbike_arch_nazare_traffic",
+   "example": "Vehicle.v_sportbike2_arch_player"
+  },
+  "v_mbike_arch_nazare_chopper": {
+   "label": "Arch Nazare chopper (motorbike)",
+   "kind": "bike",
+   "traffic": "v_mbike_arch_nazare_chopper_traffic",
+   "example": "Vehicle.v_sportbike2_arch_player_03"
+  },
+  "v_mbike_brennan_cycles_apollo": {
+   "label": "Brennan Apollo (motorbike)",
+   "kind": "bike",
+   "traffic": "v_mbike_brennan_cycles_apollo_traffic",
+   "example": "Vehicle.v_sportbike3_brennan_apollo_player"
+  },
+  "v_mbike_brennan_cycles_apollo_sport": {
+   "label": "Brennan Apollo sport (motorbike)",
+   "kind": "bike",
+   "traffic": "v_mbike_brennan_cycles_apollo_sport_traffic",
+   "example": "Vehicle.v_sportbike3_brennan_apollo_player_02"
+  },
+  "v_mbike_yaiba_asmx_kusanagi": {
+   "label": "Yaiba Kusanagi (motorbike)",
+   "kind": "bike",
+   "traffic": "v_mbike_yaiba_asmx_kusanagi_traffic",
+   "example": "Vehicle.v_sportbike1_yaiba_kusanagi_player"
+  }
+ }
+}

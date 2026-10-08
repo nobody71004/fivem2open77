@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.research/
+out/
+_work/
+.cache/
+host/bin/
+host/obj/
+*.tmp
+.pytest_cache/
+dist/
+*.log

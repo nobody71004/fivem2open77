@@ -1,0 +1,214 @@
+# fivem2open77
+
+Converts a FiveM (GTA V) add-on vehicle into a drivable Cyberpunk 2077 car for **Open77**, in one
+command: FiveM resource in, Open77 resource out.  **fivem2open77 Studio** (below) is the same
+converter as a Windows app with a 3D preview, editors for every mapping, one-click install on your
+Open77 servers, a car hub that brings new cars online without anyone restarting the server, and an
+AI agent (Claude or a local Ollama model) that can do the whole job end to end.
+
+```
+python -m fivem2open77 convert "i8rpncs.rar" --out out --game "C:\...\Cyberpunk 2077" --door-chime chime.mp3
+```
+
+The output is ready-to-drop Open77 resources:
+
+```
+out/i8rpncs/              the car (server-only resource)
+  open77.lua              preload_mod + dependency "archivexl" / "tweakxl"
+  server/main.lua
+  dist/i8rpncs.zip        archive/pc/mod/*.archive(.xl) + r6/tweaks/fivem2open77/i8rpncs.yaml
+  conversion-report.json
+out/i8rpncs_chime/        with --door-chime: the chime, no dependencies
+  open77.lua
+  server/door_chime.lua   plays the clip as server network audio at the car
+  audio/door_chime.mp3
+```
+
+Copy both folders under the server's `resources/` (e.g. `resources/assets/vehicles/`), add
+`"archivexl", "tweakxl", "i8rpncs", "i8rpncs_chime"` to `resources.load` (the converter prints the
+exact list), keep `requiredMods.enabled` (and `unsecured`, for the loaders) on, restart the server
+and connect through the launcher. Spawn it with `/car Vehicle.i8rpncs` (freeroam with
+`allowCustomModels = true`).
+
+The car resource is deliberately server-only. Clients check `dependency` lines as well, and the
+loader resources have no client side, so they are never sent to clients: a car resource that
+carried the loader dependencies *and* a client script failed to activate on every client
+(`i8rpncs:missing_dependency:archivexl`, "resource could not load"). Extras that clients need
+(the chime clip) therefore live in the `<name>_chime` sibling, which depends on nothing.
+
+## What gets converted
+
+| FiveM | Cyberpunk |
+|---|---|
+| `.yft` drawable (high LOD), skinned to GTA bones | one `.mesh` per moving part (body, doors, windows, hood, trunk, wheels, tyres, hubs, steering wheel, glass, light clusters, interior) |
+| `.ytd` textures (BC1/3/4/5/7 kept bit-exact, others decoded) | `.xbm` |
+| GTA shaders | `metal_base` instances, multilayer paint (CrystalCoat mask), `vehicle_lights` with per-zone emissives, windshield glass |
+| GTA skeleton + joint limits | a Cyberpunk deformation rig and wheel rig cloned from the donor; door/hood/trunk bones are re-oriented so the donor's open animations follow the GTA hinge (butterfly and scissor doors open the GTA way). Bonnet and boot take the donor lid at the same end of the car, so its prompts and animations line up (on the rear-engined Porsche donor the front lid is the "trunk") |
+| `handling.meta` | drive model, engine torque, gears, brakes, springs, grip, inertia, wheel dimensions (mapped relative to the donor and clamped) |
+| `carvariations.meta` | paint colour (nearest colour of the donor's paint template) |
+| lights (head, tail, brake, reverse, indicators, extras) | `vehicleLightComponent`s driving the right material zones |
+| `neon_l/r/f/b` bones, or the measured underside | a GTA V style **neon kit**: LED tubes under the sills and bumpers plus the lights that colour the road, one appearance per colour (switched in game with `/neon`) |
+| single-player `dlc.rpf` (OpenIV "OPEN" archives) | read directly: the metas in `common/data`/`data`, the models in the nested `x64/vehicles.rpf`, display names from `global.gxt2` |
+| — | collision hulls built from the body, TweakXL record, ArchiveXL localisation |
+
+Everything that makes a car *behave* in Cyberpunk (seats, enter/exit, cameras, audio, AI, damage,
+interactions) comes from a **donor** vehicle (Porsche 911 Turbo by default) extracted from your own
+game install. Nothing from the game is shipped with this tool.
+
+## Requirements
+
+* Python 3.10+ with `numpy`
+* WolvenKit CLI 8.17.x (`WolvenKit.Console` from the WolvenKit releases) — Windows `.exe`, or the
+  `.dll` with a .NET 8 runtime on Linux (`--wolvenkit path/to/WolvenKit.CLI.dll`, or `WOLVENKIT_CLI`)
+* Cyberpunk 2077 2.3x install, the first time only (`--game`); the donor files are cached in
+  `~/.cache/fivem2open77/donor` (`--cache` to move it; `python -m fivem2open77 donor --game ...`
+  fills it ahead of time so conversions can run on a machine without the game)
+* `.rar`/`.7z` inputs need 7-Zip (`7z`/`7zz`) or `bsdtar`; folders and `.zip` need nothing
+
+## Commands
+
+```
+python -m fivem2open77 convert <resource> --out <dir> [--name id] [--display-name "Shown name"]
+        [--model <one model of a pack>] [--door-chime file.mp3 --chime-volume 0.8 --chime-range 12]
+        [--profile profile.json] [--engine-sound auto|donor|<name>] [--lids auto|semantic|swap]
+        [--resource-version 1.0.7] [--game <Cyberpunk dir>] [--wolvenkit <cli>] [--cache <dir>] [--keep-work] [-v]
+python -m fivem2open77 inspect <resource> [--profile p.json]   what the converter sees, as JSON
+python -m fivem2open77 profile [--check p.json]                default profile / validate one
+python -m fivem2open77 sounds                                  Cyberpunk engine sounds a car can use
+python -m fivem2open77 donor --game <dir>                      extract and cache donor files
+python -m fivem2open77 studio [--port N] [--open]              the app (local web UI + API)
+```
+
+## Profiles: overriding what the converter decides
+
+A profile (`--profile`, or the Studio's editors) is JSON; anything left out stays automatic:
+
+```json
+{
+  "display_name": "BMW i8 Roadster",
+  "parts":    {"lids": "auto", "bone_roles": {"handle_dside_f": "door:fl", "misc_w": "skip"}, "extras": {"extra_1": true}},
+  "lights":   {"head_fl_0": {"color": "#fff4e0"}, "extra_fr_2": {"skip": true}},
+  "handling": {"drive": "awd", "gears": 7, "mass": 1550, "steer": 45,
+               "multipliers": {"torque": 1.2, "top_speed": 1.1, "brake": 1, "grip": 1.05, "spring": 1, "drag": 1}},
+  "sound":    {"engine": "auto"},
+  "paint":    {"primary": "#eaeaea"},
+  "chime":    {"enabled": true, "file": "door_chime.mp3", "volume": 0.8, "range": 12}
+}
+```
+
+* `parts.bone_roles` moves a GTA bone (and everything under it) to another part: `body`, `interior`,
+  `skip` (hide), `glass:front|rear`, `door:fl|fr|bl|br`, `window:...`, `lid:bonnet|boot`, `steering`.
+  Door, window and lid roles need the matching GTA bone (the part hinges on it).
+* `parts.lids`: `auto` puts each GTA lid on the donor lid at the same end of the car (the 911 donor's
+  front lid is its trunk); `semantic` keeps bonnet = hood; `swap` exchanges them.
+* `sound.engine`: Cyberpunk gives a car another car's engine, wheel and bump sounds (TweakDB
+  `player_audio_resource` / `traffic_audio_resource`). `auto` maps GTA's `audioNameHash` — the vanilla
+  car names (ELEGY, ZENTORNO, ...), add-on sound packs by their name (`lambov10`, `rb26dett`,
+  `s55b30`...), then the vehicle class — to the closest Cyberpunk sound; `donor` keeps the Porsche's;
+  or name one from `python -m fivem2open77 sounds`.
+* `handling` multipliers scale the numbers derived from `handling.meta` (0.25-4).
+
+Escrow-protected (Cfx asset escrow, `.fxap`) resources are refused.
+
+## Door chime
+
+`--door-chime` bundles an mp3/wav into the `<name>_chime` resource. Its server script starts the
+clip the moment a cabin door opens and stops it the moment the last one closes: a door opened by a
+script or the world (canonical door state), or a player getting in or out (the enter/exit animation
+opens the door at the start and shuts it at the end — the occupant's entering/exiting window in the
+seat ledger). It is **server network audio** at the car (`audio.network`, looped with the clip's
+measured length), so every player near the car hears the same chime at the same time, including
+players who stream in mid-chime. Needs Open77 2.31.13+op77.63 or newer on both sides.
+
+## Neon kits (GTA V underglow)
+
+Every converted car gets a neon kit unless its profile turns it off (`"neon": {"enabled": false}`).
+The tubes hang just under the body: from the GTA model's `neon_l`, `neon_r`, `neon_f`, `neon_b`
+bones when it has them, otherwise measured from the car's own underside (a height map of the lowest
+body surface). A tube is shortened where a skirt, bumper or wheel arch comes lower, never goes
+closer than 35 mm to the road, never floats more than 0.5 m up, and is left out (with a note) where
+it cannot be mounted. The Studio's **Neon** tab shows the kit from below and from the sides in any
+colour before you build.
+
+```json
+"neon": {"enabled": true, "sides": ["left", "right", "front", "back"], "colors": "gta",
+         "default": "off", "brightness": 1.0, "height_offset": 0.0}
+```
+
+`colors` is `"gta"` (the 13 LS Customs colours: White, Blue, Electric Blue, Mint Green, Lime
+Green, Yellow, Golden Shower, Orange, Red, Pony Pink, Hot Pink, Purple, Blacklight) or a list of
+those names, `"#rrggbb"` and `{"name": "Toxic", "color": "#88ff00"}`. `default` is the colour the
+car spawns with (`off`: kit fitted, lights off).
+
+In game every colour is an appearance of the car (`<car>_neon_<colour>`), so the server switches it
+with `Open77.vehicles.setAppearance` and every player sees the same kit: `/neon` lists the colours,
+`/neon hot pink`, `/neon next`, `/neon off` (driver only; needs the car hub 1.1+). A tube is an
+emissive mesh; the glow on the road comes from point lights under the car.
+
+## Notes for Open77 servers
+
+* Packages are reproducible: the archive's per-file timestamps (WolvenKit stamps the packing time)
+  are pinned, so converting the same input again gives the same zip and the same required-mod
+  hash — players don't re-download an unchanged car.
+* The world needs `archivexl` and `tweakxl` loader resources (`requiredMods.unsecured = true`, since
+  they are executable packages). Players who connect through the launcher get everything
+  automatically. A game started directly (`OP77_CONNECT`, no launcher) must already have TweakXL,
+  ArchiveXL and the car's `dist/*.zip` content in the game folder:
+  `tools/sync_required_mods.py --manifest http://<server>:<download port>/mods/v1/manifest --game <dir>`
+  brings the game folder in line with what the server requires (hash-checked, cached, stale files of
+  older versions removed, executable packages only with `--allow-executable`).
+* With Easy Anti-Cheat in protected mode, TweakXL's DLL has to be in the client's integrity catalog
+  like any other RED4ext plugin, or the protected boot will refuse it.
+
+## fivem2open77 Studio (Windows app)
+
+`fivem2open77-studio-<version>-setup.exe` installs per user (no admin) to
+`%LOCALAPPDATA%\Programs\fivem2open77` with everything bundled: Python + numpy, WolvenKit CLI, the
+.NET 8 runtime, 7-Zip. Data lives in `%LOCALAPPDATA%\fivem2open77\studio`. Build it with
+`tools/package/build_windows.py` (see its docstring; the window is `host/`, a .NET Framework 4.8
+WinForms + WebView2 app that needs no runtime install).
+
+* **Cars**: drop a FiveM resource (.zip/.rar/.7z or a folder path). The Studio reads it at once,
+  renders it and keeps it extracted while you work.
+* **3D**: the car exactly as the conversion assembles it (three.js), part by part; colour by part to
+  check doors, hood, trunk, wheels; click a part to see its GTA bones.
+* **Parts / Lights / Handling / Sound**: editors for the profile, with live previews (handling
+  numbers recomputed as you drag, the chime playable in the app).
+* **Build**: WolvenKit build as a job with a live log and progress, then automatic checks of the
+  output (manifests, package sizes, zip CRCs, archive index, the entity inside the archive, TweakXL
+  record, engine sound names, chime, Lua syntax).
+* **Deploy**: install a build on any server over SSH (key, password or agent; host keys are trusted
+  on first use and checked after). Modes: *stage* (default: installed now, the car hub restarts the
+  server when nobody is online), *restart now* (refused while players are online), *files only*.
+  Server status shows the Open77 build, players online, the converted cars installed and the hub's
+  queue. Passwords and API keys are encrypted for your Windows account (DPAPI).
+* **AI agent**: Claude (API key) or Ollama (local) drives the same operations through tools —
+  inspect, render (the model looks at the parts renders), edit the profile, build, check, deploy,
+  read server logs — asking you before changes or server actions depending on the permission level.
+  The API is plain JSON on `http://127.0.0.1:<port>/api/...` (token in a cookie), so scripts can use
+  it too.
+
+## The car hub (`f2o77_hub`)
+
+A converted car is a preload package: an Open77 server declares packages only when it starts, and
+players get them at their next launch. The hub is a small server resource that removes the manual
+restart: installing with *stage* (Studio, or `server_deploy.sh deploy ... --stage`) puts the car in
+the hub's `data/pending.json`; the hub restarts the server through Open77's own restart scheduler
+(players are warned like for any scheduled restart) as soon as nobody has been online for
+`empty_grace_seconds`, at `daily_restart_utc`, or after `max_wait_minutes` (all in
+`data/config.json`), then marks the car live, tells joining players about new cars and records its
+state in `data/status.json` for the Studio — only when that state changes: a file written into a
+resource folder makes the server re-scan it, which stalls the server tick, and a stalled tick makes
+a fast car's next motion sample look like a jump (Open77 then takes the car back to its last
+accepted position: an "invisible wall"). Hub 1.0.0/1.0.1 wrote the file every few seconds; 1.0.2+
+does not. The hub also runs the neon kits (`/neon`). `/cars` lists the converted cars; `/carhub status |
+restart [s] | cancel` (ACL `command.carhub`) for operators. A rebuild whose package did not change
+(only Lua) goes live immediately without any restart. Needs the server unit to restart on exit code
+10 (`Restart=on-failure` or `always`).
+
+## Limits (v1)
+
+* Cars and trucks (4 wheels, 2 or 4 doors). Bikes and boats are not handled yet.
+* High LOD only; distant LODs/proxy are not generated (the car hides past its streaming distance).
+* GTA shared textures (`vehshare` etc.) are not in the resource and fall back to flat colours.
+* Extras and liveries are dropped; license plates are not added.

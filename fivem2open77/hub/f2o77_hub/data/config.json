@@ -1,0 +1,8 @@
+{
+  "restart_when_empty": true,
+  "empty_grace_seconds": 60,
+  "daily_restart_utc": "",
+  "max_wait_minutes": 0,
+  "warn_seconds": 300,
+  "announce": true
+}
