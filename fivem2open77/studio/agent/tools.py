@@ -23,6 +23,15 @@ class ToolError(Exception):
     pass
 
 
+class StillRunning(Exception):
+    """A tool's job outlived the caller's patience (an MCP call answers before its client gives up):
+    the job goes on; ``wait_job`` follows it."""
+
+    def __init__(self, job):
+        super().__init__(job.title)
+        self.job = job
+
+
 class Tool:
     def __init__(self, name, description, schema, risk, fn):
         self.name, self.description, self.schema, self.risk, self.fn = name, description, schema, risk, fn
@@ -50,7 +59,7 @@ class Context:
     def project(self):
         pid = self.session.project
         if not pid:
-            raise ToolError("this session has no project: ask the user to open one")
+            raise ToolError("this session has no project: list_projects and open_project, or import_resource")
         return self.studio.projects.get(pid)
 
     def log(self, msg):
@@ -58,6 +67,7 @@ class Context:
 
     def wait_job(self, job, timeout=3600):
         t0 = time.time()
+        soft = getattr(self.session, "soft_timeout", None)
         while job.state in ("queued", "running"):
             if self.session.stopping:
                 job.cancel()
@@ -65,6 +75,8 @@ class Context:
             if time.time() - t0 > timeout:
                 job.cancel()
                 raise ToolError("timed out")
+            if soft and time.time() - t0 > soft:
+                raise StillRunning(job)
             time.sleep(0.25)
         if job.state != "done":
             tail = "\n".join(l["text"] for l in job.lines[-15:])
@@ -160,11 +172,20 @@ def t_status(ctx, args):
     for s in res:
         hub = s.get("hub") or {}
         st = hub.get("status") or {}
+        mm = s.get("mapManager") or {}
+        mb = s.get("mapBaker") or {}
         short.append({"server": s.get("name"), "open77": s.get("version"), "unit": s.get("unit"),
                       "online": len(s.get("online") or []), "cars": [{k: c.get(k) for k in ("name", "version", "record", "in_load")}
                                                                     for c in s.get("cars", [])],
                       "hub": {"installed": bool(hub), "waiting": [w.get("name") for w in st.get("waiting") or []],
-                              "restart": st.get("restart")} if hub else None})
+                              "restart": st.get("restart")} if hub else None,
+                      "maps": [{k: m.get(k) for k in ("name", "version", "anchor", "bakeId", "in_load")} for m in s.get("maps", [])],
+                      "world_edits": [{k: w.get(k) for k in ("name", "version", "summary", "in_load")} for w in s.get("worlds", [])],
+                      "map_manager": {"version": mm.get("version"), "in_load": mm.get("in_load"), "maps": mm.get("maps"),
+                                      "started": mm.get("token")} if mm else None,
+                      "map_baker": {"service": mb.get("service"), "toolkit": mb.get("toolkit"), "start_hook": mb.get("hook"),
+                                    "staged": mb.get("staged")} if mb else None,
+                      "agent_api": s.get("http")})
     return text(short)
 
 
@@ -278,6 +299,11 @@ def t_finish(ctx, args):
     return text("session finished")
 
 
+CAR_TOOLS = ("get_project", "inspect_car", "render_car", "list_engine_sounds", "update_profile", "build_car",
+             "check_build", "deploy_car")
+COMMON_TOOLS = ("list_servers", "server_status", "read_server_log", "restart_server", "ask_user", "finish")
+
+
 def registry() -> dict:
     roles = ", ".join(profile_mod.ROLE_VALUES)
     tools = [
@@ -308,7 +334,7 @@ def registry() -> dict:
              "handling {drive auto|rwd|fwd|awd, gears 4-7, mass kg, steer deg, multipliers {torque, top_speed, brake, "
              "grip, spring, drag: 0.25-4}}, sound.engine (auto|donor|name), paint.primary (auto|#rrggbb), "
              "chime {enabled, volume 0-1, range m}, neon {enabled, sides [left,right,front,back], colors ('gta' "
-             "or a list of GTA colour names / '#rrggbb' / {name, color}), default ('off' or a colour), brightness "
+             "or a list of GTA colour names / '#rrggbb' / {name, color}), default ('on' = first colour, 'off', or a colour), brightness "
              "0.2-4, height_offset -0.1..0.1 m}, seats {template auto|sport1|sport2|standard2|standard25|standard3, "
              "lower 0-0.2 m}. Returns what changed.",
              _obj({"patch": {"type": "object"}}, ["patch"]), "change", t_update_profile),
@@ -317,9 +343,11 @@ def registry() -> dict:
         Tool("check_build", "Re-run the output checks on a build (latest by default).",
              _obj({"build": {"type": "integer"}}), "read", t_check),
         Tool("list_servers", "Open77 servers configured in the Studio.", _obj(), "read", t_servers),
-        Tool("server_status", "What a server runs: Open77 version, players online, converted cars installed, the car "
-             "hub and its queue.", _obj({"server": {"type": "string"}, "names": {"type": "array", "items": {"type": "string"}}},
-                                        ["server"]), "read", t_status),
+        Tool("server_status", "What a server runs: Open77 version, players online, converted cars, the car hub and its "
+             "queue, converted maps and where they are baked, world edits, the map manager, the map baker (service, toolkit, start hook, "
+             "staged moves) and the agent API (httpHandlers).",
+             _obj({"server": {"type": "string"}, "names": {"type": "array", "items": {"type": "string"}}}, ["server"]),
+             "read", t_status),
         Tool("read_server_log", "The end of a server's log (server.log), optionally only lines matching a regex filter.",
              _obj({"server": {"type": "string"}, "name": {"type": "string"}, "lines": {"type": "integer"},
                    "filter": {"type": "string"}}, ["server", "name"]), "read", t_logs),
@@ -337,4 +365,23 @@ def registry() -> dict:
         Tool("finish", "End the session with a short summary of what was done and what the user should check in game.",
              _obj({"summary": {"type": "string"}}, ["summary"]), "read", t_finish),
     ]
-    return {t.name: t for t in tools}
+    out = {t.name: t for t in tools}
+    from .maptools import registry as map_registry
+    from .worldtools import registry as world_registry
+    out.update(map_registry())
+    out.update(world_registry())
+    return out
+
+
+def tools_for(kind: str | None) -> tuple:
+    """The tool names a session offers the model for its project kind (car, map, world, or None)."""
+    from .maptools import LIVE_TOOLS, MAP_TOOLS, STUDIO_TOOLS
+    from .worldtools import WORLD_TOOLS
+    if kind == "car":
+        return CAR_TOOLS + COMMON_TOOLS + STUDIO_TOOLS + LIVE_TOOLS
+    if kind == "map":
+        return MAP_TOOLS + LIVE_TOOLS + COMMON_TOOLS + STUDIO_TOOLS
+    if kind == "world":
+        return WORLD_TOOLS + COMMON_TOOLS + STUDIO_TOOLS + LIVE_TOOLS
+    return STUDIO_TOOLS + COMMON_TOOLS + LIVE_TOOLS + ("new_world_edit", "world_status", "world_find", "world_prepare",
+                                                      "remove_world_edit")

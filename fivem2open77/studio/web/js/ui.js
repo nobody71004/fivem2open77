@@ -31,6 +31,9 @@ function append(el, kids) {
 
 export function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); return el; }
 
+// el.append(...) without the null / false children (DOM append would print them as text)
+export function put(el, ...kids) { append(el, kids); return el; }
+
 export function toast(text, kind = "") {
   const t = h("div.toast" + (kind ? "." + kind : ""), text);
   document.getElementById("toasts").append(t);
@@ -105,4 +108,27 @@ export function logLines(lines) {
 export function debounce(fn, ms) {
   let t;
   return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+}
+
+// an icon from the sprite (img/icons.svg, put into the page at start)
+const SVG = "http://www.w3.org/2000/svg";
+export function icon(name, cls = "") {
+  const s = document.createElementNS(SVG, "svg");
+  s.setAttribute("class", "icon" + (cls ? " " + cls : ""));
+  s.setAttribute("aria-hidden", "true");
+  const u = document.createElementNS(SVG, "use");
+  u.setAttribute("href", "#i-" + name);
+  s.append(u);
+  return s;
+}
+
+// the title bar's trail: [["Maps", "#/maps"], ["Cedar Crest"]]
+export function setCrumbs(items) {
+  const nav = document.getElementById("crumbs");
+  if (!nav) return;
+  clear(nav);
+  (items || []).forEach(([label, href], i) => {
+    if (i) nav.append(icon("chevron-right"));
+    nav.append(href ? h("a", { href }, label) : h("span", label));
+  });
 }

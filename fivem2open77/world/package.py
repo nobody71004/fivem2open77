@@ -1,0 +1,208 @@
+"""A world edit as an Open77 resource, and the bundle that installs it on a server.
+
+    <out>/<name>/
+        open77.lua       server resource: ArchiveXL dependency, preload_mod of the package
+        server/main.lua  says what it changes at start; export `edits` for tools
+        dist/<name>.zip  archive/pc/mod/fivem2open77_world_<name>.xl (the sector patches, and the
+                         streaming block of added objects), + .archive of added objects
+        edits.json       the edit list, its summary and the build
+        README.md
+
+Deletions and changes need no WolvenKit (the ``.xl`` is text).  Added objects do: their sector,
+its streaming block and a host entity per mesh (the map baker's shapes, mlo/world.py) are written
+as JSON and turned into an archive by WolvenKit.
+"""
+from __future__ import annotations
+
+import datetime
+import hashlib
+import json
+import math
+import os
+import re
+import shutil
+import tarfile
+import tempfile
+
+from ..cp77 import package as cpkg
+from ..cp77.wkjson import document, save
+from ..mlo import world as mw
+from . import edits as E
+
+NAME_RX = re.compile(r"^[a-z][a-z0-9_]{2,47}$")
+VERSION = "1.0.0"
+
+
+def archive_name(name: str) -> str:
+    return f"fivem2open77_world_{name}"
+
+
+def depot_root(name: str) -> str:
+    return f"fivem2open77\\world\\{name}"
+
+
+def _host_path(name: str, mesh: str) -> str:
+    stem = re.sub(r"[^a-z0-9_]+", "_", mesh.lower().split("\\")[-1].split("#")[0].rsplit(".", 1)[0])[:40]
+    h = hashlib.sha1(mesh.lower().encode()).hexdigest()[:8]
+    return f"{depot_root(name)}\\hosts\\{stem}_{h}.ent"
+
+
+def additions_docs(name: str, adds) -> tuple:
+    """[(json document, depot path)] for the added objects (sector, block, hosts) and the block path."""
+    sector_path = f"{depot_root(name)}\\sector\\{name}.streamingsector"
+    block_path = f"{depot_root(name)}\\sector\\{name}.streamingblock"
+    files, hosts = [], {}
+    nodes, data = [], []
+    lo, hi = [math.inf] * 3, [-math.inf] * 3
+    for i, a in enumerate(adds):
+        res = a["res"]
+        if res.endswith(".mesh"):
+            physical = a.get("collision", "mesh") == "mesh"
+            key = (res, physical)
+            ent = hosts.get(key)
+            if ent is None:
+                ent = hosts[key] = _host_path(name, res + ("" if physical else "#nocollision"))
+                files.append((mw.host_entity_doc(name, f"h{len(hosts)}", res, physical=physical), ent))
+        else:
+            ent = res
+        label = re.sub(r"[^a-z0-9_]+", "_", (a.get("label") or res.split("\\")[-1]).lower())[:40]
+        node = mw._entity_node(ent, f"{name}_{label}_{i:03d}")
+        if res.endswith(".ent") and a.get("app"):
+            node["appearanceName"] = {"$type": "CName", "$storage": "string", "$value": a["app"]}
+        nodes.append({"HandleId": str(i), "Data": node})
+        pos = a["pos"]
+        primary, secondary = mw.streaming_range(10.0)
+        ref = mw.stable_id("world-add", name, i, res, round(pos[0], 3), round(pos[1], 3), round(pos[2], 3))
+        data.append(mw._node_data(i, pos, a.get("yaw", 0.0), ref, primary, secondary))
+        for k in range(3):
+            lo[k] = min(lo[k], pos[k] - primary)
+            hi[k] = max(hi[k], pos[k] + primary)
+    root = {
+        "$type": "worldStreamingSector", "category": mw.SECTOR_CATEGORY, "cookingPlatform": "PLATFORM_PC",
+        "externInplaceResource": {"DepotPath": {"$type": "ResourcePath", "$storage": "uint64", "$value": "0"}, "Flags": "Soft"},
+        "level": mw.SECTOR_LEVEL, "localInplaceResource": [],
+        "nodeData": {"BufferId": "0", "Flags": mw.BUFFER_FLAGS, "Type": mw.NODE_BUFFER, "Data": data},
+        "nodeRefs": [], "nodes": nodes, "persistentNodeIndex": 0, "persistentNodes": [], "variantIndices": [0],
+        "variantNodes": [], "version": 62,
+    }
+    files.append((document(root), sector_path))
+    files.append((mw.block_doc(sector_path, (tuple(lo), tuple(hi))), block_path))
+    return files, block_path
+
+
+def _main_lua(name: str, display: str, summ: dict) -> str:
+    return f'''-- {display}: a world edit made with fivem2open77 (Studio > World).  The edit itself is the
+-- ArchiveXL package this resource preloads; players get it with the server's required mods.
+local SUMMARY = {{ sectors = {summ["sectors"]}, deleted = {summ["deleted"]}, elements = {summ["elementsDeleted"]}, changed = {summ["changed"]}, added = {summ["added"]} }}
+print(("[{name}] world edit: %d object(s) removed, %d part(s) of objects removed, %d changed, %d added, in %d sector(s)")
+    :format(SUMMARY.deleted, SUMMARY.elements, SUMMARY.changed, SUMMARY.added, SUMMARY.sectors))
+exports("edits", function() return SUMMARY end)
+'''
+
+
+def build(name: str, display: str, edits, out_dir: str, wk=None, log=print, version: str = VERSION) -> dict:
+    """Write the resource <out_dir>/<name>; returns {path, zip, xl, summary, sha256, bytes}."""
+    if not NAME_RX.match(name or ""):
+        raise E.EditError(f"resource name {name!r}: lower case letters, digits and _ (3-48), starting with a letter")
+    edits = E.normalize_all(edits)
+    p = E.plan(edits)
+    summ = E.summary(edits)
+    if not p["sectors"] and not p["adds"]:
+        raise E.EditError("nothing to build: no edits yet")
+    res = os.path.join(os.path.abspath(out_dir), name)
+    work = tempfile.mkdtemp(prefix=f"f2o77-world-{name}-")
+    aname = archive_name(name)
+    try:
+        files = {}
+        blocks = []
+        if p["adds"]:
+            if wk is None:
+                raise RuntimeError("adding objects needs WolvenKit (Settings > Tools)")
+            docs, block_path = additions_docs(name, p["adds"])
+            jdir, adir = os.path.join(work, "json"), os.path.join(work, "archive")
+            for doc, depot_path in docs:
+                save(doc, os.path.join(jdir, depot_path.replace("\\", os.sep) + ".json"))
+            log(f"[{name}] writing {len(p['adds'])} added object(s) with WolvenKit")
+            wk.deserialize_tree(jdir, adir, work)
+            src_root = os.path.join(work, "pack", aname)
+            for _, depot_path in docs:
+                s = os.path.join(adir, depot_path.replace("\\", os.sep))
+                if not os.path.exists(s):
+                    raise RuntimeError(f"WolvenKit did not write {depot_path}")
+                d = os.path.join(src_root, depot_path.replace("\\", os.sep))
+                os.makedirs(os.path.dirname(d), exist_ok=True)
+                shutil.copyfile(s, d)
+            pdir = os.path.join(work, "packed")
+            wk.pack(src_root, pdir)
+            arch = os.path.join(pdir, aname + ".archive")
+            if not os.path.exists(arch):
+                raise RuntimeError(f"WolvenKit did not produce {aname}.archive")
+            cpkg.normalize_archive(arch)
+            files[f"archive/pc/mod/{aname}.archive"] = arch
+            blocks.append(block_path)
+        xl = os.path.join(work, aname + ".xl")
+        text = E.to_xl(edits, display, blocks)
+        with open(xl, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+        files[f"archive/pc/mod/{aname}.xl"] = xl
+        if os.path.isdir(res):
+            shutil.rmtree(res)
+        os.makedirs(os.path.join(res, "dist"))
+        os.makedirs(os.path.join(res, "server"))
+        zpath = os.path.join(res, "dist", f"{name}.zip")
+        zsize = cpkg.write_zip(zpath, files)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    with open(os.path.join(res, "open77.lua"), "w", encoding="utf-8", newline="\n") as f:
+        f.write(f'''-- {display}: world edit made with fivem2open77.  The edit is the ArchiveXL package below
+-- (inert data: an .xl that patches Night City's own sectors{', and the sector of the objects added' if p["adds"] else ''}).
+resource "{name}"
+version "{version}"
+auto_start true
+
+dependency "archivexl >=1.27.1"
+preload_mod "dist/{name}.zip"
+
+server_script "server/main.lua"
+''')
+    with open(os.path.join(res, "server", "main.lua"), "w", encoding="utf-8", newline="\n") as f:
+        f.write(_main_lua(name, display, summ))
+    sha = hashlib.sha256(open(zpath, "rb").read()).hexdigest()
+    info = {"name": name, "display": display, "version": version, "summary": summ, "edits": edits,
+            "package": {"file": f"dist/{name}.zip", "bytes": zsize, "sha256": sha},
+            "builtAt": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+    with open(os.path.join(res, "edits.json"), "w", encoding="utf-8") as f:
+        json.dump(info, f, indent=1)
+    with open(os.path.join(res, "README.md"), "w", encoding="utf-8") as f:
+        f.write(f"# {display}\n\nA world edit made with fivem2open77: {summ['deleted']} object(s) removed, "
+                f"{summ['elementsDeleted']} part(s) of objects removed, {summ['changed']} changed, {summ['added']} added "
+                f"in {summ['sectors']} sector(s).\n\nInstall it like any resource (resources/assets/world/{name}) and add "
+                f"`{name}` to resources.load; it needs the `archivexl` loader resource and requiredMods enabled. Players "
+                "get the change at their next launch after a server restart.\n")
+    log(f"[{name}] world edit built: {summ['deleted']} removed, {summ['elementsDeleted']} parts removed, "
+        f"{summ['changed']} changed, {summ['added']} added ({zsize} bytes)")
+    return {"path": res, "zip": zpath, "xl": text, "summary": summ, "sha256": sha, "bytes": zsize}
+
+
+def bundle(res_dirs, out_path: str) -> dict:
+    """resources/assets/world/<name>/... for `server_deploy.sh deploy`."""
+    names = []
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    with tarfile.open(out_path, "w:gz", format=tarfile.PAX_FORMAT) as t:
+        for d in res_dirs:
+            name = os.path.basename(os.path.abspath(d).rstrip("/\\"))
+            if not os.path.isfile(os.path.join(d, "open77.lua")):
+                raise RuntimeError(f"{d} is not a built world edit (no open77.lua)")
+            for dp, _, fns in os.walk(d):
+                for fn in sorted(fns):
+                    full = os.path.join(dp, fn)
+                    arc = "resources/assets/world/" + name + "/" + os.path.relpath(full, d).replace(os.sep, "/")
+                    info = t.gettarinfo(full, arcname=arc)
+                    info.uid = info.gid = 0
+                    info.uname = info.gname = "root"
+                    info.mtime = 0
+                    info.mode = 0o644
+                    with open(full, "rb") as f:
+                        t.addfile(info, f)
+            names.append(name)
+    return {"path": out_path, "resources": names, "bytes": os.path.getsize(out_path)}

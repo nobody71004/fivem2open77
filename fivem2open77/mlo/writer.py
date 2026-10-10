@@ -1,0 +1,244 @@
+"""MapModel -> Cyberpunk files -> archives -> the Open77 resources of the map.
+
+    parts      -> <MOD_ROOT>\\maps\\<name>\\meshes\\<part>.mesh   (CMesh from a vanilla static mesh
+                  template: our materials, our geometry imported from a glb, our colliders in a
+                  meshMeshParamPhysics parameter)
+               -> <MOD_ROOT>\\maps\\<name>\\ents\\<part>.ent     (host entity a sector node spawns;
+                  for a door part the game's own transform-animated Door device, doors.py)
+    textures   -> <MOD_ROOT>\\maps\\<name>\\textures\\<tex>.xbm
+    archives   -> split so every zip stays under Open77's 64 MiB preload cap (8 packages max)
+    resources  -> <out>/<name> (packages, layout.json, ghost.txt) and the map manager
+                  <out>/f2o77_maps (shared/maps/<name>.lua: what it knows about this map);
+                  the sector package comes from bake.py once the map has an anchor
+"""
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import time
+
+import numpy as np
+
+from ..cp77 import package
+from ..cp77.mesh import ordered_submeshes, template_doc, write_glb
+from ..cp77.wkjson import Handles, save
+from ..cp77.xbm import xbm_document
+from ..model.ir import Material, SubMesh
+from . import bake as bake_mod
+from . import doors as doors_mod
+from . import ghost as ghost_mod
+from . import resource as resource_mod
+from . import world
+from .materials import material_json
+from .physics import physics_param
+
+MOD_ROOT = "fivem2open77"
+STATIC_TEMPLATE = r"base\environment\decoration\containers\cargo\freight\freight_ep1_a_wall_a.mesh"
+WORLD_TEMPLATES = (STATIC_TEMPLATE,)
+ARCHIVE_RAW_BUDGET = 56 * 1024 * 1024      # raw bytes per archive before packing (zip < 64 MiB)
+HIDDEN = "m_hidden"
+
+
+def _placeholder_submesh() -> SubMesh:
+    """A 1 mm triangle 50 m below the part origin: lets a collision-only part be a valid mesh."""
+    p = np.array([[0, 0, -50.0], [0.001, 0, -50.0], [0, 0.001, -50.0]], np.float32)
+    n = np.tile([[0, 0, 1.0]], (3, 1)).astype(np.float32)
+    t = np.tile([[1.0, 0, 0, 1.0]], (3, 1)).astype(np.float32)
+    uv = np.zeros((3, 2), np.float32)
+    return SubMesh(material=HIDDEN, positions=p, normals=n, tangents=t, uv0=uv, uv1=None, colors=None,
+                   indices=np.array([0, 1, 2], np.uint32), lod=1)
+
+
+class MapWriter:
+    def __init__(self, wk, cache, out_dir: str, log=print, keep_work=False, version="1.0.0"):
+        self.wk = wk
+        self.cache = cache
+        self.out_dir = os.path.abspath(out_dir)
+        self.log = log
+        self.keep_work = keep_work
+        self.version = version
+
+    def write(self, model, *, defaults=None, source_info=None, scene_summary=None, agent_token="") -> dict:
+        t0 = time.time()
+        name = model.name
+        work = os.path.join(self.out_dir, "_work", name)
+        shutil.rmtree(work, ignore_errors=True)
+        jdir, rdir, adir, pdir = (os.path.join(work, d) for d in ("json", "raw", "archive", "packed"))
+        base = rf"{MOD_ROOT}\maps\{name}"
+
+        def jpath(depot_path):
+            return os.path.join(jdir, depot_path.replace("\\", os.sep) + ".json")
+
+        has_doors = any(p.kind == "door" for p in model.parts.values())
+        self.cache.ensure_paths(WORLD_TEMPLATES + ((doors_mod.DOOR_TEMPLATE,) if has_doors else ()))
+        tpl = self.cache.load(STATIC_TEMPLATE)
+        door_tpl = self.cache.load(doors_mod.DOOR_TEMPLATE) if has_doors else None
+
+        # ---------------------------------------------------------- textures
+        tex_paths, tex_files = {}, set()
+
+        def tex_path(key, usage):
+            k = (key, "normal" if usage == "normal" else "color")
+            if k not in tex_paths:
+                stem = key + ("_n" if usage == "normal" else "")
+                p = rf"{base}\textures\{stem}.xbm"
+                save(xbm_document(model.textures[key], usage), jpath(p))
+                tex_paths[k] = p
+                tex_files.add(p)
+            return tex_paths[k]
+
+        mats_json = {key: material_json(m, tex_path) for key, m in model.materials.items()}
+        hidden = Material(key=HIDDEN, kind="textured", alpha="test")
+        mats_json[HIDDEN] = material_json(hidden, tex_path)
+
+        # ---------------------------------------------------------- meshes
+        mesh_paths, ent_paths = {}, {}
+        os.makedirs(rdir, exist_ok=True)
+        part_meta = {}
+        for pname, part in model.parts.items():
+            mp = rf"{base}\meshes\{pname}.mesh"
+            mesh_paths[pname] = mp
+            if not part.submeshes:
+                part.submeshes = [_placeholder_submesh()]
+            subs = ordered_submeshes(part)
+            used = []
+            for s in subs:
+                if s.material not in used:
+                    used.append(s.material)
+            doc = template_doc(tpl, {k: mats_json[k] for k in used}, [s.material for s in subs])
+            root = doc["Data"]["RootChunk"]
+            root["objectType"] = "ROT_Static"
+            if part.colliders:
+                root["parameters"] = [physics_param(part.colliders, Handles(doc), f"{name} {pname}",
+                                                    simulation="Kinematic" if part.kind == "door" else "Static")]
+            save(doc, jpath(mp))
+            glb = os.path.join(rdir, mp.replace("\\", os.sep)[:-5] + ".glb")
+            os.makedirs(os.path.dirname(glb), exist_ok=True)
+            write_glb(part, glb)
+            mn, mx = part.bounds()
+            ep = rf"{base}\ents\{pname}.ent"
+            radius = float(np.linalg.norm(np.subtract(mx, mn))) * 0.5
+            primary, _ = world.streaming_range(radius)
+            if part.kind == "door":
+                save(doors_mod.door_entity_doc(door_tpl, mp, part.door), jpath(ep))
+            else:
+                save(world.host_entity_doc(name, pname, mp, auto_hide=round(primary, 1),
+                                          physical=bool(part.colliders)), jpath(ep))
+            ent_paths[pname] = ep
+            part_meta[pname] = {"mesh": mp, "ent": ep, "radius": round(radius, 2),
+                                "kind": part.kind, "vertices": part.vertex_count,
+                                "triangles": part.triangle_count, "colliders": len(part.colliders),
+                                "collision_only": part.collision_only,
+                                "bounds": [[round(float(v), 3) for v in mn], [round(float(v), 3) for v in mx]],
+                                "sources": dict(part.sources.most_common(12))}
+            if part.door:
+                part_meta[pname]["door"] = dict(part.door)
+            if part.piece_of:
+                part_meta[pname]["piece_of"] = part.piece_of
+
+        # ---------------------------------------------------------- WolvenKit: JSON -> CR2W, glb import
+        self.log(f"[{name}] {len(model.parts)} meshes, {len(tex_files)} textures, "
+                 f"{sum(len(p.colliders) for p in model.parts.values())} colliders -> WolvenKit...")
+        self.wk.deserialize_tree(jdir, adir, work)
+        self.wk.import_glb(rdir, adir)
+        expected = list(mesh_paths.values()) + list(ent_paths.values()) + sorted(tex_files)
+        missing = [p for p in expected if not os.path.exists(os.path.join(adir, p.replace("\\", os.sep)))]
+        if missing:
+            raise RuntimeError("WolvenKit did not write: " + ", ".join(missing[:10]))
+
+        # ---------------------------------------------------------- archives under the size cap
+        files = []
+        for p in expected:
+            files.append((p, os.path.getsize(os.path.join(adir, p.replace("\\", os.sep)))))
+        groups = _bin_pack(files, ARCHIVE_RAW_BUDGET)
+        if len(groups) > package.MAX_PACKAGES:
+            raise RuntimeError(f"{len(groups)} packages needed (Open77 allows {package.MAX_PACKAGES}); "
+                               "the map is too large for one resource (try --exclude or --cell)")
+        archive_base = f"{MOD_ROOT}_map_{name}"
+        res_dir = os.path.join(self.out_dir, name)
+        shutil.rmtree(os.path.join(res_dir, "dist"), ignore_errors=True)
+        zips = []
+        for i, group in enumerate(groups, 1):
+            aname = archive_base if len(groups) == 1 else f"{archive_base}_{i}"
+            src_root = os.path.join(work, "pack", aname)
+            for p, _ in group:
+                s = os.path.join(adir, p.replace("\\", os.sep))
+                d = os.path.join(src_root, p.replace("\\", os.sep))
+                os.makedirs(os.path.dirname(d), exist_ok=True)
+                shutil.copyfile(s, d)
+            self.wk.pack(src_root, pdir)
+            out = os.path.join(pdir, aname + ".archive")
+            if not os.path.exists(out):
+                raise RuntimeError(f"WolvenKit did not produce {aname}.archive")
+            package.normalize_archive(out)
+            zname = f"{name}.zip" if len(groups) == 1 else f"{name}_{i}.zip"
+            zsize = package.write_zip(os.path.join(res_dir, "dist", zname), {f"archive/pc/mod/{aname}.archive": out})
+            if zsize > package.MAX_PACKAGE:
+                raise RuntimeError(f"{zname} is {zsize / 1048576:.1f} MiB, over Open77's 64 MiB preload limit")
+            zips.append({"file": zname, "bytes": zsize, "archive": aname + ".archive", "files": len(group)})
+
+        # ---------------------------------------------------------- the two Open77 resources
+        mn, mx = model.bounds()
+        layout = {
+            "name": name, "display": model.display_name, "version": self.version,
+            "parts": {p: {"mesh": m["mesh"], "ent": m["ent"], "kind": m["kind"], "radius": m["radius"],
+                          "collision": m["colliders"] > 0, "bounds": m["bounds"],
+                          **({"door": m["door"]} if m.get("door") else {})} for p, m in part_meta.items()},
+            "placements": [{"part": pl.part, "x": round(pl.position[0], 4), "y": round(pl.position[1], 4),
+                            "z": round(pl.position[2], 4), "yaw": round(pl.yaw, 4)} for pl in model.placements],
+            "spawn": None if model.spawn is None else {k: round(v, 3) for k, v in zip("xyz", model.spawn)},
+            "bounds": {"min": [round(float(v), 2) for v in mn], "max": [round(float(v), 2) for v in mx]},
+            "packages": [z["file"] for z in zips],
+            "archives": [z["archive"] for z in zips],
+            "default": defaults,
+        }
+        lines = ghost_mod.ghost_lines(model)
+        ghost_text = ghost_mod.encode(lines)
+        report = {
+            "tool": "fivem2open77 mlo", "version": self.version, "seconds": round(time.time() - t0, 1),
+            "source": source_info or {}, "map": name, "display_name": model.display_name,
+            "anchor_gta": list(model.anchor), "packages": zips, "parts": part_meta,
+            "placements": len(model.placements), "materials": len(model.materials), "textures": len(tex_files),
+            "ghost_lines": len(lines), "build": model.report, "scene": scene_summary or {}, "warnings": model.warnings,
+        }
+        manager_dir = os.path.join(self.out_dir, resource_mod.MANAGER)
+        # the old per-map placer (fivem2open77 < 1.2) is replaced by the map manager
+        old_placer = os.path.join(self.out_dir, f"{name}_placer")
+        if os.path.isfile(os.path.join(old_placer, "shared", "layout.lua")):
+            shutil.rmtree(old_placer, ignore_errors=True)
+        for stale in ("baked.json", "doors.json", os.path.join("dist", f"{name}_sector.zip")):
+            if os.path.exists(os.path.join(res_dir, stale)):
+                os.remove(os.path.join(res_dir, stale))
+        resource_mod.write_map_resource(res_dir, layout, layout["packages"], None, report=report)
+        with open(os.path.join(res_dir, "ghost.txt"), "w", encoding="utf-8", newline="\n") as f:
+            f.write(ghost_text)
+        resource_mod.write_manager_resource(manager_dir, agent_token=agent_token)
+        resource_mod.write_map_def(manager_dir, layout, None, ghost_text)
+        baked = None
+        if defaults:
+            baked = bake_mod.bake(res_dir, defaults, self.wk, log=self.log,
+                                  bake_id=bake_mod.new_bake_id(name, "convert"))["baked"]
+            report["baked"] = baked
+            with open(os.path.join(res_dir, "conversion-report.json"), "w", encoding="utf-8") as f:
+                json.dump(report, f, indent=2, default=str)
+        if not self.keep_work:
+            shutil.rmtree(work, ignore_errors=True)
+        self.log(f"[{name}] done in {report['seconds']}s -> {res_dir} + {manager_dir}")
+        return {"name": name, "resource": res_dir, "manager": manager_dir, "report": report, "layout": layout,
+                "baked": baked}
+
+
+def _bin_pack(files, budget):
+    """First-fit decreasing by size; meshes and their textures may land in different archives,
+    which is fine: the depot resolves paths across every mounted archive."""
+    groups = []
+    for p, s in sorted(files, key=lambda x: -x[1]):
+        for g in groups:
+            if g[0] + s <= budget:
+                g[0] += s
+                g[1].append((p, s))
+                break
+        else:
+            groups.append([s, [(p, s)]])
+    return [sorted(g[1]) for g in groups]

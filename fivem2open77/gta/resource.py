@@ -13,6 +13,7 @@ metas are found by declaration first and by name second.
 from __future__ import annotations
 
 import fnmatch
+import glob
 import os
 import re
 import shutil
@@ -35,6 +36,8 @@ META_KINDS = {
     "CARCOLS_FILE": "carcols",
     "VEHICLE_LAYOUTS_FILE": "layouts",
 }
+# declared files the conversion does not read: a pack that forgot one is not worth a warning
+UNUSED_METAS = {"layouts", "carcols"}
 
 
 class ResourceInputError(Exception):
@@ -66,6 +69,30 @@ class ScannedResource:
     txd_parents: dict
     warnings: list = field(default_factory=list)
     tmpdir: str | None = None
+    # (resource folder or None for the whole input, message): what each warning is about
+    scoped_warnings: list = field(default_factory=list)
+
+    def resource_of(self, path: str) -> str | None:
+        """The resource folder (the nearest one with a manifest) a file belongs to."""
+        dirs = {os.path.normcase(os.path.dirname(m)) for m in self.manifests}
+        d = os.path.normcase(os.path.dirname(os.path.abspath(path)))
+        while True:
+            if d in dirs:
+                return d
+            parent = os.path.dirname(d)
+            if parent == d or not d.startswith(os.path.normcase(os.path.abspath(self.root))):
+                return None
+            d = parent
+
+    def warnings_for(self, src) -> list:
+        """The warnings about one car of a pack: its own resource's and the input's, with the others
+        counted rather than listed (a 70-car pack is 300 lines about cars nobody picked)."""
+        own = self.resource_of(src.yft) if src is not None else None
+        mine = [m for d, m in self.scoped_warnings if d is None or d == own]
+        others = len(self.scoped_warnings) - len(mine)
+        if others:
+            mine.append(f"{others} more warning(s) about other cars in this pack (not this one)")
+        return mine
 
     def cleanup(self):
         if self.tmpdir and os.path.isdir(self.tmpdir):
@@ -180,12 +207,18 @@ def scan_resource(path: str) -> ScannedResource:
 
     files = list(_find_files(root))
     warnings = []
+    scoped = []                                  # (file the warning is about, message)
     pack_name = _pack_name(path, root)
     if any(f.lower().endswith(".rpf") for f in files):
         if tmpdir is None:
             tmpdir = tempfile.mkdtemp(prefix="fivem2open77_")
         files += _expand_rpfs(files, root, tmpdir, warnings)
+        scoped += [(None, w) for w in warnings]
     lower = {f.lower(): f for f in files}
+
+    def warn(about, message):
+        warnings.append(message)
+        scoped.append((about, message))
 
     if any(f.lower().endswith(".fxap") for f in files):
         raise EscrowProtectedError(
@@ -201,10 +234,18 @@ def scan_resource(path: str) -> ScannedResource:
             k = META_KINDS.get(kind)
             if not k:
                 continue
-            pattern = os.path.normpath(os.path.join(base, rel)).lower()
-            matched = [lower[p] for p in lower if fnmatch.fnmatch(p, pattern)]
-            if not matched:
-                warnings.append(f"{os.path.relpath(man, root)} declares {kind} '{rel}' but the file is missing")
+            # the folder part is literal: packs name folders "[CARS]", which a glob reads as a
+            # character class, so every declared file of such a pack looked missing
+            exact = os.path.normpath(os.path.join(base, rel)).lower()
+            if exact in lower:
+                matched = [lower[exact]]
+            elif any(c in rel for c in "*?["):
+                pattern = os.path.normpath(os.path.join(glob.escape(base), rel)).lower()
+                matched = [lower[p] for p in lower if fnmatch.fnmatchcase(p, pattern)]
+            else:
+                matched = []
+            if not matched and k not in UNUSED_METAS:
+                warn(man, f"{os.path.relpath(man, root)} declares {kind} '{rel}' but the file is missing")
             for m in matched:
                 if m not in meta_files[k]:
                     meta_files[k].append(m)
@@ -251,24 +292,24 @@ def scan_resource(path: str) -> ScannedResource:
                 info_src.setdefault(it.model_name.lower(), mf)
             txd_parents.update(rel)
         except Exception as e:  # noqa: BLE001 - report and continue
-            warnings.append(f"cannot parse {os.path.basename(mf)}: {e}")
+            warn(mf, f"cannot parse {os.path.relpath(mf, root)}: {e}")
     handlings = {}
     for mf in meta_files["handling"]:
         try:
             handlings.update(parse_handling_meta(open(mf, "rb").read(), mf))
         except Exception as e:  # noqa: BLE001
-            warnings.append(f"cannot parse {os.path.basename(mf)}: {e}")
+            warn(mf, f"cannot parse {os.path.relpath(mf, root)}: {e}")
     variations = {}
     for mf in meta_files["carvariations"]:
         try:
             variations.update(parse_carvariations(open(mf, "rb").read(), mf))
         except Exception as e:  # noqa: BLE001
-            warnings.append(f"cannot parse {os.path.basename(mf)}: {e}")
+            warn(mf, f"cannot parse {os.path.relpath(mf, root)}: {e}")
     for mf in meta_files["carcols"]:
         try:
             parse_carcols(open(mf, "rb").read(), mf)
         except Exception as e:  # noqa: BLE001
-            warnings.append(f"cannot parse {os.path.basename(mf)}: {e}")
+            warn(mf, f"cannot parse {os.path.relpath(mf, root)}: {e}")
 
     vehicles = []
     seen = set()
@@ -328,21 +369,30 @@ def scan_resource(path: str) -> ScannedResource:
             continue
         v = make(info.model_name, info)
         if v is None:
-            warnings.append(f"vehicles.meta lists '{info.model_name}' but no {info.model_name}.yft is streamed")
+            warn(info_src.get(info.model_name.lower()),
+                 f"vehicles.meta lists '{info.model_name}' but no {info.model_name}.yft is streamed")
             continue
         seen.add(info.model_name.lower())
         vehicles.append(v)
     if not infos:
         # no metas: every top-level yft (not _hi, not mod-kit parts) is a vehicle
-        for name in sorted(by_name):
-            if not name.endswith(".yft") or name.endswith("_hi.yft"):
-                continue
-            model = name[:-4]
-            if "_" in model and model.rsplit("_", 1)[0] + ".yft" in by_name:
-                continue  # mod-kit part such as mycar_bumf_1
+        models = [n[:-4] for n in sorted(by_name) if n.endswith(".yft") and not n.endswith("_hi.yft")]
+
+        def kit_part(model):
+            # mycar_bumf_1 next to mycar.yft, at any depth of underscores
+            parts = model.split("_")
+            return any("_".join(parts[:i]) + ".yft" in by_name for i in range(1, len(parts)))
+
+        models = [m for m in models if not kit_part(m)]
+        # a car has its own texture dictionary or a _hi model; mod-kit parts borrowed from another
+        # car's kit (sturbo_bumf_1 in a Camaro) have neither
+        owned = [m for m in models if m + ".ytd" in by_name or m + "_hi.yft" in by_name]
+        for model in owned or models:
             v = make(model, None)
             if v:
                 vehicles.append(v)
 
-    return ScannedResource(root=root, manifests=manifests, vehicles=vehicles, meta_files=meta_files,
-                           stream_files=stream, txd_parents=txd_parents, warnings=warnings, tmpdir=tmpdir)
+    res = ScannedResource(root=root, manifests=manifests, vehicles=vehicles, meta_files=meta_files,
+                          stream_files=stream, txd_parents=txd_parents, warnings=warnings, tmpdir=tmpdir)
+    res.scoped_warnings = [(res.resource_of(f) if f else None, m) for f, m in scoped]
+    return res

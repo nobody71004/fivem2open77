@@ -1,7 +1,7 @@
 // One car: overview, 3D, parts, lights, handling, sound, build, deploy, AI agent.
 import { api, waitJob } from "../api.js";
 import { store, onEvent } from "../store.js";
-import { h, clear, toast, modal, confirmBox, prompt, fmtBytes, fmtTime, fmtAgo, pill, logLines, debounce } from "../ui.js";
+import { h, clear, toast, modal, confirmBox, prompt, fmtBytes, fmtTime, fmtAgo, pill, logLines, debounce, icon, setCrumbs } from "../ui.js";
 import { viewerTab } from "./viewer.js";
 import { agentTab } from "./agent.js";
 
@@ -43,25 +43,28 @@ export function projectPage(root, args) {
   function renderHead() {
     const p = ctx.project;
     const car = p.car || {};
+    const label = (TABS.find(([k]) => k === tab) || TABS[0])[1];
+    setCrumbs([["Cars", "#/projects"], [p.name || "(unnamed)", `#/project/${pid}/overview`], [label]]);
     clear(head).append(
-      h("a.btn.ghost.small", { href: "#/projects" }, "← Cars"),
       h("div", h("h1", p.name || "(unnamed)"),
-        h("div.row.muted", { style: { fontSize: "13px" } }, car.record ? h("code", car.record) : null,
+        h("div.row.meta", { style: { gap: "12px", marginTop: "2px" } }, car.record ? h("code", car.record) : null,
           car.class ? h("span", car.class.replace("VC_", "").toLowerCase()) : null,
           h("span.faint", p.source))),
       h("div.grow"),
-      h("button.btn.ghost", { onclick: async () => {
-        const n = await prompt("Rename", "Project name", p.name);
-        if (n) { await api.patch(`/projects/${pid}`, { name: n }); ctx.reload("project"); }
-      } }, "Rename"),
-      h("button.btn.danger", { onclick: async () => {
-        if (await confirmBox("Delete project", `Delete ${p.name} and all its builds from the Studio? Servers are not touched.`, "Delete", "danger")) {
-          await api.del(`/projects/${pid}`);
-          location.hash = "#/projects";
-        }
-      } }, "Delete"),
-      h("button.btn.cyan", { onclick: () => { location.hash = `#/project/${pid}/agent`; } }, "Ask AI"),
-      h("button.btn.primary", { onclick: () => startBuild(ctx) }, "Build"));
+      h("div.toolbar",
+        h("button.btn.ghost", { onclick: async () => {
+          const n = await prompt("Rename", "Project name", p.name);
+          if (n) { await api.patch(`/projects/${pid}`, { name: n }); ctx.reload("project"); }
+        } }, "Rename"),
+        h("button.btn.ghost", { title: "Delete this project", onclick: async () => {
+          if (await confirmBox("Delete project", `Delete ${p.name} and all its builds from the Studio? Servers are not touched.`, "Delete", "danger")) {
+            await api.del(`/projects/${pid}`);
+            location.hash = "#/projects";
+          }
+        } }, icon("trash"), "Delete"),
+        h("span.sep"),
+        h("button.btn", { onclick: () => { location.hash = `#/project/${pid}/agent`; } }, icon("agent"), "Ask the agent"),
+        h("button.btn.primary", { onclick: () => startBuild(ctx) }, icon("build"), "Build")));
   }
 
   (async () => {
@@ -84,7 +87,7 @@ const NEON_SIDES = [["left", "left sill"], ["right", "right sill"], ["front", "u
 
 function neonTab(root, ctx) {
   const d = ctx.inspect.neon || { palette: [], kit: null, enabled: false };
-  const conf = Object.assign({ enabled: true, sides: ["left", "right", "front", "back"], colors: "gta", default: "off",
+  const conf = Object.assign({ enabled: true, sides: ["left", "right", "front", "back"], colors: "gta", default: "on",
     brightness: 1, height_offset: 0 }, ctx.profile.neon || {});
   const kit = d.kit;
   const enabled = h("input", { type: "checkbox", checked: conf.enabled });
@@ -106,9 +109,10 @@ function neonTab(root, ctx) {
     customRows.append(row);
   };
   for (const c of custom) addCustom(typeof c === "object" ? c.name : "", typeof c === "object" ? c.color : c);
-  const def = h("select", h("option", { value: "off" }, "off (kit fitted, lights off)"),
+  const def = h("select", h("option", { value: "on" }, "on (the first colour)"),
+    h("option", { value: "off" }, "off (kit fitted, lights off)"),
     (kit ? kit.colors : d.palette).map((c) => h("option", { value: c.key }, c.label)));
-  def.value = conf.default || "off";
+  def.value = conf.default || "on";
   const bright = h("input", { type: "range", min: 0.2, max: 4, step: 0.1, value: conf.brightness });
   const brightO = h("output", Number(conf.brightness).toFixed(1) + "x");
   bright.oninput = () => { brightO.textContent = Number(bright.value).toFixed(1) + "x"; };
@@ -116,7 +120,7 @@ function neonTab(root, ctx) {
   const liftO = h("output", `${lift.value} cm`);
   lift.oninput = () => { liftO.textContent = `${lift.value} cm`; };
 
-  let preview = kit ? (def.value !== "off" ? def.value : kit.colors[0].key) : null;
+  let preview = kit ? (def.value !== "off" && def.value !== "on" ? def.value : kit.colors[0].key) : null;
   const img = h("img.sheet", { alt: "neon kit from below" });
   const showImg = () => { if (preview) img.src = `/api/projects/${ctx.pid}/neon.png?color=${preview}&v=${ctx.version}`; };
   showImg();
@@ -275,6 +279,9 @@ function seatsCard(ctx) {
   return h("div.card", h("h3", "Seats"),
     h("div.help", `Posture: ${TEMPLATE_LABELS[st.template] || st.template} — ${st.reason}.`),
     h("table.tbl", h("thead", h("tr", h("th", "seat"), h("th", "head room"), h("th", "seat"), h("th", "getting out"))), h("tbody", rows)),
+    h("div.help", st.unmount
+      ? `Getting out: the player stands ${st.exit_distance.toFixed(2)} m from the centre line (Cyberpunk cars: 1.65 m), clear of this wide body.`
+      : `Getting out: Cyberpunk's usual ${Number(st.exit_distance || 1.65).toFixed(2)} m from the centre line has room beside this body.`),
     st.warnings.length ? st.warnings.map((w) => h("div.help.warn", w)) : null,
     h("div.form", { style: { marginTop: "10px" } }, h("label.field", "Posture", sel), h("label.field", "Lower every seat by", h("div.row", lower, lowerO))),
     h("div.row", { style: { marginTop: "8px" } }, h("div.grow"), h("button.btn.small", { onclick: async () => {

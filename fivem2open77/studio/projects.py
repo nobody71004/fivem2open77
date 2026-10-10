@@ -1,12 +1,16 @@
-"""Projects: one FiveM resource being converted, with its profile, previews and builds.
+"""Projects: one FiveM resource being converted, with its settings, previews and builds.
 
     <workspace>/projects/<id>/
-        project.json        name, source, builds
-        profile.json        conversion profile (see fivem2open77/profile.py)
+        project.json        kind (car | map | world), name, source, builds, deployments
+        profile.json        a car's conversion profile (see fivem2open77/profile.py)
+        map.json            a map's conversion options (see studio/maps.py)
+        world.json          a world edit: its resource name, the area it is about, the edit list and
+                            the undo history (see studio/worldops.py; no input/ folder)
         input/<file|dir>    copy of the FiveM resource
         assets/             files the profile points at (door chime...)
         cache/              inspect-<hash>.json, preview-<hash>.glb, render-<hash>-<view>.png, thumb.png
-        builds/<n>/out/     <car>/ and <car>_chime/ Open77 resources of build n
+                            (maps: look-<key>.json, <key>.glb, <key>-<mode>-<view>.png)
+        builds/<n>/out/     car: <car>/ and <car>_chime/; map: <map>/ and f2o77_maps/ of build n
 """
 from __future__ import annotations
 
@@ -52,6 +56,9 @@ class ProjectError(ValueError):
     pass
 
 
+KINDS = ("car", "map", "world")
+
+
 class Project:
     def __init__(self, root: str):
         self.dir = root
@@ -66,7 +73,18 @@ class Project:
 
     @property
     def source(self) -> str:
+        if not self.data.get("source"):
+            raise ProjectError("a world edit has no FiveM source")
         return self.path("input", self.data["source"]["file"])
+
+    @property
+    def kind(self) -> str:
+        return self.data.get("kind") or "car"
+
+    def need(self, kind: str):
+        if self.kind != kind:
+            raise ProjectError(f"this is a {self.kind} project; that works on {kind} projects")
+        return self
 
     def save(self):
         with self.lock:
@@ -109,6 +127,53 @@ class Project:
     def profile_hash(self) -> str:
         return _hash({"profile": self.profile(), "source": self.data["source"].get("hash")})
 
+    # ---- map options
+    def raw_map_options(self) -> dict:
+        try:
+            with open(self.path("map.json"), "r", encoding="utf-8") as f:
+                v = json.load(f)
+                return v if isinstance(v, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def map_options(self) -> dict:
+        from . import maps as maps_mod
+        return maps_mod.normalize_options(self.raw_map_options())
+
+    def set_map_options(self, new: dict) -> dict:
+        from . import maps as maps_mod
+        norm = maps_mod.normalize_options(new)            # raises MapOptionsError
+        with self.lock:
+            tmp = self.path("map.json.tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({k: v for k, v in (new or {}).items()}, f, indent=2)
+            os.replace(tmp, self.path("map.json"))
+            self.data["updated"] = time.time()
+            self.save()
+        return norm
+
+    def patch_map_options(self, patch: dict) -> dict:
+        from . import maps as maps_mod
+        return self.set_map_options(maps_mod.merge(self.raw_map_options(), patch))
+
+    # ---- world edit
+    def world(self) -> dict:
+        try:
+            with open(self.path("world.json"), "r", encoding="utf-8") as f:
+                v = json.load(f)
+                return v if isinstance(v, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def save_world(self, w: dict):
+        with self.lock:
+            tmp = self.path("world.json.tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(w, f, indent=1)
+            os.replace(tmp, self.path("world.json"))
+            self.data["updated"] = time.time()
+            self.save()
+
     # ---- builds
     def next_build(self) -> int:
         with self.lock:
@@ -136,9 +201,9 @@ class Project:
     def summary(self) -> dict:
         d = self.data
         thumb = self.path("cache", "thumb.png")
-        return {"id": self.id, "name": d.get("name"), "created": d.get("created"), "updated": d.get("updated"),
-                "source": d.get("source", {}).get("original"), "models": d.get("models"),
-                "car": d.get("car"), "builds": len(d.get("builds", [])),
+        return {"id": self.id, "kind": self.kind, "name": d.get("name"), "created": d.get("created"),
+                "updated": d.get("updated"), "source": (d.get("source") or {}).get("original"), "models": d.get("models"),
+                "car": d.get("car"), "map": d.get("map"), "world": d.get("world"), "builds": len(d.get("builds", [])),
                 "last_build": self.latest_build(ok_only=False), "thumb": os.path.isfile(thumb),
                 "deployments": d.get("deployments", [])[-5:]}
 
@@ -173,7 +238,10 @@ class ProjectStore:
                 p = self._cache[pid] = Project(d)
             return p
 
-    def create(self, source: str, name: str | None = None, original: str | None = None, move=False) -> Project:
+    def create(self, source: str, name: str | None = None, original: str | None = None, move=False,
+               kind: str = "car") -> Project:
+        if kind not in KINDS:
+            raise ProjectError("kind: car or map")
         if not os.path.exists(source):
             raise ProjectError(f"not found: {source}")
         low = source.lower()
@@ -192,12 +260,34 @@ class ProjectStore:
             shutil.move(source, dst)
         else:
             shutil.copyfile(source, dst)
-        data = {"id": pid, "name": name or os.path.splitext(base)[0], "created": time.time(), "updated": time.time(),
-                "source": {"file": base, "original": original or source, "hash": _file_hash(dst)},
+        data = {"id": pid, "kind": kind, "name": name or os.path.splitext(base)[0], "created": time.time(),
+                "updated": time.time(), "source": {"file": base, "original": original or source, "hash": _file_hash(dst)},
                 "builds": [], "build_counter": 0, "deployments": []}
+        if name:
+            data["custom_name"] = True
         with open(os.path.join(d, "project.json"), "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
-        profile_mod.save({}, os.path.join(d, "profile.json"))
+        if kind == "car":
+            profile_mod.save({}, os.path.join(d, "profile.json"))
+        else:
+            with open(os.path.join(d, "map.json"), "w", encoding="utf-8") as f:
+                json.dump({}, f)
+        return self.get(pid)
+
+    def create_world(self, name: str, display: str, center=None) -> Project:
+        """A world edit project: no FiveM source, an edit list (world.json)."""
+        pid = uuid.uuid4().hex[:12]
+        d = os.path.join(self.root, pid)
+        for sub in ("cache", "builds"):
+            os.makedirs(os.path.join(d, sub))
+        data = {"id": pid, "kind": "world", "name": display, "created": time.time(), "updated": time.time(),
+                "source": None, "builds": [], "build_counter": 0, "deployments": [],
+                "world": {"name": name, "display": display, "edits": 0}}
+        with open(os.path.join(d, "project.json"), "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        w = {"name": name, "display": display, "center": center, "edits": [], "undo": [], "redo": [], "seq": 0}
+        with open(os.path.join(d, "world.json"), "w", encoding="utf-8") as f:
+            json.dump(w, f, indent=1)
         return self.get(pid)
 
     def delete(self, pid: str):

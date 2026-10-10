@@ -1,16 +1,135 @@
 // Settings: tools (game, WolvenKit, .NET, 7-Zip, donor files), AI, build options.
 import { api, waitJob } from "../api.js";
 import { store, refreshState } from "../store.js";
-import { h, clear, toast, logLines } from "../ui.js";
+import { h, clear, put, toast, logLines, pill, fmtAgo, confirmBox, icon } from "../ui.js";
 
 export function settingsPage(root, args) {
   const section = args[0] || "tools";
-  const tabs = h("div.tabs", [["tools", "Tools"], ["ai", "AI"], ["build", "Build"]].map(([k, l]) =>
+  const tabs = h("div.tabs", [["tools", "Tools"], ["ai", "AI"], ["agents", "Agents (MCP)"], ["build", "Build"]].map(([k, l]) =>
     h("a", { href: `#/settings/${k}`, class: k === section ? "active" : "" }, l)));
   const body = h("div");
   root.append(h("div.page-head", h("h1", "Settings")), tabs, body);
-  ({ tools, ai, build }[section] || tools)(body);
-  return {};
+  const ret = ({ tools, ai, agents, build }[section] || tools)(body);
+  return ret || {};
+}
+
+// ------------------------------------------------------------------ agents outside the Studio (MCP)
+const STATE_LABEL = { registered: ["ok", "connected"], outdated: ["warn", "needs update"], not_registered: ["", "not connected"],
+  not_installed: ["", "not installed"], unreadable: ["err", "config unreadable"] };
+
+function copyText(t) {
+  navigator.clipboard.writeText(t).then(() => toast("Copied", "ok"), () => toast("Could not copy", "err"));
+}
+
+function agents(body) {
+  let info = null;
+  const top = h("div.col"), clients = h("div"), conn = h("div"), sessions = h("div");
+  body.append(h("div.col", { style: { gap: "12px" } }, top, clients, conn, sessions));
+
+  async function load() {
+    info = await api.get("/mcp");
+    renderTop(); renderClients(); renderConn(); renderSessions();
+  }
+
+  function renderTop() {
+    const m = info.settings;
+    const on = h("input", { type: "checkbox", checked: m.enabled });
+    const appr = h("select", h("option", { value: "client" }, "the agent's app asks you before each call"),
+      h("option", { value: "studio" }, "installs and restarts also wait for a click here"));
+    appr.value = m.approval;
+    const secs = h("input", { type: "number", min: 10, max: 600, value: m.call_seconds, style: { width: "90px" } });
+    put(clear(top), info.pending.length ? h("div.card", { style: { borderColor: "var(--accent-line)" } },
+      h("h3", icon("alert"), "Waiting for you"),
+      info.pending.map((p) => h("div.approval", { style: { marginBottom: "8px" } },
+        h("div.row", h("b", p.label), h("span.muted", "wants to run"), h("code", p.tool), h("div.grow"),
+          h("button.btn.small", { onclick: () => decide(p.id, false) }, "Decline"),
+          h("button.btn.primary.small", { onclick: () => decide(p.id, true) }, "Allow")),
+        h("pre", JSON.stringify(p.args, null, 1))))) : null,
+    h("div.card", h("h3", icon("agent"), "Agents outside the Studio"),
+      h("p.help", "Claude Code, Claude Desktop, Codex, Cursor or VS Code can drive the Studio through MCP: the same tools as the Studio's own agent ",
+        `(${info.tools} of them: import and build cars and maps, install them on your servers, move maps live, edit Night City). `,
+        "What they do shows up here and in Activity."),
+      h("div.form", { style: { marginTop: "8px" } },
+        h("label.field", "MCP server", h("label.row", on, h("span", "on (agents can connect)"))),
+        h("label.field", "Before an agent changes a server", appr),
+        h("label.field", "A long call answers \u201crunning\u201d after (s)", secs)),
+      h("div.row", { style: { marginTop: "12px" } }, h("div.grow"),
+        h("button.btn.primary", { onclick: async () => {
+          await save({ mcp: { enabled: on.checked, approval: appr.value, call_seconds: Number(secs.value) } });
+          load();
+        } }, "Save"))));
+  }
+
+  async function decide(id, approve) {
+    try { await api.post("/mcp/approve", { id, approve }); } catch (e) { toast(e.message, "err"); }
+    load();
+  }
+
+  function renderClients() {
+    const rows = info.clients.map((c) => {
+      const [cls, label] = STATE_LABEL[c.state] || ["", c.state];
+      const act = async (remove) => {
+        try {
+          const r = await api.post("/mcp/connect", { client: c.client, remove });
+          if (r.manual) {
+            toast(r.note, "");
+            copyText(r.manual);
+          } else toast(`${c.label}: ${remove ? "removed" : "connected"}. ${r.note || ""}`, "ok");
+        } catch (e) { toast(e.message, "err"); }
+        load();
+      };
+      return h("tr",
+        h("td", h("b", c.label), c.store_app ? h("span.faint", { title: "This app is the Microsoft Store build: it cannot start the Studio, keep the Studio open while you use it there" }, " · Microsoft Store") : null),
+        h("td", h("span.pill" + (cls ? "." + cls : ""), label)),
+        h("td.muted", h("code", c.file || "")),
+        h("td", { style: { textAlign: "right", whiteSpace: "nowrap" } },
+          c.state === "registered" ? h("button.btn.ghost.small", { onclick: () => act(true) }, "Remove")
+            : h("button.btn.small" + (c.state === "not_installed" ? "" : ".primary"), { onclick: () => act(false) },
+              c.state === "outdated" ? "Update" : "Connect")));
+    });
+    clear(clients).append(h("div.card.table-card", h("div.panel-head", { style: { margin: 0 } }, h("h3", "Connect an app")),
+      h("table.tbl", h("thead", h("tr", h("th", "App"), h("th", "State"), h("th", "Its settings file"), h("th", ""))), h("tbody", rows)),
+      h("p.help", { style: { padding: "10px 16px 12px", margin: 0 } },
+        "Connect writes an entry named fivem2open77 into the app's own settings (the old file is kept next to it as .f2o77-backup). ",
+        "The app starts the Studio when it is not running; a Microsoft Store build of an app cannot, so keep the Studio open while you use one.")));
+  }
+
+  function renderConn() {
+    const cmd = [info.command.command, ...info.command.args].map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(" ");
+    const tok = h("code", "••••••••••••••••");
+    clear(conn).append(h("div.card", h("h3", "By hand"),
+      h("div.kv",
+        h("span", "command (stdio)"), h("div.row", h("code", cmd), h("button.btn.ghost.small", { onclick: () => copyText(cmd) }, icon("copy"))),
+        h("span", "address (HTTP, this run)"), h("div.row", h("code", info.url), h("button.btn.ghost.small", { onclick: () => copyText(info.url) }, icon("copy"))),
+        h("span", "token"), h("div.row", tok,
+          h("button.btn.ghost.small", { onclick: async () => { const t = await api.get("/mcp/token"); tok.textContent = t.token; } }, icon("eye"), "Show"),
+          h("button.btn.ghost.small", { onclick: async () => { const t = await api.get("/mcp/token"); copyText(t.token); } }, icon("copy")),
+          h("button.btn.ghost.small", { onclick: async () => {
+            if (await confirmBox("New token", "Apps connected with the stdio command keep working (they read the new one). Anything set up with the old token by hand stops working.", "Make a new token", "danger")) {
+              await api.post("/mcp/token/reset"); toast("New token", "ok"); load();
+            }
+          } }, "Reset"))),
+      h("p.help", { style: { marginTop: "10px" } }, "The address changes each time the Studio starts: apps should use the command, which finds the Studio by itself.")));
+  }
+
+  function renderSessions() {
+    clear(sessions).append(h("div.card", h("h3", "Connected agents"),
+      !info.sessions.length ? h("div.faint", "No agent is connected.") :
+        info.sessions.map((s) => h("div", { style: { borderTop: "1px solid var(--line)", padding: "10px 0" } },
+          h("div.row", h("b", s.label), h("span.faint", `${s.client.name} ${s.client.version}`), h("span.faint", `protocol ${s.protocol}`),
+            s.active.length ? pill("running") : null, h("div.grow"), h("span.muted", `seen ${fmtAgo(s.seen)}`),
+            h("button.btn.ghost.small", { title: "End this session", onclick: async () => { await api.del(`/mcp/sessions/${s.id}`); load(); } }, icon("close"))),
+          h("table.tbl", { style: { marginTop: "6px" } }, h("tbody",
+            [...s.active.map((c) => ({ ...c, running: true })), ...s.calls.slice().reverse()].slice(0, 12).map((c) => h("tr",
+              h("td", { style: { width: "28%" } }, h("code", c.tool)),
+              h("td", c.running ? pill("running") : c.error ? h("span.pill.err", "error") : h("span.pill.ok", "ok")),
+              h("td.muted", { style: { maxWidth: "520px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, c.text || JSON.stringify(c.args || {})),
+              h("td.num.faint", c.running ? "" : `${c.seconds}s`)))))))));
+  }
+
+  const off = store.on((ev) => { if (ev.type === "mcp" && ["connected", "result", "approval", "approval_done", "closed"].includes(ev.kind)) load().catch(() => {}); });
+  load().catch((e) => clear(top).append(h("div.card.err", e.message)));
+  return { dispose: off };
 }
 
 async function save(patch) {
@@ -47,6 +166,7 @@ function tools(body) {
       item("wolvenkit", "WolvenKit CLI", t.wolvenkit, "wolvenkit"),
       item("dotnet", ".NET 8 runtime", t.dotnet, "dotnet"),
       item("sevenzip", "7-Zip", t.sevenzip, "sevenzip", true),
+      t.linux_dotnet ? item("linux_dotnet", ".NET 8 for Linux (map baker)", t.linux_dotnet, "linux_dotnet", true) : null,
       h("div.setup-item", h("span.dot" + (donor.ok ? ".ok" : "")), h("b", "Donor files"),
         h("div", h("input", { type: "text", value: p.cache_dir || "", placeholder: donor.path, style: { width: "100%" },
           oninput: (e) => { inputs.cache_dir = e.target; } }), donorList, h("div.help", donor.help)),

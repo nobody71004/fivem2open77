@@ -19,16 +19,19 @@ from . import deploy as deploy_mod
 from . import qa as qa_mod
 from .analysis import Analyzer
 from .jobs import EventBus, JobManager
+from .mapops import MapOps
+from .maplink import LinkPool
 from .projects import ProjectError, ProjectStore
 from .secrets import SecretStore
 from .settings import Settings
 from .tools import Toolbox
+from .worldops import WorldOps
 
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.3.1"
 SECRET_KEYS = re.compile(r"^(anthropic_api_key|server:[a-z0-9_-]{1,32}:(password|passphrase))$")
 
 
-class Studio:
+class Studio(MapOps, WorldOps):
     def __init__(self, workspace: str):
         self.workspace = os.path.abspath(workspace)
         os.makedirs(self.workspace, exist_ok=True)
@@ -43,7 +46,10 @@ class Studio:
         deploy_mod.Remote.known_hosts = os.path.join(self.workspace, "known_hosts")
         self._toolbox = None
         self._tb_lock = threading.Lock()
+        self.links = LinkPool()     # live map manager links (maplink.py)
         self.agents = None          # set by agent.manager
+        from .mcp import McpHub
+        self.mcp = McpHub(self)     # agents outside the Studio (mcp.py)
 
     # ------------------------------------------------------------------ tools
     def toolbox(self, refresh=False) -> Toolbox:
@@ -121,15 +127,22 @@ class Studio:
             raise ValueError("upload not found")
         return os.path.join(d, files[0])
 
-    def create_project(self, *, path: str | None = None, upload_id: str | None = None, name=None):
+    def create_project(self, *, path: str | None = None, upload_id: str | None = None, name=None, kind="car",
+                       display=None, center=None):
+        if kind == "world":
+            return self.create_world_project(name=name, display=display, center=center), None
+        if kind not in ("car", "map"):
+            raise ValueError("kind: car, map or world")
         if upload_id:
             src = self.upload_path(upload_id)
-            p = self.projects.create(src, name=name, original=os.path.basename(src), move=True)
+            p = self.projects.create(src, name=name, original=os.path.basename(src), move=True, kind=kind)
             shutil.rmtree(os.path.dirname(src), ignore_errors=True)
         elif path:
-            p = self.projects.create(path, name=name, original=path)
+            p = self.projects.create(path, name=name, original=path, kind=kind)
         else:
             raise ValueError("path or upload_id")
+        if kind == "map":
+            return p, self.map_look(p.id)
         # look inside at once: models, car name, thumbnail
         job = self.jobs.submit("inspect", f"Inspect {p.data['name']}", lambda job: self._first_look(p, job), project=p.id)
         return p, job
@@ -146,7 +159,7 @@ class Studio:
         return {"car": p.data.get("car"), "models": data.get("models")}
 
     def inspect(self, pid) -> dict:
-        p = self.projects.get(pid)
+        p = self.projects.get(pid).need("car")
         return self.analyzer.session(p).inspect(p.profile())
 
     def handling_preview(self, pid, overrides: dict) -> dict:
@@ -194,6 +207,10 @@ class Studio:
     # ------------------------------------------------------------------ builds
     def build(self, pid, *, auto_qa=True):
         p = self.projects.get(pid)
+        if p.kind == "map":
+            return self.map_build(pid, auto_qa=auto_qa)
+        if p.kind == "world":
+            return self.world_build(pid)
         prof = p.profile()                      # validated now, so a bad profile fails before queuing
 
         def run(job):
@@ -250,6 +267,10 @@ class Studio:
     def build_info(self, pid, n) -> dict:
         p = self.projects.get(pid)
         n = int(n)
+        if p.kind == "map":
+            return self.map_build_info(p, n)
+        if p.kind == "world":
+            return self.world_build_info(p, n)
         b = next((x for x in p.data.get("builds", []) if x.get("n") == n), None)
         if b is None:
             raise ProjectError("no such build")
@@ -267,6 +288,14 @@ class Studio:
 
     def run_qa(self, pid, n) -> dict:
         p = self.projects.get(pid)
+        if p.kind == "map":
+            return self.map_qa(p, n)
+        if p.kind == "world":
+            info = self.world_build_info(p, int(n))
+            ok = bool(info["build"].get("ok"))
+            return {"ok": ok, "checks": [{"id": "build", "ok": ok, "level": "error",
+                                          "message": "the package was written" if ok else info["build"].get("error", "failed")}],
+                    "summary": info["build"].get("summary")}
         out = os.path.join(p.build_dir(int(n)), "out")
         if not os.path.isdir(out):
             raise ProjectError("no such build")
@@ -281,7 +310,10 @@ class Studio:
         out = os.path.join(p.build_dir(int(n)), "out")
         if not os.path.isdir(out):
             raise ProjectError("no such build")
-        z = os.path.join(p.build_dir(int(n)), f"{p.data.get('car', {}).get('name', 'car')}-build{int(n)}-resources")
+        stem = ((p.data.get("map") or {}).get("name", "map") if p.kind == "map" else
+                (p.data.get("world") or {}).get("name", "world") if p.kind == "world" else
+                (p.data.get("car") or {}).get("name", "car"))
+        z = os.path.join(p.build_dir(int(n)), f"{stem}-build{int(n)}-resources")
         if not os.path.isfile(z + ".zip"):
             shutil.make_archive(z, "zip", out)
         return z + ".zip"
@@ -293,8 +325,14 @@ class Studio:
             raise ValueError(f"no server '{sid}'")
         return s
 
-    def deploy(self, pid, sid, *, names=None, mode=None, build=None, include_hub=False):
+    def deploy(self, pid, sid, *, names=None, mode=None, build=None, include_hub=False, keep_placement=True,
+               restart=True, baker=True):
         p = self.projects.get(pid)
+        if p.kind == "map":
+            return self.map_deploy(pid, sid, names=names, build=build, keep_placement=keep_placement, restart=restart,
+                                   baker=baker)
+        if p.kind == "world":
+            return self.world_deploy(pid, sid, names=names, build=build, mode=mode)
         server = self._server(sid)
         mode = mode or self.settings.get()["deploy"]["mode"]
         if mode not in ("stage", "restart", "files"):
@@ -349,6 +387,8 @@ class Studio:
                 finally:
                     shutil.rmtree(tmp, ignore_errors=True)
             title = f"Install the car hub on {server['label']}"
+        elif action == "agent-api":
+            return self.agent_api_job(sid, kw.get("names"), enable=kw.get("enable", True), restart=kw.get("restart", False))
         else:
             raise ValueError("unknown server action")
         return self.jobs.submit(f"server-{action}", title, fn, meta={"server": sid})
@@ -358,3 +398,4 @@ class Studio:
 
     def close(self):
         self.analyzer.close()
+        self.links.close()

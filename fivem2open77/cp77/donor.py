@@ -36,6 +36,8 @@ DONORS = {
         "sound": "v_car_porsche_911_turbo",
         # how the player sits (vehDataPackage.seatingTemplateOverride, see model/seats.py)
         "seating": "sport2",
+        # the seats its OccupantSlots (Vehicle2SeatSetDefault) let a player sit in
+        "occupant_seats": ("seat_front_left", "seat_front_right"),
         # additive animation delta axes (bone-local, positive angle opens) decoded from the donor .anims
         "open_axes": {
             "door_front_left_a": (0, 0, -1),
@@ -117,26 +119,33 @@ class DonorCache:
 
     def ensure(self, name: str):
         prof = DONORS[name]
-        paths = _paths(prof)
+        required = _paths(prof, optional=False)
+        self.ensure_paths(required, [p for p in _paths(prof) if p not in required], what=f"donor '{name}'")
+
+    def ensure_paths(self, required, optional=(), what="template files"):
+        """Make sure the given depot files are cached as JSON, extracting them from the game the
+        first time.  Files in `optional` may be missing from the game without failing."""
+        required, optional = list(required), list(optional)
+        paths = required + [p for p in optional if p not in required]
         missing = [p for p in paths if not os.path.exists(self._json_path(p))]
         if not missing:
             return
-        required_missing = [p for p in _paths(prof, optional=False) if p in missing]
+        required_missing = [p for p in required if p in missing]
         if not self.game_dir:
             if not required_missing:
-                self.log("note: optional donor files not cached and no --game given: " + ", ".join(missing))
+                self.log(f"note: optional {what} files not cached and no --game given: " + ", ".join(missing))
                 return
-            raise RuntimeError("Cyberpunk 2077 install folder is required the first time a donor is used "
-                               "(pass --game <folder containing bin/x64/Cyberpunk2077.exe>)")
+            raise RuntimeError(f"Cyberpunk 2077 install folder is required the first time ({what} files are "
+                               "extracted from your own game): pass --game <folder containing bin/x64/Cyberpunk2077.exe>")
         content = os.path.join(self.game_dir, "archive", "pc", "content")
         ep1 = os.path.join(self.game_dir, "archive", "pc", "ep1")
         archives = [content] + ([ep1] if os.path.isdir(ep1) else [])
-        self.log(f"extracting donor '{name}' from the game archives ({len(missing)} files)...")
+        self.log(f"extracting {what} from the game archives ({len(missing)} files)...")
         bin_root = os.path.join(self.cache_dir, "bin")
         self.wk.unbundle(archives, bin_root, _regex_for(missing))
         still = [p for p in missing if not os.path.exists(self._bin_path(p))]
         if [p for p in still if p in required_missing]:
-            raise RuntimeError("could not extract donor files: " + ", ".join(still))
+            raise RuntimeError(f"could not extract {what} files: " + ", ".join(still))
         missing = [p for p in missing if p not in still]
         tmp_json = os.path.join(self.cache_dir, "json_tmp")
         shutil.rmtree(tmp_json, ignore_errors=True)

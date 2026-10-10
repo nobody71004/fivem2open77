@@ -52,6 +52,15 @@ def deploy_script() -> str:
     return p
 
 
+def remote_script(name: str) -> str:
+    """A script of tools/deploy/remote (map_deploy.sh, baker_install.sh) in the source tree or the app."""
+    for root in filter(None, (app_home(), SOURCE_ROOT)):
+        p = os.path.join(root, "tools", "deploy", "remote", name)
+        if os.path.isfile(p):
+            return p
+    return os.path.join(PACKAGE_DIR, "data", name)
+
+
 def bundled(*parts) -> str | None:
     h = app_home()
     if not h:

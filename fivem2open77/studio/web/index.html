@@ -4,21 +4,45 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>fivem2open77 Studio</title>
+<link rel="preload" href="/fonts/ibm-plex-sans-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/ibm-plex-sans-latin-500-normal.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/css/app.css">
 <link rel="icon" href="/img/icon.svg" type="image/svg+xml">
 </head>
 <body>
 <div id="app">
-  <aside id="nav">
-    <div class="brand"><img src="/img/icon.svg" alt=""><div><b>fivem2open77</b><span>Studio</span></div></div>
-    <a href="#/projects" data-nav="projects"><i class="ic">&#9638;</i>Cars</a>
-    <a href="#/servers" data-nav="servers"><i class="ic">&#9783;</i>Servers</a>
-    <a href="#/jobs" data-nav="jobs"><i class="ic">&#8635;</i>Activity <span id="jobs-badge" class="badge hidden"></span></a>
-    <a href="#/settings" data-nav="settings"><i class="ic">&#9881;</i>Settings <span id="setup-badge" class="badge warn hidden">!</span></a>
+  <header id="titlebar">
+    <a class="brand" href="#/projects" title="fivem2open77 Studio">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 2h11l5 5v11H2z" fill="#e8b931"/><path d="M6.5 14.5v-9h6M6.5 10h4.5" fill="none" stroke="#15130c" stroke-width="2.1" stroke-linecap="square"/></svg>
+    </a>
+    <div class="product"><b>fivem2open77</b><span>Studio</span></div>
+    <nav id="crumbs" aria-label="Where you are"></nav>
     <div class="spacer"></div>
-    <div id="conn" class="conn">connecting...</div>
-  </aside>
+    <button id="cmdk" type="button" title="Search and commands (Ctrl+K)">
+      <svg class="icon sm"><use href="#i-search"/></svg><span class="grow">Go to, or run a command</span><kbd>Ctrl K</kbd>
+    </button>
+    <a id="tb-jobs" href="#/jobs" title="Activity"><svg class="icon sm"><use href="#i-activity"/></svg><span>Idle</span></a>
+  </header>
+  <nav id="rail" aria-label="Sections">
+    <a href="#/projects" data-nav="projects"><svg class="icon"><use href="#i-car"/></svg><span>Cars</span></a>
+    <a href="#/maps" data-nav="maps"><svg class="icon"><use href="#i-map"/></svg><span>Maps</span></a>
+    <a href="#/world" data-nav="world"><svg class="icon"><use href="#i-world"/></svg><span>World</span></a>
+    <a href="#/live" data-nav="live"><svg class="icon"><use href="#i-live"/></svg><span>Live</span></a>
+    <a href="#/servers" data-nav="servers"><svg class="icon"><use href="#i-server"/></svg><span>Servers</span></a>
+    <div class="sep"></div>
+    <a href="#/agent" data-nav="agent"><svg class="icon"><use href="#i-agent"/></svg><span>Agent</span></a>
+    <a href="#/jobs" data-nav="jobs"><svg class="icon"><use href="#i-activity"/></svg><span>Activity</span><span id="jobs-badge" class="badge hidden"></span></a>
+    <div class="spacer"></div>
+    <a href="#/settings" data-nav="settings"><svg class="icon"><use href="#i-settings"/></svg><span>Settings</span><span id="setup-badge" class="badge warn hidden">!</span></a>
+  </nav>
   <main id="main"></main>
+  <footer id="statusbar">
+    <div id="conn" class="conn item">connecting</div>
+    <a id="sb-agents" class="item hidden" href="#/settings/agents" title="An agent is working (MCP)"></a>
+    <div id="sb-job" class="item grow"></div>
+    <a id="sb-tools" class="item" href="#/settings"></a>
+    <div id="sb-version" class="item"></div>
+  </footer>
 </div>
 <div id="toasts"></div>
 <div id="modal-root"></div>

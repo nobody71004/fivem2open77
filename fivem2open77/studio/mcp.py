@@ -1,0 +1,650 @@
+"""The Studio as an MCP server: agents outside the Studio (Claude Code, Claude Desktop, Codex, Cursor,
+VS Code...) drive the same tools as the Studio's own AI agent.
+
+Transport: MCP Streamable HTTP on the Studio's own port, ``POST /mcp`` (JSON answers; no
+server-initiated stream: ``GET /mcp`` is 405), ``Authorization: Bearer <token>`` where the token is
+the workspace's ``mcp/token`` file (made once; only this Windows user can read it).  Clients that
+only speak stdio run the bridge, ``python -m fivem2open77 mcp`` (bridge.py): it finds the running
+Studio (the workspace's ``run/studio.json``), starts it when it is not running, and relays.
+
+A call that starts a long job (a build, a deploy) answers when the job is done, or after
+``mcp.call_seconds`` with ``{"status": "running", "job": ...}``: the job goes on and ``wait_job``
+follows it (no client times out waiting).  The agent's own app asks the user before a call (MCP
+tool annotations say which calls change things and which touch servers); with ``mcp.approval`` =
+``studio`` deploys also wait for a click in the Studio.
+"""
+from __future__ import annotations
+
+import base64
+import copy
+import json
+import os
+import re
+import secrets as pysecrets
+import threading
+import time
+import uuid
+from collections import deque
+
+from .agent.tools import CAR_TOOLS, Context, StillRunning, Tool, ToolError, _obj, registry, text
+
+PROTOCOLS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")     # the initialize-handshake era
+NOT_OFFERED = ("ask_user", "finish")          # MCP clients talk to their user themselves
+SESSION_TTL = 24 * 3600
+
+INSTRUCTIONS = """fivem2open77 Studio: converts FiveM (GTA V) cars and maps/MLOs into Open77 (Cyberpunk 2077
+multiplayer) resources, builds them with WolvenKit, installs them on the user's Open77 servers over SSH, moves
+converted maps on running servers, and edits Night City itself (delete / move / replace / add objects and ground
+pieces, their collision following). Read the resource f2o77://guide first; call studio_status to see what is set
+up. Project tools work on the session's project: import_resource, new_world_edit and open_project switch it (or
+pass "project" to any project tool). Long calls answer {"status": "running", "job"}: call wait_job until done."""
+
+
+def token_path(workspace: str) -> str:
+    return os.path.join(workspace, "mcp", "token")
+
+
+def ensure_token(workspace: str) -> str:
+    """The workspace's MCP token, made on first use (owner-only file)."""
+    p = token_path(workspace)
+    try:
+        with open(p, encoding="utf-8") as f:
+            t = f.read().strip()
+            if len(t) >= 32:
+                return t
+    except OSError:
+        pass
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    t = pysecrets.token_urlsafe(32)
+    tmp = p + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(t)
+    os.replace(tmp, p)
+    return t
+
+
+def read_token(workspace: str) -> str | None:
+    """The workspace's MCP token if the Studio made one (the bridge only reads it: a bridge started by a
+    Microsoft Store app writes into that app's own copy of AppData, where the Studio would not see it)."""
+    try:
+        with open(token_path(workspace), encoding="utf-8") as f:
+            t = f.read().strip()
+    except OSError:
+        return None
+    return t if len(t) >= 32 else None
+
+
+def reset_token(workspace: str) -> str:
+    try:
+        os.remove(token_path(workspace))
+    except OSError:
+        pass
+    return ensure_token(workspace)
+
+
+# ----------------------------------------------------------------------------- guide, prompts
+def guide() -> str:
+    from .agent.manager import SYSTEM_CAR, SYSTEM_MAP, SYSTEM_WORLD
+    return "\n".join([
+        "# fivem2open77 Studio for agents",
+        "",
+        INSTRUCTIONS,
+        "",
+        "## Rules",
+        "- Act only through the tools and say only what a tool showed you.",
+        "- Ask the user before deploying to a server they did not name, before restarting a server or applying a",
+        "  map move (it restarts the server for everyone), and before anything that cannot be undone.",
+        "- Never restart a server with players online unless the user says so.",
+        "- The Studio holds server credentials and tokens: never ask the user for passwords or keys.",
+        "- Make the smallest change that fixes a problem; if a tool fails twice the same way, stop and explain.",
+        "- Coordinates: Night City metres, x east, y north, z up; yaw degrees counter-clockwise from above",
+        "  (0 faces north, 90 west).",
+        "",
+        "## Cars" + SYSTEM_CAR.replace("ask_user", "ask the user").replace("finish with", "End with"),
+        "",
+        "## Maps" + SYSTEM_MAP.replace("ask_user", "ask the user").replace("finish with", "End with"),
+        "",
+        "## World edits" + SYSTEM_WORLD.replace("finish with", "End with"),
+        "",
+        "## Long calls",
+        "build_car, build_map, build_world_edit and the deploys can take minutes. When a call answers",
+        '{"status": "running", "job": "<id>"}, the work goes on in the Studio: call wait_job with that id',
+        "(each call waits up to a minute) until it says done or failed. The user sees every job in the Studio.",
+    ])
+
+
+PROMPTS = {
+    "convert_car": {
+        "description": "Convert a FiveM car end to end (and install it on a server when one is named).",
+        "arguments": [{"name": "path", "description": "the FiveM car: folder or .zip/.rar/.7z on this PC", "required": True},
+                      {"name": "server", "description": "server id to install it on (optional)", "required": False}],
+        "text": ("Read f2o77://guide. Then: import_resource path={path} kind=car; inspect_car; render_car (parts) and fix "
+                 "wrongly assigned bones; check display_name and the engine sound; build_car and read its QA."
+                 "{server_step} Tell me the spawn command and what to check in game."),
+    },
+    "convert_map": {
+        "description": "Convert a FiveM map / MLO, bake it at a spot and install it.",
+        "arguments": [{"name": "path", "description": "the FiveM map: folder or archive on this PC", "required": True},
+                      {"name": "place", "description": "x,y,z,yaw in Night City (optional)", "required": False},
+                      {"name": "server", "description": "server id to install it on (optional)", "required": False}],
+        "text": ("Read f2o77://guide. Then: import_resource path={path} kind=map; get_map and read the warnings; render_map "
+                 "iso and plan; {place_step}build_map and map_build_report (collision coverage, QA).{server_step} Tell me "
+                 "where the map stands and what to check in game."),
+    },
+    "move_map": {
+        "description": "Move a converted map on a running server.",
+        "arguments": [{"name": "map", "description": "the map's resource id", "required": True},
+                      {"name": "where", "description": "where it should go (coordinates, or near a player)", "required": True},
+                      {"name": "server", "description": "server id", "required": False}],
+        "text": ("Read f2o77://guide. live_maps{server_arg}; set the new spot of {map} ({where}) with set_map_spot; "
+                 "show me the new spot and ask me before apply_map_move (it restarts the server); then wait_map_move "
+                 "until applied and live_map to confirm."),
+    },
+    "edit_world": {
+        "description": "Change Night City at a place: delete, move, replace or add objects (collision follows).",
+        "arguments": [{"name": "location", "description": "x,y[,z] or a description", "required": True},
+                      {"name": "goal", "description": "what to change", "required": True}],
+        "text": ("Read f2o77://guide (World edits). world_status; new_world_edit if none is open; world_find around "
+                 "{location}; then: {goal}. Use dry_run for clearing an area and show me the list first. Read the notes "
+                 "of each answer. build_world_edit at the end; deploy only when I say so."),
+    },
+}
+
+
+def prompt_messages(name: str, args: dict) -> list:
+    p = PROMPTS[name]
+    a = {k: str(v) for k, v in (args or {}).items() if v not in (None, "")}
+    for arg in p["arguments"]:
+        if arg["required"] and not a.get(arg["name"]):
+            raise ValueError(f"argument {arg['name']} is required")
+    server = a.get("server")
+    t = p["text"].format(
+        path=a.get("path", ""), map=a.get("map", ""), where=a.get("where", ""), location=a.get("location", ""),
+        goal=a.get("goal", ""),
+        place_step=(f"set_map_options place {a['place']}; " if a.get("place") else ""),
+        server_step=(f" Then deploy it to server {server} (stage mode) and check server_status." if server else
+                     " Do not install it anywhere yet."),
+        server_arg=(f" server={server}" if server else ""))
+    return [{"role": "user", "content": {"type": "text", "text": t}}]
+
+
+# ----------------------------------------------------------------------------- sessions
+class McpSession:
+    """What the Studio knows of one connected agent: its app, its open project, its calls."""
+
+    def __init__(self, hub, client: dict, protocol: str):
+        self.hub = hub
+        self.id = uuid.uuid4().hex
+        self.client = {"name": str((client or {}).get("name") or "agent")[:80],
+                       "version": str((client or {}).get("version") or "")[:40]}
+        self.protocol = protocol
+        self.created = self.seen = time.time()
+        self.project = None
+        self.calls = deque(maxlen=200)
+        self.active = {}               # request id -> call
+        self.jobs = deque(maxlen=50)
+        self.lock = threading.Lock()
+
+    @property
+    def label(self) -> str:
+        n = self.client["name"].lower()
+        for key, nice in (("claude-code", "Claude Code"), ("claude", "Claude"), ("codex", "Codex"), ("cursor", "Cursor"),
+                          ("vscode", "VS Code"), ("visual studio code", "VS Code"), ("windsurf", "Windsurf"),
+                          ("f2o77-test", "Test client")):
+            if key in n:
+                return nice
+        return self.client["name"]
+
+    def view(self) -> dict:
+        with self.lock:
+            return {"id": self.id[:12], "client": self.client, "label": self.label, "protocol": self.protocol,
+                    "created": self.created, "seen": self.seen, "project": self.project,
+                    "active": [dict(c) for c in self.active.values()], "calls": list(self.calls)[-40:]}
+
+    def publish(self, kind, **data):
+        self.hub.studio.bus.publish({"type": "mcp", "kind": kind, "session": self.id[:12], "label": self.label, **data})
+
+
+class _CallSession:
+    """The agent-tool session interface (tools.Context) for one call of an MCP session."""
+
+    vision = True
+
+    def __init__(self, s: McpSession, soft_timeout):
+        self.s = s
+        self.stopping = False
+        self.soft_timeout = soft_timeout
+        self.last_change_error = None
+        self.finish_warned = False
+
+    @property
+    def project(self):
+        return self.s.project
+
+    def switch_project(self, pid):
+        self.s.hub.studio.projects.get(pid)
+        self.s.project = pid
+        self.s.publish("project", project=pid)
+
+    def note(self, t):
+        self.s.publish("note", text=str(t)[:500])
+
+    def attach_job(self, job):
+        self.s.jobs.append(job.id)
+        self.s.publish("job", job=job.id, title=job.title)
+
+    def ask_user(self, question):
+        raise ToolError("ask the user in your own conversation (this tool is for the Studio's built-in agent)")
+
+    def finish(self, summary):
+        pass
+
+
+# ----------------------------------------------------------------------------- the hub
+class McpHub:
+    def __init__(self, studio):
+        self.studio = studio
+        self.sessions = {}
+        self.pending = {}               # approval id -> {...}
+        self.lock = threading.Lock()
+        self.tools = {n: t for n, t in registry().items() if n not in NOT_OFFERED}
+        for t in self._own_tools():
+            self.tools[t.name] = t
+        from .agent.maptools import MAP_TOOLS
+        from .agent.worldtools import WORLD_TOOLS
+        self.project_tools = set(CAR_TOOLS) | set(MAP_TOOLS) | (set(WORLD_TOOLS) - {"new_world_edit", "world_prepare", "world_find",
+                                                                                 "world_object"})
+        self.last_activity = 0.0
+        try:
+            ensure_token(studio.workspace)      # made by the Studio at its start, before any bridge reads it
+        except OSError:
+            pass
+
+    # ---- token
+    @property
+    def token(self) -> str:
+        return ensure_token(self.studio.workspace)
+
+    def settings(self) -> dict:
+        return self.studio.settings.get()["mcp"]
+
+    # ---- tools of the MCP server itself
+    def _own_tools(self):
+        def t_status(ctx, args):
+            st = self.studio
+            tools = st.tools_status()
+            jobs = [j for j in st.jobs.list() if j["state"] in ("queued", "running")]
+            return text({"studio": {"version": _app_version(), "workspace": st.workspace, "ready": tools.get("ready")},
+                         "tools": {k: {"ok": v.get("ok"), "path": v.get("path")} for k, v in tools.items()
+                                   if k in ("wolvenkit", "dotnet", "game", "donor", "linux_dotnet", "sevenzip")},
+                         "servers": [{k: s[k] for k in ("id", "label", "host", "names")} for s in st.settings.get()["servers"]],
+                         "projects": [{k: p.get(k) for k in ("id", "kind", "name")} for p in st.projects.list()[:30]],
+                         "open_project": ctx.session.project, "running_jobs": jobs[:10],
+                         "world_index": st.world_index_status()})
+
+        def t_wait(ctx, args):
+            jid = str(args.get("job") or "")
+            job = self.studio.jobs.get(jid)
+            if job is None:
+                raise ToolError(f"no job {jid} (it may be from before the Studio restarted)")
+            limit = max(1.0, min(55.0, float(args.get("seconds", 50))))
+            t0 = time.time()
+            while job.state in ("queued", "running") and time.time() - t0 < limit:
+                if ctx.session.stopping:
+                    break
+                time.sleep(0.25)
+            out = {"job": job.id, "title": job.title, "status": {"done": "done", "failed": "failed",
+                                                                  "cancelled": "cancelled"}.get(job.state, "running"),
+                   "progress": job.progress, "step": job.meta.get("step"),
+                   "last_lines": [x["text"] for x in job.lines[-12:]]}
+            if job.state == "done":
+                out["result"] = _compact(job.result)
+            elif job.state == "failed":
+                out["error"] = job.error
+                return [{"type": "text", "text": json.dumps(out, indent=1, default=str)}], True
+            return text(out)
+
+        def t_cancel(ctx, args):
+            job = self.studio.jobs.get(str(args.get("job") or ""))
+            if job is None:
+                raise ToolError("no such job")
+            return text({"cancelled": job.cancel()})
+
+        return [
+            Tool("studio_status", "What is set up in the Studio: WolvenKit, the game folder, the donor files, servers, "
+                 "projects, running jobs, the world index. Call it first.", _obj(), "read", t_status),
+            Tool("wait_job", "Wait for a Studio job a call answered as running (up to `seconds`, default 50, each call); "
+                 "its result when done.", _obj({"job": {"type": "string"}, "seconds": {"type": "number"}}, ["job"]),
+                 "read", t_wait),
+            Tool("cancel_job", "Stop a running Studio job (a build, a deploy...).", _obj({"job": {"type": "string"}}, ["job"]),
+                 "change", t_cancel),
+        ]
+
+    def tool_list(self) -> list:
+        from .agent.maptools import LIVE_TOOLS
+        server_tools = set(LIVE_TOOLS) | {"list_servers", "server_status", "read_server_log", "restart_server",
+                                          "deploy_car", "deploy_map", "deploy_world_edit", "remove_world_edit",
+                                          "enable_agent_api"}
+        out = []
+        for name in sorted(self.tools):
+            t = self.tools[name]
+            schema = copy.deepcopy(t.schema)
+            if name in self.project_tools:
+                schema.setdefault("properties", {})["project"] = {
+                    "type": "string", "description": "project id or name (default: the session's open project)"}
+            out.append({
+                "name": name, "title": name.replace("_", " ").capitalize(), "description": t.description,
+                "inputSchema": schema,
+                "annotations": {"title": name.replace("_", " ").capitalize(), "readOnlyHint": t.risk == "read",
+                                "destructiveHint": t.risk == "deploy", "idempotentHint": t.risk == "read",
+                                "openWorldHint": name in server_tools},
+            })
+        return out
+
+    # ---- sessions
+    def _session(self, sid) -> McpSession | None:
+        now = time.time()
+        with self.lock:
+            for k in [k for k, s in self.sessions.items() if now - s.seen > SESSION_TTL]:
+                del self.sessions[k]
+            s = self.sessions.get(sid or "")
+        if s:
+            s.seen = now
+        return s
+
+    def sessions_view(self) -> list:
+        with self.lock:
+            items = list(self.sessions.values())
+        return [s.view() for s in sorted(items, key=lambda s: -s.seen)]
+
+    def end(self, sid) -> bool:
+        with self.lock:
+            s = self.sessions.pop(sid or "", None)
+        if s:
+            s.publish("closed")
+        return s is not None
+
+    # ---- JSON-RPC
+    def handle(self, msg, sid=None):
+        """One JSON-RPC message (or a batch) -> (answer or None, the session id to send back)."""
+        if isinstance(msg, list):
+            answers = []
+            for m in msg:
+                a, sid = self.handle(m, sid)
+                if a is not None:
+                    answers.append(a)
+            return (answers or None), sid
+        if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0":
+            return _err(None, -32600, "invalid request"), sid
+        mid = msg.get("id")
+        method = msg.get("method")
+        params = msg.get("params") or {}
+        if not isinstance(method, str):
+            return (None if mid is None else _err(mid, -32600, "invalid request")), sid
+        self.last_activity = time.time()
+        if method == "initialize":
+            want = params.get("protocolVersion")
+            proto = want if want in PROTOCOLS else PROTOCOLS[0]
+            s = McpSession(self, params.get("clientInfo") or {}, proto)
+            with self.lock:
+                self.sessions[s.id] = s
+            s.publish("connected", client=s.client)
+            return _ok(mid, {"protocolVersion": proto,
+                             "capabilities": {"tools": {"listChanged": False}, "resources": {"listChanged": False, "subscribe": False},
+                                              "prompts": {"listChanged": False}, "logging": {}},
+                             "serverInfo": {"name": "fivem2open77-studio", "title": "fivem2open77 Studio", "version": _app_version()},
+                             "instructions": INSTRUCTIONS}), s.id
+        if method == "ping":
+            return _ok(mid, {}), sid
+        if method == "server/discover":
+            # the stateless 2026-07-28 era is not spoken here: clients fall back to initialize
+            return (None if mid is None else _err(mid, -32601, "server/discover is not supported: use initialize")), sid
+        s = self._session(sid)
+        if s is None:
+            return (None if mid is None else _err(mid, -32001, "unknown or expired session: initialize again")), sid
+        if mid is None:                                     # notifications
+            if method == "notifications/cancelled":
+                rid = params.get("requestId")
+                with s.lock:
+                    call = s.active.get(json.dumps(rid))
+                if call is not None:
+                    call["_ctx"].stopping = True
+            return None, sid
+        try:
+            if method == "tools/list":
+                return _ok(mid, {"tools": self.tool_list()}), sid
+            if method == "tools/call":
+                return _ok(mid, self.call(s, mid, params.get("name"), params.get("arguments") or {})), sid
+            if method == "resources/list":
+                return _ok(mid, {"resources": self.resource_list()}), sid
+            if method == "resources/templates/list":
+                return _ok(mid, {"resourceTemplates": [
+                    {"uriTemplate": "f2o77://project/{id}", "name": "project", "title": "A Studio project",
+                     "description": "A project's state as JSON (car profile, map options and look, world edits...)",
+                     "mimeType": "application/json"}]}), sid
+            if method == "resources/read":
+                return _ok(mid, {"contents": [self.read_resource(str(params.get("uri") or ""))]}), sid
+            if method == "prompts/list":
+                return _ok(mid, {"prompts": [{"name": k, "title": k.replace("_", " ").capitalize(),
+                                              "description": v["description"], "arguments": v["arguments"]}
+                                             for k, v in PROMPTS.items()]}), sid
+            if method == "prompts/get":
+                name = params.get("name")
+                if name not in PROMPTS:
+                    return _err(mid, -32602, f"unknown prompt {name}"), sid
+                return _ok(mid, {"description": PROMPTS[name]["description"],
+                                 "messages": prompt_messages(name, params.get("arguments") or {})}), sid
+            if method == "logging/setLevel":
+                return _ok(mid, {}), sid
+            if method == "completion/complete":
+                return _ok(mid, {"completion": {"values": [], "total": 0, "hasMore": False}}), sid
+            return _err(mid, -32601, f"unknown method {method}"), sid
+        except KeyError as e:
+            return _err(mid, -32602, str(e).strip("'\"")), sid
+        except ValueError as e:
+            return _err(mid, -32602, str(e)), sid
+
+    # ---- resources
+    def resource_list(self) -> list:
+        out = [{"uri": "f2o77://guide", "name": "guide", "title": "How to drive the Studio",
+                "description": "Workflows for cars, maps and world edits; the rules; coordinates", "mimeType": "text/markdown"},
+               {"uri": "f2o77://projects", "name": "projects", "title": "Projects", "mimeType": "application/json",
+                "description": "The Studio's cars, maps and world edits"},
+               {"uri": "f2o77://servers", "name": "servers", "title": "Servers", "mimeType": "application/json",
+                "description": "The Open77 servers set up in the Studio (no secrets)"}]
+        for p in self.studio.projects.list()[:50]:
+            out.append({"uri": f"f2o77://project/{p['id']}", "name": f"project-{p['id']}", "title": f"{p.get('kind')}: {p.get('name')}",
+                        "mimeType": "application/json"})
+        return out
+
+    def read_resource(self, uri: str) -> dict:
+        if uri == "f2o77://guide":
+            return {"uri": uri, "mimeType": "text/markdown", "text": guide()}
+        if uri == "f2o77://projects":
+            return {"uri": uri, "mimeType": "application/json", "text": json.dumps(self.studio.projects.list(), default=str)}
+        if uri == "f2o77://servers":
+            srv = [{k: s[k] for k in ("id", "label", "host", "port", "user", "names", "servers_root")}
+                   for s in self.studio.settings.get()["servers"]]
+            return {"uri": uri, "mimeType": "application/json", "text": json.dumps(srv)}
+        m = re.match(r"^f2o77://project/([a-f0-9]{12})$", uri)
+        if m:
+            p = self.studio.projects.get(m.group(1))
+            if p.kind == "world":
+                d = self.studio.world_state(p.id)
+            elif p.kind == "map":
+                d = self.studio.map_state(p.id)
+                d["look"] = bool(d.get("look"))
+            else:
+                d = dict(p.summary(), profile=p.raw_profile(), builds=p.data.get("builds", [])[-5:])
+            return {"uri": uri, "mimeType": "application/json", "text": json.dumps(d, default=str)}
+        raise KeyError(f"unknown resource {uri}")
+
+    # ---- calls
+    def _resolve_project(self, want: str) -> str:
+        want = str(want).strip()
+        for p in self.studio.projects.list():
+            names = {p["id"], (p.get("name") or "").lower(), ((p.get("map") or {}).get("name") or "").lower(),
+                     ((p.get("car") or {}).get("name") or "").lower(), ((p.get("world") or {}).get("name") or "").lower()}
+            if want in names or want.lower() in names:
+                return p["id"]
+        raise ToolError(f"no project '{want}' (list_projects)")
+
+    def call(self, s: McpSession, rid, name, args) -> dict:
+        tool = self.tools.get(name)
+        if tool is None:
+            raise KeyError(f"unknown tool {name}")
+        if not isinstance(args, dict):
+            raise ValueError("arguments must be an object")
+        args = dict(args)
+        cs = _CallSession(s, self.settings()["call_seconds"])
+        rec = {"id": uuid.uuid4().hex[:10], "tool": name, "args": _short(args), "started": time.time(), "_ctx": cs}
+        key = json.dumps(rid)
+        with s.lock:
+            s.active[key] = rec
+        s.publish("call", call={k: v for k, v in rec.items() if k != "_ctx"})
+        is_error = False
+        try:
+            want = args.pop("project", None) if name in self.project_tools else None
+            if want:
+                cs.switch_project(self._resolve_project(want))
+            if tool.risk == "deploy" and self.settings()["approval"] == "studio":
+                ok, note = self._approve(s, name, args, cs)
+                if not ok:
+                    raise ToolError("the user declined this in the Studio" + (f": {note}" if note else ""))
+            out = tool.fn(Context(self.studio, cs), args)
+            if isinstance(out, tuple):
+                out, is_error = out
+            content = _content(out)
+        except StillRunning as e:
+            j = e.job
+            content = [{"type": "text", "text": json.dumps({
+                "status": "running", "job": j.id, "title": j.title, "progress": j.progress, "step": j.meta.get("step"),
+                "next": "call wait_job with this job id; the work goes on in the Studio"}, indent=1)}]
+        except ToolError as e:
+            content, is_error = [{"type": "text", "text": f"error: {e}"}], True
+        except Exception as e:  # noqa: BLE001 - reported to the agent
+            content, is_error = [{"type": "text", "text": f"error: {e.__class__.__name__}: {e}"}], True
+        finally:
+            with s.lock:
+                s.active.pop(key, None)
+        rec.pop("_ctx", None)
+        rec.update(seconds=round(time.time() - rec["started"], 2), error=is_error,
+                   text=" ".join(c.get("text", "") for c in content if c["type"] == "text")[:600],
+                   images=sum(1 for c in content if c["type"] == "image"))
+        with s.lock:
+            s.calls.append(rec)
+        s.publish("result", call=rec)
+        self.last_activity = time.time()
+        return {"content": content, "isError": is_error}
+
+    # ---- approvals in the Studio (mcp.approval = studio)
+    def _approve(self, s, name, args, cs, timeout=900):
+        aid = uuid.uuid4().hex[:12]
+        ev = threading.Event()
+        item = {"id": aid, "session": s.id[:12], "label": s.label, "tool": name, "args": _short(args), "time": time.time(),
+                "event": ev, "approved": False, "note": None}
+        with self.lock:
+            self.pending[aid] = item
+        s.publish("approval", approval={k: v for k, v in item.items() if k != "event"})
+        t0 = time.time()
+        try:
+            while not ev.wait(0.5):
+                if cs.stopping or time.time() - t0 > timeout:
+                    return False, "no answer"
+        finally:
+            with self.lock:
+                self.pending.pop(aid, None)
+            s.publish("approval_done", approval={"id": aid, "approved": item["approved"]})
+        return item["approved"], item["note"]
+
+    def decide(self, aid, approve, note=None) -> bool:
+        with self.lock:
+            item = self.pending.get(aid)
+        if not item:
+            raise ValueError("nothing is waiting for that approval")
+        item["approved"], item["note"] = bool(approve), (str(note)[:500] if note else None)
+        item["event"].set()
+        return True
+
+    def pending_view(self) -> list:
+        with self.lock:
+            return [{k: v for k, v in x.items() if k != "event"} for x in self.pending.values()]
+
+    # ---- HTTP (Streamable HTTP, JSON answers)
+    def http(self, method: str, headers, body: bytes) -> tuple:
+        """-> (status, headers, body bytes)."""
+        if not self.settings()["enabled"]:
+            return 503, {}, b'{"error": "MCP is turned off in the Studio (Settings > Agents)"}'
+        auth = headers.get("Authorization") or ""
+        tok = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
+        if not tok or not pysecrets.compare_digest(tok, self.token):
+            return 401, {"WWW-Authenticate": 'Bearer realm="fivem2open77-studio"'}, b'{"error": "bad or missing token"}'
+        sid = headers.get("Mcp-Session-Id")
+        if method == "GET":
+            return 405, {"Allow": "POST, DELETE"}, b""
+        if method == "DELETE":
+            return (200 if self.end(sid) else 404), {}, b""
+        if method != "POST":
+            return 405, {"Allow": "POST, DELETE"}, b""
+        try:
+            msg = json.loads(body or b"null")
+        except ValueError:
+            return 400, {}, json.dumps(_err(None, -32700, "parse error")).encode()
+        first = msg[0] if isinstance(msg, list) and msg else msg
+        is_init = isinstance(first, dict) and first.get("method") == "initialize"
+        if sid and not is_init and self._session(sid) is None:
+            return 404, {}, json.dumps(_err(first.get("id") if isinstance(first, dict) else None, -32001,
+                                            "unknown or expired session: initialize again")).encode()
+        answer, new_sid = self.handle(msg, None if is_init else sid)
+        h = {}
+        if new_sid:
+            h["Mcp-Session-Id"] = new_sid
+        if answer is None:
+            return 202, h, b""
+        return 200, h, json.dumps(answer, default=str).encode("utf-8")
+
+
+# ----------------------------------------------------------------------------- helpers
+def _ok(mid, result):
+    return {"jsonrpc": "2.0", "id": mid, "result": result}
+
+
+def _err(mid, code, message):
+    return {"jsonrpc": "2.0", "id": mid, "error": {"code": code, "message": message}}
+
+
+def _content(blocks) -> list:
+    out = []
+    for b in blocks or []:
+        if b.get("type") == "image":
+            data = b.get("png") or b.get("data")
+            out.append({"type": "image", "data": data if isinstance(data, str) else base64.b64encode(data).decode(),
+                        "mimeType": b.get("mimeType") or "image/png"})
+        else:
+            out.append({"type": "text", "text": str(b.get("text", ""))})
+    return out or [{"type": "text", "text": "(no output)"}]
+
+
+def _short(v, depth=0):
+    if isinstance(v, dict):
+        return {k: _short(x, depth + 1) for k, x in list(v.items())[:20]}
+    if isinstance(v, list):
+        return [_short(x, depth + 1) for x in v[:10]] + (["..."] if len(v) > 10 else [])
+    if isinstance(v, str) and len(v) > 200:
+        return v[:200] + "..."
+    return v
+
+
+def _compact(result, limit=6000):
+    s = json.dumps(result, default=str)
+    if len(s) <= limit:
+        return result
+    if isinstance(result, dict):
+        return {k: (v if len(json.dumps(v, default=str)) < 800 else "(long: see the Studio)") for k, v in result.items()}
+    return s[:limit] + "..."
+
+
+def _app_version() -> str:
+    from .app import APP_VERSION
+    return APP_VERSION

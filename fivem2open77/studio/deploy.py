@@ -5,12 +5,16 @@ chime, and optionally the f2o77_hub resource and the ArchiveXL/TweakXL loader re
 copied to the server host over SSH together with server_deploy.sh, which does the installing on
 the host (backups, resources.load, --check-config, then restart / stage for the hub / nothing).
 
+Maps go the same way with map_deploy.sh (tools/deploy/remote) in front: the map and the map
+manager f2o77_maps, and the map baker (a .NET runtime + the WolvenKit CLI + the baker's Python
+package, ~/.f2o77/baker on the host) that rebuilds a map when it is moved in game.  The baker's
+runtime is uploaded only when the host does not have that version yet.
+
 SSH goes through paramiko (bundled with the app): key files, passwords and the SSH agent work
 the same on Windows and Linux.  Passwords and key passphrases come from the secret store.
 """
 from __future__ import annotations
 
-import io
 import json
 import os
 import posixpath
@@ -20,7 +24,7 @@ import tarfile
 import time
 import uuid
 
-from .paths import deploy_script, hub_dir
+from .paths import deploy_script, hub_dir, remote_script
 
 REMOTE_DIR = "/tmp/f2o77-studio"
 
@@ -81,6 +85,8 @@ class Remote:
             import paramiko
         except ImportError as e:   # pragma: no cover - bundled with the app
             raise DeployError("SSH support (paramiko) is not installed") from e
+        import logging
+        logging.getLogger("paramiko").setLevel(logging.CRITICAL)     # failures are reported by the Studio
         self.paramiko = paramiko
         self.server = server
         self.log = log
@@ -261,6 +267,132 @@ def deploy(server: dict, secrets, bundle: str, *, mode="stage", names=None, log=
     if code != 0:
         raise DeployError("server_deploy.sh failed: " + " | ".join(l for l in lines[-6:] if l.strip()))
     return outcome
+
+
+RESULT_RX = re.compile(r"^MAP-DEPLOY-RESULT (\{.*\})\s*$")
+
+
+def remote_toolkit_version(r: "Remote") -> str | None:
+    """The map baker toolkit (runtime + WolvenKit) installed for the SSH user, if any."""
+    _, out = r.run('head -1 "${BAKER_HOME:-$HOME/.f2o77/baker}/VERSION" 2>/dev/null || true', timeout=30, check=False)
+    v = (out or "").strip().splitlines()
+    v = v[-1].strip() if v else ""
+    return v if re.match(r"^[A-Za-z0-9._-]{3,80}$", v) else None
+
+
+def deploy_map(server: dict, secrets, bundle: str, *, names=None, toolkit=None, keep_placement=True,
+               restart=True, log=print) -> dict:
+    """Install a map bundle (mlo.deploy.bundle: the map + f2o77_maps) on each server folder with
+    map_deploy.sh.  toolkit(host_version) -> a toolkit .tgz path for that host (the light one when
+    the host already has the runtime) or None to leave the baker as it is."""
+    names = _names(server, names)
+    rdir = f"{REMOTE_DIR}-{uuid.uuid4().hex[:8]}"
+    results, lines = [], []
+
+    def on_line(x):
+        lines.append(x)
+        log(x)
+
+    with Remote(server, secrets, log=log) as r:
+        log(f"connected to {server['user']}@{server['host']}")
+        have = remote_toolkit_version(r)
+        log(f"map baker on the host: {have or 'not installed'}")
+        r.mkdir_private(rdir)
+        try:
+            for name, src in (("run.sh", remote_script("map_deploy.sh")), ("server_deploy.sh", deploy_script()),
+                              ("baker_install.sh", remote_script("baker_install.sh"))):
+                if not os.path.isfile(src):
+                    raise DeployError(f"{os.path.basename(src)} is missing from the app")
+                r.put(src, posixpath.join(rdir, name))
+            tk = toolkit(have) if toolkit else None
+            sent = {"host_had": have, "uploaded": bool(tk), "bytes": os.path.getsize(tk) if tk else 0}
+            last = [0.0]
+
+            def prog(done, total):
+                if total and time.time() - last[0] > 2:
+                    last[0] = time.time()
+                    log(f"  {done * 100 // total}%")
+
+            if tk:
+                log(f"uploading the map baker ({os.path.getsize(tk) / 1048576:.1f} MiB)")
+                r.put(tk, posixpath.join(rdir, "baker-toolkit.tgz"), progress=prog)
+            log(f"uploading {os.path.basename(bundle)} ({os.path.getsize(bundle) / 1048576:.1f} MiB)")
+            r.put(bundle, posixpath.join(rdir, "bundle.tgz"), progress=prog)
+            for name in names:
+                log(f"== {name}")
+                start = len(lines)
+                env = (f"{_env(server)} MAP_DEPLOY_KEEP_PLACEMENT={1 if keep_placement else 0} "
+                       f"MAP_DEPLOY_RESTART={1 if restart else 0}")
+                code, _ = r.run(f"cd {shlex.quote(rdir)} && {env} bash run.sh {shlex.quote(name)}", timeout=1800,
+                                on_line=on_line, check=False)
+                summary = None
+                for x in reversed(lines[start:]):
+                    m = RESULT_RX.match(x.strip())
+                    if m:
+                        try:
+                            summary = json.loads(m.group(1))
+                        except ValueError:
+                            summary = None
+                        break
+                results.append({"name": name, "code": code, "result": summary,
+                                "lines": [x for x in lines[start:] if not RESULT_RX.match(x.strip())][-250:]})
+        finally:
+            r.run(f"rm -rf {shlex.quote(rdir)}", check=False)
+    failed = [x for x in results if x["code"] not in (0, 5, 6)]
+    out = {"names": names, "servers": results, "toolkit": sent}
+    if failed:
+        raise DeployError("map_deploy.sh failed on " + ", ".join(f"{x['name']} (exit {x['code']})" for x in failed) + ": "
+                          + " | ".join(l for l in failed[0]["lines"][-6:] if l.strip()))
+    return out
+
+
+def agent_api(server: dict, secrets, names=None, enable=True, restart=False, log=print) -> int:
+    """Turn the map manager's agent API (the server's httpHandlers listener) on or off."""
+    names = _names(server, names)
+    with Remote(server, secrets, log=log) as r:
+        rdir = f"{REMOTE_DIR}-{uuid.uuid4().hex[:8]}"
+        r.mkdir_private(rdir)
+        try:
+            script = _upload_script(r, rdir)
+            code, _ = r.run(f"{_env(server)} bash {shlex.quote(script)} agent-api - " + " ".join(shlex.quote(n) for n in names)
+                            + ("" if enable else " --off") + (" --restart" if restart else ""), timeout=600, on_line=log,
+                            check=False)
+        finally:
+            r.run(f"rm -rf {shlex.quote(rdir)}", check=False)
+    return code
+
+
+def remove_world(server: dict, secrets, resource: str, names=None, restart=False, log=print) -> dict:
+    """Take a world edit off each server folder (``server_deploy.sh remove``): its resource folder and
+    its resources.load entry, backed up and the config checked like a deploy.  restart: now when nobody
+    is online; otherwise players keep the edit until the server's next start."""
+    names = _names(server, names)
+    if not re.match(r"^[a-z][a-z0-9_]{2,47}$", resource or ""):
+        raise DeployError(f"'{resource}' is not the name of a world edit")
+    lines = []
+
+    def on_line(s):
+        lines.append(s)
+        log(s)
+
+    with Remote(server, secrets, log=log) as r:
+        log(f"connected to {server['user']}@{server['host']}")
+        rdir = f"{REMOTE_DIR}-{uuid.uuid4().hex[:8]}"
+        r.mkdir_private(rdir)
+        try:
+            script = _upload_script(r, rdir)
+            code, _ = r.run(f"{_env(server)} bash {shlex.quote(script)} remove {shlex.quote(resource)} "
+                            + " ".join(shlex.quote(n) for n in names) + (" --restart" if restart else ""),
+                            timeout=600, on_line=on_line, check=False)
+        finally:
+            r.run(f"rm -rf {shlex.quote(rdir)}", check=False)
+    out = {"code": code, "names": names, "resource": resource, "restart": bool(restart), "lines": lines[-200:],
+           "removed": [l.strip() for l in lines if f": removed {resource} " in l],
+           "pending": [l.strip() for l in lines if "PENDING restart" in l],
+           "started": [l.strip() for l in lines if re.search(r"^\s+\S+: (started|NOT started)$", l)]}
+    if code != 0:
+        raise DeployError("server_deploy.sh remove failed: " + " | ".join(l for l in lines[-6:] if l.strip()))
+    return out
 
 
 def status(server: dict, secrets, names=None, log=None) -> list:

@@ -418,6 +418,8 @@ def plan_neon(vehicle, neon_bones: dict, conf: dict) -> NeonKit | None:
 
     colors = resolve_colors(conf.get("colors", "gta"))
     default = color_key(conf.get("default") or "off")
+    if default == "on":                 # the kit lit in its first colour (White for the GTA palette)
+        default = colors[0][0]
     if default != "off" and not any(c[0] == default for c in colors):
         warnings.append(f"neon: default colour '{conf.get('default')}' is not in the kit; the car starts without neon")
         default = "off"

@@ -20,7 +20,7 @@
 -- colours) when it starts and when this hub starts ("f2o77:hubReady").  /neon <colour> switches
 -- the driver's car to that colour's appearance with Open77.vehicles.setAppearance, which every
 -- player sees; /neon off goes back to the car's own appearance.
-local HUB_VERSION = "1.1.1"
+local HUB_VERSION = "1.1.2"
 local CHECK_MS = 5000
 local DEFAULTS = {
     restart_when_empty = true, empty_grace_seconds = 60, daily_restart_utc = "",
@@ -326,6 +326,63 @@ local function neonCommand(source, args)
 end
 if not pcall(RegisterCommand, "neon", neonCommand, false) then log("/neon is taken; use /f2o77neon") end
 pcall(RegisterCommand, "f2o77neon", neonCommand, false)
+
+-- ------------------------------------------------------------------ in a converted car
+-- A driver who gets into a car with a neon kit is told about /neon, once per car and session.
+--
+-- A player the game will not let out never gets out: when it finds no room beside the car it
+-- slides the player to another seat to try there, and back, seat after seat.  Three seats taken
+-- inside LOOP_SECONDS in one converted car is that loop, not a person: the hub takes the player
+-- out (the converter now gives wide cars the room, this is the safety net).
+local LOOP_SECONDS = 8
+local tipped = {}         -- playerId -> { [record] = true }
+local seatTimes = {}      -- playerId -> { vehicle = id, times = { monotonic seconds } }
+local rescued = {}        -- playerId -> monotonic seconds of the last forced exit
+
+local function exitLoop(id, vid, car)
+    local t = Open77.time.monotonic()
+    local s = seatTimes[id]
+    if not s or s.vehicle ~= vid then
+        s = { vehicle = vid, times = {} }
+        seatTimes[id] = s
+    end
+    local keep = {}
+    for _, x in ipairs(s.times) do if t - x <= LOOP_SECONDS then keep[#keep + 1] = x end end
+    keep[#keep + 1] = t
+    s.times = keep
+    if #keep < 3 or (rescued[id] and t - rescued[id] < 30) then return end
+    rescued[id] = t
+    s.times = {}
+    local ok, reason = Open77.vehicles.forcePlayerOutOfVehicle(id, vid)
+    log("exit loop in %s: player %d %s", tostring(car.record), id,
+        ok and "taken out of the car" or ("could not be taken out (" .. tostring(reason) .. ")"))
+    if ok then
+        Open77.chat.send(id, "[cars] The game found no room to let you out and kept moving you between seats, "
+                             .. "so you were taken out of the car.")
+    end
+end
+
+AddEventHandler("onPlayerEnteredVehicle", function(playerId, vehicleId, seat)
+    local id, vid = tonumber(playerId), tonumber(vehicleId)
+    if not id or not vid then return end
+    local car = Open77.vehicles.get(vid)
+    local info = car and cars[car.record]
+    if not info then return end                      -- not a converted car
+    exitLoop(id, vid, car)
+    if seat == "seat_front_left" and kitOf(car.record) then
+        tipped[id] = tipped[id] or {}
+        if not tipped[id][car.record] then
+            tipped[id][car.record] = true
+            Open77.chat.send(id, ("[neon] %s has a neon kit: /neon <colour> (/neon list), /neon next, /neon off.")
+                :format(tostring(info.display or car.record)))
+        end
+    end
+end)
+
+AddEventHandler("onPlayerDisconnected", function(playerId)
+    local id = tonumber(playerId)
+    if id then tipped[id], seatTimes[id], rescued[id] = nil, nil, nil end
+end)
 
 -- ------------------------------------------------------------------ players
 AddEventHandler("onPlayerReady", function(playerId)

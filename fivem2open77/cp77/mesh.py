@@ -9,6 +9,10 @@ import numpy as np
 from .glb import GlbWriter, submesh_node_name
 from .wkjson import cname
 
+# render chunks (submeshes) one mesh may have: the game keeps the count in 8 bits, and a mesh with
+# more crashes it as soon as it streams in (271 wrapped to 15).  Builders stay well under it.
+MAX_RENDER_CHUNKS = 255
+
 
 def ordered_submeshes(part):
     """Submeshes in the order they become render chunks: by LOD then material."""
@@ -34,6 +38,9 @@ def write_glb(part, path, transform=None):
 
 def template_doc(donor_mesh_doc, materials: dict, chunk_materials: list, shadow=False) -> dict:
     """materials: ordered {name: CMaterialInstance json}; chunk_materials: material name per chunk."""
+    if len(chunk_materials) > MAX_RENDER_CHUNKS:
+        raise ValueError(f"{len(chunk_materials)} render chunks in one mesh: the game takes at most "
+                         f"{MAX_RENDER_CHUNKS} (more crashes it when the mesh streams in)")
     doc = copy.deepcopy(donor_mesh_doc)
     r = doc["Data"]["RootChunk"]
     names = list(materials)

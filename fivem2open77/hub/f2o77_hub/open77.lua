@@ -9,7 +9,7 @@
 -- Car scripts (Lua) reload live and never wait for this.  Settings: data/config.json (see
 -- server/main.lua).
 resource "f2o77_hub"
-version "1.1.1"
+version "1.1.2"
 auto_start true
 
 server_script "server/main.lua"

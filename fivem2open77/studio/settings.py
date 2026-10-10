@@ -16,7 +16,7 @@ AUTONOMY = ("ask", "auto_safe", "full")
 
 DEFAULTS = {
     "schema": SCHEMA,
-    "paths": {"game_dir": "", "wolvenkit": "", "dotnet": "", "sevenzip": "", "cache_dir": ""},
+    "paths": {"game_dir": "", "wolvenkit": "", "dotnet": "", "sevenzip": "", "cache_dir": "", "linux_dotnet": ""},
     "ai": {
         "provider": "anthropic",             # anthropic | ollama | none
         "anthropic_model": "",               # empty: picked from the models the key can use
@@ -30,6 +30,12 @@ DEFAULTS = {
     "servers": [],
     "deploy": {"default_server": "", "mode": "stage", "allow_unsecured": False},
     "build": {"keep_work": False},
+    # agents outside the Studio (Claude Code, Claude Desktop, Codex, Cursor...) over MCP
+    "mcp": {
+        "enabled": True,
+        "approval": "client",                # client: the agent's app asks; studio: deploys wait for a click here
+        "call_seconds": 45,                  # a call that runs longer answers "running" (wait_job follows it)
+    },
 }
 
 SERVER_DEFAULTS = {
@@ -136,6 +142,14 @@ def validate(data: dict) -> dict:
     d["servers"] = servers
     if d["deploy"]["mode"] not in ("stage", "restart", "files"):
         errors.append("deploy.mode: stage, restart or files")
+    m = d["mcp"]
+    m["enabled"] = bool(m.get("enabled"))
+    if m.get("approval") not in ("client", "studio"):
+        errors.append("mcp.approval: client or studio")
+    try:
+        m["call_seconds"] = max(10, min(600, int(m.get("call_seconds"))))
+    except (TypeError, ValueError):
+        errors.append("mcp.call_seconds: a number")
     if errors:
         raise SettingsError(errors)
     return d
@@ -158,7 +172,7 @@ class Settings:
         except SettingsError:
             # keep what is valid: fall back section by section
             out = copy.deepcopy(DEFAULTS)
-            for k in ("paths", "ai", "deploy", "build"):
+            for k in ("paths", "ai", "deploy", "build", "mcp"):
                 try:
                     out = validate(_merge(out, {k: raw.get(k, {})}))
                 except SettingsError:

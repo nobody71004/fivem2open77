@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Map manager</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<!-- The surface stays visible and transparent; the panel and the editor HUD draw only while the
+     body carries "open" / "editing". -->
+<aside id="panel" aria-label="Map manager">
+  <header class="head">
+    <div class="eyebrow">// fivem2open77</div>
+    <h1>Map manager</h1>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="maps" role="tab">Maps</button>
+      <button class="tab" data-tab="keys" role="tab">Keys</button>
+    </nav>
+    <button id="close" class="icon" title="Close (Esc)">&#x2715;</button>
+  </header>
+
+  <section id="tab-maps" class="tabpane">
+    <div id="maplist" class="maplist" role="listbox" aria-label="Maps"></div>
+    <div id="empty" class="empty hidden">No converted maps are installed on this server.</div>
+
+    <div id="detail" class="detail hidden">
+      <div class="titlebar">
+        <h2 id="d-title">-</h2>
+        <span id="d-chip" class="chip">-</span>
+      </div>
+      <div id="d-readonly" class="note hidden">You can look but not move this map (ACL right <code id="d-right"></code>).</div>
+      <div id="d-stale" class="note warn hidden">
+        <p><b>Your game still has this map's old files.</b> It started before the server installed the moved map,
+          so you do not see it at its new spot. Restarting the game through the Open77 launcher installs the new files.</p>
+        <div class="row"><button class="primary" data-op="relaunch">Restart the game</button>
+          <span id="d-stale-manual" class="hint inline-hint hidden">Quit the game and start it again from the Open77 launcher.</span></div>
+      </div>
+
+      <div class="card">
+        <div class="cardhead"><span>Where it is now</span><button class="link" data-op="goto_running">Go there</button></div>
+        <div class="coords" id="d-running">-</div>
+        <div id="d-previous-row" class="row edit-only hidden">
+          <span class="hint inline-hint">Before the last move: <span id="d-previous" class="coords small">-</span></span>
+          <button class="ghost" data-op="revert" title="Make the previous spot the new spot (then Apply)">Back to it</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="cardhead"><span>New spot</span>
+          <label class="toggle"><input type="checkbox" id="d-preview"><span>Show wireframe</span></label>
+        </div>
+        <div class="coords" id="d-pending">none saved</div>
+        <div class="edit-only">
+          <div class="grid4">
+            <label>X<input id="f-x" type="number" step="0.1"></label>
+            <label>Y<input id="f-y" type="number" step="0.1"></label>
+            <label>Z<input id="f-z" type="number" step="0.1"></label>
+            <label>Yaw<input id="f-yaw" type="number" step="1"></label>
+          </div>
+          <div class="row">
+            <button class="primary" data-op="edit" title="Close this panel and move the wireframe with the editor keys">Move in the world</button>
+            <button data-op="save_fields">Save these numbers</button>
+          </div>
+          <div class="row">
+            <button data-op="here" title="The new spot is where you stand, facing where you face">Bring here</button>
+            <button data-op="drop" title="Put the new spot on the ground under it">Drop to ground</button>
+            <button data-op="goto_pending">Go to new spot</button>
+            <button class="ghost" data-op="discard">Discard</button>
+          </div>
+          <div class="nudge">
+            <span class="lbl">Nudge (map frame)</span>
+            <button data-nudge="fwd">&#x25B2; 1 m</button>
+            <button data-nudge="back">&#x25BC; 1 m</button>
+            <button data-nudge="left">&#x25C0; 1 m</button>
+            <button data-nudge="right">&#x25B6; 1 m</button>
+            <button data-nudge="up">+0.25 z</button>
+            <button data-nudge="down">-0.25 z</button>
+            <button data-nudge="ccw">&#x21BA; 5&deg;</button>
+            <button data-nudge="cw">&#x21BB; 5&deg;</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="cardhead"><span>Saved positions</span></div>
+        <div id="d-presets" class="presets"></div>
+        <div class="row edit-only">
+          <input id="f-preset" type="text" maxlength="48" placeholder="Name this position">
+          <button data-op="preset_save">Save current</button>
+        </div>
+      </div>
+
+      <div class="card apply">
+        <div class="cardhead"><span>Apply</span><span id="d-applystate" class="state">-</span></div>
+        <p class="hint">The map is baked into the world: Apply rebuilds it for the new spot on the server, the server
+          restarts, and each player starts the game again from the Open77 launcher once the server is back (the launcher
+          installs the moved map's files before the game starts).</p>
+        <div id="d-applymsg" class="msg"></div>
+        <div id="d-next" class="next hidden"></div>
+        <div class="row edit-only">
+          <label class="inline">Restart in
+            <select id="f-countdown"></select>
+          </label>
+          <button class="primary" data-op="apply_now">Apply now</button>
+          <button data-op="apply_empty" title="Build now, restart once nobody is online">Apply when empty</button>
+          <button class="ghost" data-op="cancel" title="Stop the move: the map stays where it is">Cancel</button>
+        </div>
+        <div id="d-baker" class="baker"></div>
+      </div>
+
+      <details class="card history">
+        <summary>History</summary>
+        <ol id="d-history"></ol>
+      </details>
+    </div>
+  </section>
+
+  <section id="tab-keys" class="tabpane hidden">
+    <p class="hint">Every key is also in Pause &gt; Settings &gt; KEY BINDINGS. Click a key, then press the new one.</p>
+    <div id="keys" class="keys"></div>
+    <div id="keys-error" class="msg error hidden"></div>
+  </section>
+
+  <footer class="foot"><span id="foot-key">F9</span> opens this panel &middot; Esc closes it</footer>
+</aside>
+
+<div id="hud" class="hud" aria-live="polite">
+  <div class="eyebrow">// moving <span id="h-map">-</span></div>
+  <div class="coords big" id="h-coords">-</div>
+  <div class="hudline"><span id="h-speed" class="chip">normal</span><span id="h-aim" class="chip hidden">following crosshair</span>
+    <span id="h-delta" class="delta"></span></div>
+  <div class="hudline"><span id="h-wire" class="chip">wireframe</span><span id="h-fit" class="fit"></span></div>
+  <div class="legend" id="h-legend">
+    <span class="item"><i style="--c:#FFE14D"></i><span id="lg-outline">ground outline</span></span>
+    <span class="item"><i style="--c:#4DFF6A"></i>gates</span>
+    <span class="item"><i style="--c:#19D5E0"></i>buildings</span>
+    <span class="item"><i style="--c:#FFB000"></i>walls</span>
+    <span class="item"><i style="--c:#B0B0B0"></i>where it is now</span>
+    <span class="item"><i style="--c:#FF7AE0"></i>saved spot</span>
+    <span class="item"><i style="--c:#FF3B30"></i>floats</span>
+    <span class="item"><i style="--c:#3B82FF"></i>buried</span>
+  </div>
+  <div class="keys-hint" id="h-keys"></div>
+  <div class="preview-note">This is a preview: saving keeps the new spot, and <b>Apply</b> in the map manager moves the
+    map at the next server restart (then start the game again from the Open77 launcher).</div>
+</div>
+
+<div id="agent" class="agent hidden" aria-live="polite">
+  <span class="dot"></span><span id="a-by" class="by">Agent</span><span id="a-text" class="text"></span>
+  <span id="a-view" class="view hidden"></span>
+</div>
+
+<div id="toasts" class="toasts"></div>
+<script src="app.js"></script>
+</body>
+</html>

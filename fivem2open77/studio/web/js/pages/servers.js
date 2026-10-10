@@ -2,6 +2,7 @@
 import { api, waitJob } from "../api.js";
 import { store, refreshState } from "../store.js";
 import { h, clear, toast, modal, confirmBox, logLines, pill } from "../ui.js";
+import { serverMapCard } from "./map.js";
 
 const EMPTY = { id: "", label: "", host: "", port: 22, user: "root", auth: "key", key_file: "", servers_root: "/opt",
   names: [], systemctl: "systemctl", allow_unsecured: false };
@@ -54,11 +55,44 @@ export function serversPage(root) {
           h("span", "connection"), h("span.ok", "ok"), h("span", "system"), h("span", r.system), h("span", "python3"), h("span", r.python3 ? "yes" : h("b.err", "missing")),
           ...Object.entries(r.servers).flatMap(([n, ok]) => [h("span", n), ok ? h("span.ok", "found") : h("span.err", "no server.jsonc")]))));
       } else if (what === "status") {
-        clear(box).append(...j.result.map((x) => h("div.card", { style: { marginTop: "12px" } },
-          h("div.row", h("b", x.name), h("span.muted", x.version || ""), pill(x.unit === "active" ? "running" : x.unit), h("span.muted", `${(x.online || []).length} online`)),
-          h("div.help", (x.cars || []).length ? "cars: " + x.cars.map((c) => `${c.display || c.name} ${c.version}`).join(", ") : "no converted cars"),
-          h("div.help", x.hub ? `car hub ${x.hub.version}` + (x.hub.status ? `: ${(x.hub.status.waiting || []).length} waiting` : " (starts at the next restart)") : "car hub not installed"))));
+        clear(box).append(...j.result.map((x) => h("div", { style: { marginTop: "12px" } },
+          serverMapCard(x, s.id, null, { onChange: () => action(s, "status", box), extra: h("div", { style: { marginBottom: "8px" } },
+            h("div.help", (x.cars || []).length ? "cars: " + x.cars.map((c) => `${c.display || c.name} ${c.version}`).join(", ") : "no converted cars"),
+            h("div.help", x.hub ? `car hub ${x.hub.version}` + (x.hub.status ? `: ${(x.hub.status.waiting || []).length} waiting` : " (starts at the next restart)") : "car hub not installed"),
+            worldRows(s, x, box)) }))));
       }
+    } catch (e) { log.append(h("div.e", e.message)); }
+  }
+
+  // the world edits a server folder has, each with a way to take it off again
+  function worldRows(s, x, box) {
+    const worlds = x.worlds || [];
+    if (!worlds.length) return h("div.help", "no world edits");
+    return h("div.srv-worlds", worlds.map((w) => {
+      const sm = w.summary || {};
+      return h("div.row.srv-world",
+        h("span", "world edit"), h("b", w.display || w.name), h("code.muted", `${w.name} ${w.version || ""}`),
+        h("span.faint", `${sm.deleted || 0} removed · ${(sm.changed || 0) + (sm.elementsMoved || 0)} moved · ${sm.added || 0} added`),
+        w.in_load ? null : h("span.pill.warn", "not in resources.load"), h("div.grow"),
+        h("button.btn.ghost.small.danger", { title: "Take this world edit off the server", onclick: () => removeWorld(s, x, w, box) }, "Remove…"));
+    }));
+  }
+
+  async function removeWorld(s, x, w, box) {
+    const restart = h("input", { type: "checkbox" });
+    const r = await modal(`Remove ${w.display || w.name}`, h("div.col",
+      h("p", `Take the world edit ${w.name} off ${x.name}? Its resource and its resources.load entry go; the server keeps a backup.`),
+      h("label.row", restart, h("span", "restart the server now if nobody is online (otherwise players keep the change until its next start)"))),
+    [{ label: "Cancel", value: null }, { label: "Remove", value: "ok", kind: "danger" }]);
+    if (r !== "ok") return;
+    const log = h("div.log", { style: { maxHeight: "220px" } });
+    clear(box).append(h("div", { style: { marginTop: "12px" } }, log));
+    try {
+      const job = await api.post(`/servers/${s.id}/world/remove`, { resource: w.name, names: [x.name], restart: restart.checked });
+      const j = await waitJob(job.id, (jj) => { clear(log).append(...logLines(jj.allLines)); });
+      if (j.state !== "done") { log.append(h("div.e", j.error || j.state)); return; }
+      toast(`${w.name} removed from ${x.name}` + ((j.result.pending || []).length ? ": players keep it until the next restart" : ""), "ok");
+      action(s, "status", box);
     } catch (e) { log.append(h("div.e", e.message)); }
   }
 
@@ -128,7 +162,7 @@ export function serversPage(root) {
   root.append(h("div.page-head", h("h1", "Servers"), h("div.grow"),
     h("button.btn", { onclick: () => importInput.click() }, "Import..."), importInput,
     h("button.btn.primary", { onclick: () => edit(null) }, "Add server")),
-    h("p.muted", "The Studio installs cars over SSH with the same steps as the command line: backup, resources.load, a config check, then a restart now or through the car hub."),
+    h("p.muted", "The Studio installs cars and maps over SSH with the same steps as the command line: backup, resources.load, a config check, then a restart now, through the car hub, or when nobody is online. Maps bring the map manager and its baker; the manager's agent API (loopback only) is reached through the same SSH connection."),
     list, out);
   load().catch((e) => toast(e.message, "err"));
   return {};

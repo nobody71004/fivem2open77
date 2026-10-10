@@ -314,8 +314,9 @@ def test_agent_loop_approvals_and_questions():
         prov = ScriptedProvider([
             [{"type": "text", "text": "Looking at the sounds."}, {"type": "tool_call", "name": "list_engine_sounds", "input": {"kind": "electric"}}],
             [{"type": "tool_call", "name": "ask_user", "input": {"question": "Which server?"}}],
-            # in "ask" mode a change needs approval; this one gets declined (no project -> would fail anyway)
-            [{"type": "tool_call", "name": "update_profile", "input": {"patch": {"display_name": "X"}}}],
+            # in "ask" mode a change needs approval; this one gets declined
+            # (a tool a no-project session offers: the kind gate would reject update_profile first)
+            [{"type": "tool_call", "name": "new_world_edit", "input": {"resource": "test_edit"}}],
             [{"type": "tool_call", "name": "finish", "input": {"summary": "nothing to do"}}],
         ])
         mgr = AgentManager(studio, provider_factory=lambda name=None: prov)

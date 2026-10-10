@@ -34,7 +34,7 @@ from .model.build import SIDE_NAMES, VehicleBuilder
 
 MOD_ROOT = "fivem2open77"
 TEXTURE_PACKAGE_BUDGET = 40 * 1024 * 1024   # raw xbm bytes per texture archive (zip stays < 64 MiB)
-VERSION = "1.1.1"
+VERSION = "1.3.1"
 
 
 def _sanitize(name: str) -> str:
@@ -61,7 +61,8 @@ def build_ir(src, prof: dict, log=print):
     if prof["paint"]["primary"] != "auto":
         v.paint_colors = (profile_mod.parse_color(prof["paint"]["primary"]), v.paint_colors[1])
     donor = choose_donor(v, None if prof["donor"] == "auto" else prof["donor"])
-    v.seat_fit = seats_mod.fit_seats(v, prof.get("seats") or {}, DONORS[donor].get("seating", "sport2"))
+    v.seat_fit = seats_mod.fit_seats(v, prof.get("seats") or {}, DONORS[donor].get("seating", "sport2"),
+                                     DONORS[donor].get("occupant_seats"))
     neon_conf = prof.get("neon") or {}
     if neon_conf.get("enabled", True):
         kit = neon_mod.plan_neon(v, v.markers, neon_conf)
@@ -278,6 +279,8 @@ class Converter:
             sf = v.seat_fit
             low = [f"{k} {100 * i['lowered']:.0f} cm lower" for k, i in sf.seats.items() if i.get("lowered")]
             log(f"[{name}] seating: {sf.template} ({sf.template_reason})" + (f"; {', '.join(low)}" if low else ""))
+            for note in sf.notes:
+                log(f"[{name}] getting out: {note}")
         if v.neon is not None:
             log(f"[{name}] neon kit: {', '.join(f'{t.side} {t.length:.2f} m' for t in v.neon.tubes)}; "
                 f"{len(v.neon.colors)} colours, starts {v.neon.default}")

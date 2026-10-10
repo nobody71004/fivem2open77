@@ -1,6 +1,7 @@
 """Fast looks at a project without a full build: the FiveM resource stays extracted in memory
 while a project is open, and the car model (IR) is rebuilt only when the profile changes.
-Inspect data, preview models and renders are cached on disk per profile."""
+Inspect data, preview models and renders are cached on disk per profile and converter version
+(a new Studio must not show what the old one worked out)."""
 from __future__ import annotations
 
 import collections
@@ -11,14 +12,15 @@ import threading
 
 from ..gta.resource import scan_resource
 from ..inspect import summarize
-from ..pipeline import build_ir
+from ..pipeline import VERSION, build_ir
 from ..preview import export_glb
 from ..render import VIEWS, _triangles, render as render_view
 from ..imaging import png_bytes
 
 
 def _key(prof: dict, source_hash: str) -> str:
-    return hashlib.sha256(json.dumps({"p": prof, "s": source_hash}, sort_keys=True, default=str).encode()).hexdigest()[:16]
+    return hashlib.sha256(json.dumps({"p": prof, "s": source_hash, "v": VERSION}, sort_keys=True,
+                                     default=str).encode()).hexdigest()[:16]
 
 
 class Session:
@@ -83,7 +85,7 @@ class Session:
             src, v = self.vehicle(prof)
             data = summarize(src, v, prof)
             data["models"] = [s.model for s in self.scanned().vehicles]
-            data["resource_warnings"] = list(self.scanned().warnings)
+            data["resource_warnings"] = self.scanned().warnings_for(src)
             tmp = path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(data, f)

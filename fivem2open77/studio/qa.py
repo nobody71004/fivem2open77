@@ -167,3 +167,106 @@ def check_build(out_dir: str) -> dict:
     return {"ok": ok, "car": name, "record": record, "checks": c.items,
             "summary": {"packages": sizes, "warnings": warnings, "resources": report.get("resources"),
                         "sound": report.get("sound"), "version": man["version"]}}
+
+
+# ----------------------------------------------------------------------------- maps
+MAP_COVERAGE_WARN = {"walkable": 95.0, "walls": 90.0, "floors": 95.0}
+
+
+def check_map_build(out_dir: str) -> dict:
+    """out_dir holds <map>/ and f2o77_maps/ (one map build)."""
+    c = _Checks()
+    maps = [d for d in sorted(os.listdir(out_dir)) if os.path.isfile(os.path.join(out_dir, d, "layout.json"))] \
+        if os.path.isdir(out_dir) else []
+    if not c.add("map", bool(maps), "build has a map resource with layout.json"):
+        return {"ok": False, "checks": c.items}
+    name = maps[0]
+    root = os.path.join(out_dir, name)
+    try:
+        with open(os.path.join(root, "conversion-report.json"), "r", encoding="utf-8") as f:
+            report = json.load(f)
+    except (OSError, ValueError):
+        report = {}
+    c.add("report", bool(report), "conversion-report.json reads")
+    c.add("name", NAME_RX.match(name), f"resource id '{name}' follows Open77's rules")
+    man = parse_manifest(open(os.path.join(root, "open77.lua"), encoding="utf-8").read())
+    c.add("manifest.resource", man["resource"] == name, f"open77.lua declares resource \"{name}\"")
+    c.add("manifest.server_only", not man["client_scripts"], "the map resource is server-only (the manager has the client side)")
+    c.add("manifest.archivexl", any(d.split()[0] == "archivexl" for d in man["dependencies"]), "depends on archivexl")
+    for s in man["server_scripts"]:
+        c.add(f"script:{s}", os.path.isfile(os.path.join(root, s)), f"{s} exists")
+    c.add("packages", 0 < len(man["preload_mod"]) <= package.MAX_PACKAGES,
+          f"{len(man['preload_mod'])} package(s) (Open77 allows {package.MAX_PACKAGES})")
+    sizes, prefix = {}, f"fivem2open77_map_{name}"
+    for rel in man["preload_mod"]:
+        zpath = os.path.join(root, rel)
+        if not c.add(f"zip:{rel}", os.path.isfile(zpath), f"{rel} exists"):
+            continue
+        sizes[rel] = os.path.getsize(zpath)
+        c.add(f"zip:{rel}:size", sizes[rel] <= package.MAX_PACKAGE, f"{rel} is {sizes[rel] / 1048576:.1f} MiB (limit 64 MiB)")
+        try:
+            with zipfile.ZipFile(zpath) as z:
+                bad = z.testzip()
+                c.add(f"zip:{rel}:crc", bad is None, f"{rel} reads back intact" + (f" (bad entry {bad})" if bad else ""))
+                archives = [n for n in z.namelist() if n.startswith("archive/pc/mod/") and n.endswith(".archive")]
+                c.add(f"zip:{rel}:archive", bool(archives), f"{rel} carries an archive under archive/pc/mod/")
+                for a in archives:
+                    base = a.split("/")[-1]
+                    c.add(f"archive:{base}:name", base.startswith(prefix), f"{base} is named after the map")
+                    try:
+                        n = len(archive_hashes(z.read(a)))
+                        c.add(f"archive:{base}", n > 0, f"{base}: valid index, {n} files")
+                    except ValueError as e:
+                        c.add(f"archive:{base}", False, f"{base}: {e}")
+        except zipfile.BadZipFile as e:
+            c.add(f"zip:{rel}:crc", False, f"{rel}: {e}")
+    baked = None
+    if os.path.isfile(os.path.join(root, "baked.json")):
+        try:
+            with open(os.path.join(root, "baked.json"), "r", encoding="utf-8") as f:
+                baked = json.load(f)
+        except (OSError, ValueError):
+            baked = None
+    if baked:
+        c.add("baked.package", f"dist/{baked.get('package')}" in man["preload_mod"],
+              f"the sector package {baked.get('package')} is declared")
+        a = baked.get("anchor") or {}
+        c.add("baked.anchor", all(isinstance(a.get(k), (int, float)) for k in ("x", "y", "z", "yaw")),
+              "baked at " + ", ".join(f"{k} {a.get(k)}" for k in ("x", "y", "z", "yaw")))
+        c.add("doors.json", baked.get("doors") in (None, 0) or os.path.isfile(os.path.join(root, "doors.json")),
+              "doors.json lists the Door devices")
+    else:
+        c.add("baked", False, "not baked yet: players see nothing until it is placed (set a spot in Options, or place "
+              "it in game with F9 and Apply)", level="warn")
+    for f in ("ghost.txt", "layout.json"):
+        c.add(f"file:{f}", os.path.isfile(os.path.join(root, f)), f"{f} is there (bakes on the server need it)")
+    mgr = os.path.join(out_dir, "f2o77_maps")
+    if c.add("manager", os.path.isfile(os.path.join(mgr, "open77.lua")), "the map manager f2o77_maps is in the build"):
+        mm = parse_manifest(open(os.path.join(mgr, "open77.lua"), encoding="utf-8").read())
+        c.add("manager.resource", mm["resource"] == "f2o77_maps", "the manager's manifest names f2o77_maps")
+        c.add("manager.map", os.path.isfile(os.path.join(mgr, "shared", "maps", f"{name}.lua")),
+              f"the manager knows {name} (shared/maps/{name}.lua)")
+        c.add("manager.http", "http.serve" in mm["permissions"], "the manager may serve its agent API (http.serve)")
+    luas = [os.path.join(dp, f) for top in (root, mgr) if os.path.isdir(top)
+            for dp, _, fs in os.walk(top) for f in fs if f.endswith(".lua") and f != "open77.lua"]
+    res = _lua_syntax(luas)
+    if res is not None:
+        c.add("lua.syntax", res[0], "Lua scripts compile" + ("" if res[0] else f": {res[1][:300]}"))
+    cov = ((report.get("build") or {}).get("coverage") or {})
+    col, vis = cov.get("collision") or {}, cov.get("visual_floors") or {}
+    if cov:
+        got = {"walkable": (col.get("walkable") or {}).get("covered_pct"), "walls": (col.get("walls") or {}).get("covered_pct"),
+               "floors": vis.get("solid_pct")}
+        for k, lim in MAP_COVERAGE_WARN.items():
+            v = got.get(k)
+            if v is None:
+                continue
+            c.add(f"coverage.{k}", v >= lim, f"{k} collision covers {v}% (want {lim}%+)" if k != "floors" else
+                  f"visible floors {v}% solid (want {lim}%+)", level="warn")
+    warnings = report.get("warnings", [])
+    c.add("report.warnings", True, f"{len(warnings)} conversion warning(s)" if warnings else "no conversion warnings",
+          level="warn")
+    ok = all(i["ok"] for i in c.items if i["level"] != "warn")
+    return {"ok": ok, "map": name, "checks": c.items,
+            "summary": {"packages": sizes, "warnings": warnings, "baked": (baked or {}).get("anchor"),
+                        "version": man["version"]}}

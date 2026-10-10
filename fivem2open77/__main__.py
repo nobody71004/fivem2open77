@@ -6,6 +6,9 @@
   python -m fivem2open77 profile [--check p.json]      default profile / validate one
   python -m fivem2open77 sounds                         Cyberpunk engine sounds a car can use
   python -m fivem2open77 studio [--port N]              the converter app (web UI + API)
+  python -m fivem2open77 mcp                            MCP server (stdio) for agents, relaying to the Studio
+  python -m fivem2open77 mlo <fivem map/MLO> --out <dir> [--place x,y,z[,yaw]]   baked map + placer
+  python -m fivem2open77 mlo-inspect | mlo-bake | mlo-install | mlo-bundle | mlo-manager-bundle (see mlo/cli.py)
 """
 from __future__ import annotations
 
@@ -91,6 +94,11 @@ def cmd_sounds(a):
     return 0
 
 
+def cmd_mcp(a):
+    from .studio.bridge import main as bridge_main
+    return bridge_main(a)
+
+
 def cmd_studio(a):
     from .studio.server import main as studio_main
     return studio_main(a)
@@ -156,14 +164,27 @@ def main(argv=None):
     st.add_argument("--token", help="API token (default: random, printed)")
     st.add_argument("--ready-file", help="write {port, token, url} here once listening")
     st.add_argument("--open", action="store_true", help="open the UI in the default browser")
+    st.add_argument("--idle-exit", type=float, default=0, metavar="SECONDS",
+                    help="stop after this long with no agent call, open page or job (a Studio started for agents)")
     st.set_defaults(fn=cmd_studio)
+
+    mc = sub.add_parser("mcp", help="MCP server (stdio) for agents: relays to the running Studio, starting it if needed")
+    mc.add_argument("--workspace", help="the Studio's projects/settings folder (default: the usual one)")
+    mc.add_argument("--attach-only", action="store_true", help="never start the Studio: fail when it is not running")
+    mc.add_argument("--headless", action="store_true", help="start the Studio without its window (stops when idle)")
+    mc.add_argument("--log", help="write the bridge's log here (default: <workspace>/logs/mcp-bridge.log)")
+    mc.set_defaults(fn=cmd_mcp)
 
     d = sub.add_parser("donor", help="extract and cache donor files from the game")
     d.add_argument("--donor", action="append", choices=sorted(DONORS))
     common(d)
     d.set_defaults(fn=cmd_donor)
 
-    a = p.parse_args(argv)
+    from .mlo import cli as mlo_cli
+    mlo_cli.add_parsers(sub, common, _game_dir, DonorCache)
+
+    from .argv import glue_vectors
+    a = p.parse_args(glue_vectors(argv))
     try:
         return a.fn(a)
     except EscrowProtectedError as e:
@@ -174,8 +195,10 @@ def main(argv=None):
         for err in e.errors:
             print(f"  {err}", file=sys.stderr)
         return 2
-    except (ResourceError, WolvenKitError, RuntimeError, ValueError) as e:
+    except (ResourceError, WolvenKitError, RuntimeError, ValueError, OSError) as e:
         print(f"error: {e}", file=sys.stderr)
+        if getattr(a, "json", False):
+            print(json.dumps({"ok": False, "error": str(e)}))
         return 2
 
 

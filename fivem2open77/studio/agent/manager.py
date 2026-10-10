@@ -9,13 +9,21 @@ import time
 import uuid
 
 from .providers import AnthropicProvider, OllamaProvider, ProviderError
-from .tools import Context, ToolError, registry
+from .tools import Context, ToolError, registry, tools_for
 
-SYSTEM = """You are the build agent of fivem2open77 Studio. You convert FiveM (GTA V) vehicle resources into
-Open77 (Cyberpunk 2077 multiplayer) car resources and install them on the user's Open77 servers. You act only
-through the tools and never claim anything you did not check with them.
+SYSTEM_BASE = """You are the agent of fivem2open77 Studio. The Studio converts FiveM (GTA V) resources -- cars, and maps /
+MLOs -- into Open77 (Cyberpunk 2077 multiplayer) resources, builds them with WolvenKit, checks them, installs them
+on the user's Open77 servers over SSH and moves converted maps on running servers. You act only through the tools
+and never claim anything you did not check with them.
 
-How a conversion works: the GTA model's geometry is split into Cyberpunk parts by the role of each GTA bone:
+Rules: ask_user before deploying to a server the user did not name, before restarting a server or applying a map
+move (it restarts the server for everyone), and before anything irreversible; never restart a server with players
+online unless the user says so; make the smallest change that fixes a problem and say why; if a tool fails twice
+the same way, stop and explain. Keep replies short and concrete. Never ask for passwords or tokens: the Studio
+holds the server credentials and the map manager's token itself."""
+
+SYSTEM_CAR = """
+How a car conversion works: the GTA model's geometry is split into Cyberpunk parts by the role of each GTA bone:
 body_01, interior_01, doors door_fl_a/door_fr_a/door_bl_a/door_br_a, windows window_*_a, windscreens
 window_f/window_b, the lids hood_a and trunk_a, wheels and tyres per axle (wheel_front, tire_front,
 wheel_back, tire_back), brake hubs hub_*, light meshes lights_*, steering_wheel. The car reuses a donor
@@ -27,7 +35,7 @@ Cyberpunk car's sound (TweakDB player_audio_resource); "auto" maps GTA's audioNa
 preload package: a server declares it at its next start, and players get it at their next launch. The Studio's
 car hub (f2o77_hub) restarts a server when nobody is online, so deploying with mode "stage" is the normal way.
 
-Your end-to-end job, unless the user asks for something narrower:
+Your end-to-end job for a car, unless the user asks for something narrower:
 1. get_project, then inspect_car. Read the warnings.
 2. render_car in parts mode (front_3q and rear_3q; left or top when useful) and check: four wheels with tyres
    at the corners; the blue doors are the real doors; the orange hood and red trunk are the lids at the ends
@@ -48,11 +56,82 @@ Your end-to-end job, unless the user asks for something narrower:
    there is one), then server_status to confirm the car is installed and queued, and read_server_log after a
    restart to confirm its resources started.
 6. finish with a short summary: what you changed and why, the spawn command (/car Vehicle.<name>), what the
-   user should check in game.
+   user should check in game."""
 
-Rules: ask_user before deploying to a server the user did not name or before anything irreversible; never
-restart a server with players online; make the smallest change that fixes a problem and say why; if a tool
-fails twice the same way, stop and explain. Keep replies short and concrete."""
+SYSTEM_MAP = """
+How a map conversion works: the FiveM resource's .ymap/.ytyp/.ydr/.ybn files are read; an MLO interior becomes
+one part placed once per instance, big standalone objects their own parts, small objects and terrain are baked
+into chunk parts on a grid of cells. Collision is rebuilt from the FiveM collision as boxes; doors and gates
+become Door devices that open by themselves; windows without collision get glass slabs. GTA V's own props
+(vanilla archetypes the resource only places) are not in the resource and are left out. Everything sits
+relative to an anchor (the FiveM spawn point on the ground). A build is baked at a Night City spot (x east, y
+north, z up, metres; yaw degrees counter-clockwise from above) into a small streaming-sector package; the map's
+meshes are separate packages. The map manager f2o77_maps goes with every map onto the server: players with the
+rights move maps in game (F9) and the Studio moves them through the manager's agent API (the server's
+httpHandlers listener, reached over SSH). A move: set the new spot (pending; nothing moves yet) -> apply -> the
+server's map baker builds the sector for the new spot -> the server restarts (players rejoin, their launcher
+fetches the new package) -> applied. Moving needs the map baker and the agent API on the server (server_status
+shows both; enable_agent_api turns the API on, effective at the next server start).
+
+Your end-to-end job for a map, unless the user asks for something narrower:
+1. get_map; look_at_map when there is no look. Read the converter's warnings, the size, the interiors and parts.
+2. render_map (iso and plan) and check the map looks whole: buildings, floors, roads; nothing floating or cut.
+3. Change options only when something is wrong (exclude a broken prop by its object name, entity sets, static
+   doors). Keep the resource id (name) once the map is installed anywhere: a new name is a new map on servers.
+4. When the user gives a spot, set_map_options place {x,y,z,yaw}; without one the build is not baked and the
+   map is placed in game (F9) or with set_map_spot + apply_map_move after the install.
+5. build_map, then map_build_report: walkable and wall collision coverage above ~95% and visible floors solid
+   are good; holes are in map-local metres (add the spot for Night City coordinates); QA must pass.
+6. Install only when asked or agreed. Before the first install on a server, server_status: when the server
+   already has this map under another resource id (the same display name), set_map_options name to that id so
+   the install updates it instead of adding a second copy. deploy_map (keep_placement true keeps the spot a map
+   was moved to), then server_status: the map, the manager, the baker (active, start hook) and the agent API.
+7. Moving a map: live_maps, then set_map_spot (place with absolute numbers or move with deltas; here puts it at
+   a player's feet; drop needs a player within 150 m because the server has no physics), map_preset save for a
+   spot worth keeping, apply_map_move ONLY after the user confirms (it restarts the server), wait_map_move until
+   applied, live_map to confirm it runs at the new spot.
+8. finish with what you changed, where the map stands, and what to check in game (walk the stairs, the doors
+   open, no falling through floors near the reported holes)."""
+
+SYSTEM_WORLD = """
+How a world edit works: Night City is made of streaming sectors (cells of 64 m at level 0, twice that per level
+up); each sector holds node instances: meshes, instanced meshes (one node, many instances: each is an element),
+terrain, collision nodes (their actors are elements), entities, decals, lights. A world edit is an ArchiveXL
+package that patches the game's own sectors as they stream in (delete, move, re-mesh a node instance or one of
+its elements) and adds a sector of its own for added objects. It installs on a server like a car (a preload
+package: declared at the next server start, players get it at their next launch). Night City's collision is
+not in its meshes: it is in collision nodes, often in a coarser sector, exactly at each mesh's place; the
+Studio finds it by place and deletes or moves it with the object (collision several objects share goes only
+when all of them go; world_object shows what an object shares its place with). Positions are Night City metres
+(x east, y north, z up); yaw is degrees counter-clockwise from above (0 faces north, 90 west).
+
+Your job for a world edit, unless the user asks for something narrower:
+1. world_status; new_world_edit if no world edit is open (a short resource name: what and where).
+2. world_find around the spot the user gives (radius 10-40 m; kinds and text narrow it): read names and
+   resources; world_object when you need an object's collision or neighbours.
+3. Make the change with the smallest actions: world_delete the objects (a whole static mesh node, or the
+   elements of an instanced mesh), world_move with deltas, world_replace for another mesh, world_add for an
+   object of the game (.ent brings its own collision; a .mesh has collision only when it has shapes of its own).
+   world_clear_area with dry_run first; show the list; only then dry_run=false.
+4. Read each answer's notes (collision that stays, meshes without collision) and tell the user.
+5. build_world_edit; install_world_edit_in_game for a local test boot when asked; deploy_world_edit only when
+   asked or agreed (mode stage: the hub restarts the server when nobody is online); remove_world_edit takes an
+   edit off a server again (only when asked).
+6. finish with what changed where, and what to check in game (walk where things were deleted: no invisible
+   walls; look where things moved)."""
+
+SYSTEM_STUDIO = """
+This session has no project open. list_projects shows the Studio's cars, maps and world edits (open_project
+switches to one); import_resource brings in a FiveM car or map from a path on this PC; new_world_edit starts a
+change to Night City itself. Server questions (status, logs, the agent API, the maps on a server and moving
+them) work without a project."""
+
+
+def build_system(kind: str | None) -> str:
+    return SYSTEM_BASE + {"car": SYSTEM_CAR, "map": SYSTEM_MAP, "world": SYSTEM_WORLD}.get(kind, SYSTEM_STUDIO)
+
+
+SYSTEM = build_system("car")      # (the car prompt, as before)
 
 
 class Session:
@@ -87,6 +166,24 @@ class Session:
         self.last_change_error = None     # the latest change/deploy tool failure not yet fixed
         self.finish_warned = False
         self.usage = {"input_tokens": 0, "output_tokens": 0}
+
+    # ------------------------------------------------------------------ the project
+    @property
+    def kind(self):
+        if not self.project:
+            return None
+        try:
+            return self.studio.projects.get(self.project).kind
+        except Exception:  # noqa: BLE001 - a deleted project
+            return None
+
+    def switch_project(self, pid):
+        self.studio.projects.get(pid)
+        self.project = pid
+        self.emit("note", text=f"working on project {pid}")
+
+    def offered(self):
+        return [self.tools[n] for n in tools_for(self.kind) if n in self.tools]
 
     # ------------------------------------------------------------------ events
     def emit(self, kind, **data):
@@ -196,10 +293,13 @@ class Session:
     def _run(self):
         self.set_status("running")
         if not self.messages:
-            first = [{"type": "text", "text": self.goal or "Convert this car end to end and tell me what to check."}]
+            default = {"car": "Convert this car end to end and tell me what to check.",
+                       "map": "Convert this map end to end and tell me what to check.",
+                       "world": "Show me what this world edit changes and what to check."}.get(self.kind, "What can you do?")
+            first = [{"type": "text", "text": self.goal or default}]
             if self.project:
                 p = self.studio.projects.get(self.project)
-                first.insert(0, {"type": "text", "text": f"Open project: {p.data.get('name')} (id {p.id})."})
+                first.insert(0, {"type": "text", "text": f"Open project: {p.data.get('name')} (a {p.kind}, id {p.id})."})
             self.messages.append({"role": "user", "content": first})
             self.emit("user", text=self.goal)
         steps = 0
@@ -216,7 +316,7 @@ class Session:
             steps += 1
             self.steps += 1
             try:
-                reply = self.provider.chat(SYSTEM, self.messages, [t.spec() for t in self.tools.values()])
+                reply = self.provider.chat(build_system(self.kind), self.messages, [t.spec() for t in self.offered()])
             except ProviderError as e:
                 self.emit("error", text=str(e))
                 self.set_status("failed")
@@ -255,6 +355,13 @@ class Session:
         self.emit("tool_call", call_id=call["id"], tool=name, input=args)
         if tool is None:
             return self._result(call, f"unknown tool {name}", True)
+        if name not in tools_for(self.kind):
+            what = {"car": "a car", "map": "a map", "world": "a world edit"}.get(self.kind, "no")
+            msg = f"{name} is not available in a session with {what} project (open_project switches)"
+            if tool.risk in ("change", "deploy"):
+                self.last_change_error = f"{name}: {msg}"
+                self.finish_warned = False
+            return self._result(call, msg, True)
         if self._needs_approval(tool.risk):
             ev = threading.Event()
             self.pending = {"call_id": call["id"], "tool": name, "input": args, "event": ev, "approved": False,

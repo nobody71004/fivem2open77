@@ -94,22 +94,30 @@ def _basis(az, el):
     return r, u, c
 
 
-def render(tris, cols, view="front_3q", size=(640, 400), seed=1, light=None) -> np.ndarray:
-    """-> uint8 (H, W, 3)."""
+def render(tris, cols, view="front_3q", size=(640, 400), seed=1, light=None, frame=None, alpha=False) -> np.ndarray:
+    """-> uint8 (H, W, 3), or (H, W, 4) with alpha=True (transparent where nothing was drawn).
+    frame=(cx, cy, metres per pixel) in screen axes fixes the window instead of fitting the
+    triangles (map plans framed on their bounds)."""
     W, H = size
     az, el = VIEWS[view] if isinstance(view, str) else view
     r, u, c = _basis(az, el)
     img = np.zeros((H, W, 3), np.float64)
-    # background: soft vertical gradient
-    grad = np.linspace(0.20, 0.11, H)[:, None]
-    img[:] = np.stack([grad * 0.9, grad * 0.95, grad * 1.1], -1)
+    # background: the Studio's viewport colour (flat graphite)
+    img[:] = np.array([0.071, 0.075, 0.086])
     if not len(tris):
-        return (img * 255).astype(np.uint8)
+        out = (img * 255).astype(np.uint8)
+        return np.concatenate([out, np.zeros((H, W, 1), np.uint8)], 2) if alpha else out
+    tris = np.asarray(tris, np.float64)
+    cols = np.asarray(cols, np.float64)
     pts = tris.reshape(-1, 3)
     sx, sy, sd = pts @ r, pts @ u, pts @ c
     margin = 0.06
-    span = max((sx.max() - sx.min()) / (W * (1 - 2 * margin)), (sy.max() - sy.min()) / (H * (1 - 2 * margin)))
-    cx, cy = (sx.max() + sx.min()) / 2, (sy.max() + sy.min()) / 2
+    if frame is not None:
+        cx, cy, span = (float(v) for v in frame)
+    else:
+        span = max((sx.max() - sx.min()) / (W * (1 - 2 * margin)), (sy.max() - sy.min()) / (H * (1 - 2 * margin)))
+        cx, cy = (sx.max() + sx.min()) / 2, (sy.max() + sy.min()) / 2
+    span = max(span, 1e-9)
     X = ((sx - cx) / span + W / 2).reshape(-1, 3)
     Y = (H / 2 - (sy - cy) / span).reshape(-1, 3)
     D = sd.reshape(-1, 3)
@@ -149,7 +157,12 @@ def render(tris, cols, view="front_3q", size=(640, 400), seed=1, light=None) -> 
     flat = img.reshape(-1, 3)
     t = tri_id[order]
     flat[pix[order]] = np.clip(col[t] * shade[t, None], 0, 1)
-    return (np.clip(img, 0, 1) * 255).astype(np.uint8)
+    out = (np.clip(img, 0, 1) * 255).astype(np.uint8)
+    if alpha:
+        a = np.zeros(H * W, np.uint8)
+        a[pix] = 255
+        return np.concatenate([out, a.reshape(H, W, 1)], 2)
+    return out
 
 
 def render_views(v, views=("front_3q", "rear_3q", "left", "top"), size=(640, 400), color_mode="material") -> dict:

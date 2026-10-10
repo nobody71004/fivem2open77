@@ -4,6 +4,7 @@
   WolvenKit CLI    writes the game files                                      -- bundled with the app
   .NET 8 runtime   runs WolvenKit.CLI.dll                                     -- bundled with the app
   7-Zip            opens .rar/.7z FiveM downloads                             -- bundled with the app
+  .NET 8 (Linux)   the map baker's runtime, uploaded to Linux server hosts    -- bundled with the app
 """
 from __future__ import annotations
 
@@ -145,6 +146,35 @@ def find_wolvenkit(configured: str = "") -> str | None:
     return None
 
 
+def _is_linux_dotnet_root(d: str | None) -> bool:
+    if not d or not os.path.isdir(os.path.join(d, "shared", "Microsoft.NETCore.App")):
+        return False
+    host = os.path.join(d, "dotnet")
+    try:
+        with open(host, "rb") as f:
+            if f.read(4) != b"\x7fELF":
+                return False
+    except OSError:
+        return False
+    return any(re.match(r"^8\.", v) for v in os.listdir(os.path.join(d, "shared", "Microsoft.NETCore.App")))
+
+
+def find_linux_dotnet(configured: str = "") -> str | None:
+    """A linux-x64 .NET 8 runtime folder (dotnet, host/fxr, shared/Microsoft.NETCore.App/8.x) for the map
+    baker on Linux server hosts: bundled with the Windows app; on Linux the system's own will do."""
+    cands = [configured, bundled("tools", "baker", "dotnet-linux-x64"), os.environ.get("F2O77_LINUX_DOTNET")]
+    if not IS_WINDOWS:
+        cands.append(os.environ.get("DOTNET_ROOT"))
+        d = shutil.which("dotnet")
+        if d:
+            cands.append(os.path.dirname(os.path.realpath(d)))
+        cands += ["/opt/dotnet", "/usr/share/dotnet", "/usr/lib/dotnet"]
+    for c in cands:
+        if c and _is_linux_dotnet_root(c):
+            return os.path.abspath(c)
+    return None
+
+
 def find_7z(configured: str = "") -> str | None:
     cands = [configured, bundled("tools", "7zip", "7z" + EXE)]
     if IS_WINDOWS:
@@ -177,6 +207,7 @@ class Toolbox:
         self.dotnet = find_dotnet(p.get("dotnet", ""))
         self.wolvenkit = find_wolvenkit(p.get("wolvenkit", ""))
         self.sevenzip = find_7z(p.get("sevenzip", ""))
+        self.linux_dotnet = find_linux_dotnet(p.get("linux_dotnet", ""))
         games = find_game_dirs() if not _valid_game(p.get("game_dir")) else [(p["game_dir"], "settings")]
         self.games = games
         self.game_dir = games[0][0] if games else None
@@ -214,6 +245,9 @@ class Toolbox:
                          "help": "7-Zip opens .rar/.7z downloads (zip and folders work without it)."},
             "donor": {"ok": all(d["ready"] for d in donors.values()), "path": self.cache_dir, "donors": donors,
                       "help": "Donor files extracted from your game (one time, about a minute)."},
+            "linux_dotnet": {"ok": bool(self.linux_dotnet), "path": self.linux_dotnet, "optional": True,
+                             "help": ".NET 8 for Linux: the map baker's runtime, installed on your server host so "
+                                     "maps moved in game can be rebuilt there."},
         }
         items["ready"] = all(items[k]["ok"] for k in ("wolvenkit", "dotnet")) and (items["donor"]["ok"] or items["game"]["ok"])
         items["app_home"] = app_home()
