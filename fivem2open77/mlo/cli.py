@@ -45,7 +45,7 @@ def _emit(a, obj, human):
 def _mlo_opts(a) -> dict:
     return {k: getattr(a, k, None) for k in ("name", "display_name", "anchor", "coords", "place", "entity_sets",
                                              "exclude", "no_collision", "no_coverage", "static_doors", "solid_doors", "open_gates",
-                                             "door_map", "cell",
+                                             "door_map", "cell", "quiet_interiors",
                                              "ground_spacing",
                                              "collision_budget", "instance_min_tris", "agent_token", "keep_work",
                                              "version")}
@@ -228,6 +228,9 @@ def add_parsers(sub, common, game_dir, cache_cls):
         sp.add_argument("--door-map", help='door mapping, JSON text or a .json file: {"objects": {"<name>": '
                                            '"hinged|sliding|rolling|open|solid|remove"}, "doorways": {"<mlo>#<n>": '
                                            '"open|door-hinged|door-double|door-sliding|door-rolling"}} (see mlo/doorways.py)')
+        sp.add_argument("--quiet-interiors", choices=("off", "bottom", "all"), default="off",
+                        help="ambient-noise suppression volumes over the MLO floors: bottom quiets the lower floor "
+                             "of every MLO (no Night City ambience down there), all every floor")
         sp.add_argument("--cell", type=float, help="chunk cell size in metres (default 48)")
         sp.add_argument("--ground-spacing", type=float, help="ground collision grid in metres (default 2)")
         sp.add_argument("--collision-budget", type=int, help="max colliders per collision source (default 2500)")

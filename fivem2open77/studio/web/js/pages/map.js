@@ -374,6 +374,12 @@ function optionsTab(root, ctx) {
   doors.addEventListener("change", doorSync);
   doorSync();
 
+  // quiet interiors: ambient-noise suppression volumes over the MLO floors (mlo/ambience.py)
+  const quiet = h("select", [["off", "off (the city is as loud indoors as outdoors)"],
+    ["bottom", "quiet the lower floor of every MLO"], ["all", "quiet every MLO floor"]]
+    .map(([v, l]) => h("option", { value: v }, l)));
+  quiet.value = o.quiet_interiors || "off";
+
   const parseVec = (s) => {
     const parts = s.split(/[,\s]+/).filter(Boolean).map(Number);
     return parts.length ? parts : null;
@@ -387,6 +393,7 @@ function optionsTab(root, ctx) {
       exclude: exclude.value.split(/\s+/).filter(Boolean),
       collision: el.collision.checked, coverage: el.coverage.checked, doors: doors.value,
       solid_doors: el.solid_doors.checked, open_gates: el.open_gates.checked,
+      quiet_interiors: quiet.value,
       cell: Number(el.cell.value), ground_spacing: Number(el.ground_spacing.value),
       collision_budget: Number(el.collision_budget.value), instance_min_tris: Number(el.instance_min_tris.value),
       coords: parseVec(el.coords.value), anchor: parseVec(el.anchor.value),
@@ -420,7 +427,11 @@ function optionsTab(root, ctx) {
       h("div.card", h("h3", "Collision and doors"),
         h("label.row", check("collision"), h("span", "collision (off: you can see the map but walk through it)")),
         h("label.row", check("coverage"), h("span", "check how much of the FiveM collision the boxes reproduce (a minute on big maps)")),
-        h("label.field", { style: { marginTop: "10px" } }, "Doors and gates", doors), staticOpts)),
+        h("label.field", { style: { marginTop: "10px" } }, "Doors and gates", doors), staticOpts,
+        h("label.field", { style: { marginTop: "10px" } }, "Night-city noise indoors", quiet),
+        h("div.help", "Interior ambient areas (the game's own amb_interior zones): inside these volumes "
+          + "the city ambience ducks away. Needed for basement and lower floors that sit under Night "
+          + "City's outdoor sound zones."))),
     h("div.card", h("h3", "Advanced"),
       h("div.form",
         h("label.field", "Chunk cell (m)", numIn("cell", 1)), h("label.field", "Ground collision grid (m)", numIn("ground_spacing", 0.5)),

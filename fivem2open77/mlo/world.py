@@ -31,7 +31,7 @@ import math
 import struct
 
 from ..cp77.wkjson import cname, depot, document, vec3, vec4
-from . import doors
+from . import ambience, doors
 
 RED_PACKAGE = "WolvenKit.RED4.Archive.Buffer.RedPackage, WolvenKit.RED4, Version=8.17.4.0, Culture=neutral, PublicKeyToken=null"
 NODE_BUFFER = "WolvenKit.RED4.Archive.Buffer.worldNodeDataBuffer, WolvenKit.RED4, Version=8.17.4.0, Culture=neutral, PublicKeyToken=null"
@@ -283,7 +283,10 @@ def sector_doc(layout: dict, anchor: dict) -> tuple:
     nodes, data, refs = [], [], []
     lo = [math.inf] * 3
     hi = [-math.inf] * 3
-    for i, (part, pos, yaw, primary, secondary) in enumerate(sector_nodes(layout, anchor)):
+    placed = sector_nodes(layout, anchor)
+    amb = layout.get("ambience") or []
+    nested = len(placed) + len(amb)      # nested HandleIds sit above every node's own index
+    for i, (part, pos, yaw, primary, secondary) in enumerate(placed):
         meta = layout["parts"][part]
         ent = meta["ent"]
         if meta.get("door"):
@@ -294,6 +297,26 @@ def sector_doc(layout: dict, anchor: dict) -> tuple:
             ref = stable_id("node", name, i, part, round(pos[0], 3), round(pos[1], 3), round(pos[2], 3), round(yaw, 3))
             nodes.append({"HandleId": str(i), "Data": _entity_node(ent, f"{name}_{part}_{i:03d}")})
         data.append(_node_data(i, pos, yaw, ref, primary, secondary))
+        reach = min(primary, 600.0)
+        for k in range(3):
+            lo[k] = min(lo[k], pos[k] - reach)
+            hi[k] = max(hi[k], pos[k] + reach)
+    for a in amb:
+        # quiet interiors (mlo/ambience.py): a worldAmbientAreaNode prism per floor volume
+        i = len(data)
+        x0, y0, z0, x1, y1, z1 = (float(v) for v in a["box"])
+        hx, hy, hz = (x1 - x0) / 2.0, (y1 - y0) / 2.0, (z1 - z0) / 2.0
+        pos, yaw = place(anchor, ((x0 + x1) / 2.0, (y0 + y1) / 2.0, z0))
+        primary, secondary = streaming_range(math.hypot(hx, hy))
+        nodes.append({"HandleId": str(i),
+                      "Data": ambience.area_node(f"{name}_quiet_{i:03d}", ambience.UNIT_POINTS,
+                                                 ambience.OUTLINE_HEIGHT, nested)})
+        nested += 3
+        nd = _node_data(i, pos, yaw, 0, primary, secondary)
+        nd["Scale"] = vec3(hx, hy, hz)
+        nd["Pivot"] = vec3(pos[0], pos[1], pos[2] + hz)
+        nd["Uk10"], nd["Uk11"], nd["Uk12"] = 1056, 65024, 1   # the game's area-node nodeData flags
+        data.append(nd)
         reach = min(primary, 600.0)
         for k in range(3):
             lo[k] = min(lo[k], pos[k] - reach)

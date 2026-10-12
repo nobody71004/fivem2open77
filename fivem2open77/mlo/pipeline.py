@@ -167,7 +167,8 @@ class MapConverter:
             result = writer.write(model, defaults=defaults,
                                   source_info={"resource": res_name, "input": os.path.basename(resource_path),
                                                "stream_files": len(stream), "coords": coords},
-                                  scene_summary=scene.summary(), agent_token=token)
+                                  scene_summary=scene.summary(), agent_token=token,
+                                  quiet_interiors=self.opts.get("quiet_interiors") or "off")
             result["agent_token"] = token
             return result
         finally:

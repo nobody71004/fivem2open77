@@ -48,6 +48,7 @@ DEFAULTS = {
     "instance_min_tris": 1500, # objects with this many triangles get their own mesh
     "place": None,             # {"x", "y", "z", "yaw"}: Night City spot the build is baked at
     "door_map": {},            # the Doors tab: {"objects": {name: mode}, "doorways": {"<mlo>#<n>": mode}} (mlo/doorways.py)
+    "quiet_interiors": "off",  # off | bottom | all: ambient-noise suppression volumes over MLO floors (mlo/ambience.py)
 }
 # options that change what is built (the look and the renders): not the names, not where it is baked
 LOOK_KEYS = ("coords", "anchor", "entity_sets", "exclude", "collision", "doors", "solid_doors",
@@ -165,6 +166,8 @@ def normalize_options(raw: dict | None) -> dict:
             errors.append(f"{k}: true or false")
     if o["doors"] not in ("devices", "static"):
         errors.append("doors: devices (they open by themselves) or static")
+    if o["quiet_interiors"] not in ("off", "bottom", "all"):
+        errors.append("quiet_interiors: off (default), bottom (the lower floor of every MLO) or all (every floor)")
     for k, (lo, hi) in RANGES.items():
         try:
             v = _num(o[k])
@@ -211,6 +214,8 @@ def converter_opts(o: dict, version: str | None = None, keep_work=False, place=T
            "instance_min_tris": o["instance_min_tris"], "keep_work": keep_work}
     if o.get("door_map"):
         out["door_map"] = json.dumps(o["door_map"], sort_keys=True)
+    if o.get("quiet_interiors") and o["quiet_interiors"] != "off":
+        out["quiet_interiors"] = o["quiet_interiors"]
     if version:
         out["version"] = version
     if place and o["place"]:

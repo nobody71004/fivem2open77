@@ -371,6 +371,8 @@ def registry() -> dict:
              "name (resource id, a-z0-9_, keep it once installed), display_name, place {x,y,z,yaw} (Night City metres, yaw "
              "degrees counter-clockwise; the spot builds are baked at, null = not baked), entity_sets (default|all|none|[names]), "
              "exclude [archetype names], collision (bool), coverage (bool), doors (devices|static), solid_doors, open_gates, "
+             "quiet_interiors (off|bottom|all: ambient-noise suppression volumes over the MLO floors -- bottom quiets the "
+             "lower floor of every MLO so Night City's ambience cannot be heard down there, all every floor), "
              "cell (16-256), ground_spacing (0.5-8), collision_budget, instance_min_tris, coords [x,y,z] (FiveM spawn), anchor "
              "[x,y,z] (GTA point), door_map {objects: {<archetype name>: auto|hinged|sliding|rolling|open|solid|remove}, "
              "doorways: {<mlo>#<portal>: auto|open|door-hinged|door-double|door-sliding|door-rolling}} (the Doors tab: get_map "

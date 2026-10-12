@@ -25,6 +25,7 @@ from ..cp77.mesh import ordered_submeshes, template_doc, write_glb
 from ..cp77.wkjson import Handles, save
 from ..cp77.xbm import xbm_document
 from ..model.ir import Material, SubMesh
+from . import ambience
 from . import bake as bake_mod
 from . import doors as doors_mod
 from . import ghost as ghost_mod
@@ -59,7 +60,8 @@ class MapWriter:
         self.keep_work = keep_work
         self.version = version
 
-    def write(self, model, *, defaults=None, source_info=None, scene_summary=None, agent_token="") -> dict:
+    def write(self, model, *, defaults=None, source_info=None, scene_summary=None, agent_token="",
+              quiet_interiors="off") -> dict:
         t0 = time.time()
         name = model.name
         work = os.path.join(self.out_dir, "_work", name)
@@ -180,7 +182,9 @@ class MapWriter:
 
         # ---------------------------------------------------------- the two Open77 resources
         mn, mx = model.bounds()
+        quiet = ambience.floor_volumes(model, quiet_interiors or "off")
         layout = {
+            "ambience": [{"box": box} for box in quiet],
             "name": name, "display": model.display_name, "version": self.version,
             "parts": {p: {"mesh": m["mesh"], "ent": m["ent"], "kind": m["kind"], "radius": m["radius"],
                           "collision": m["colliders"] > 0, "bounds": m["bounds"],
@@ -201,6 +205,7 @@ class MapWriter:
             "anchor_gta": list(model.anchor), "packages": zips, "parts": part_meta,
             "placements": len(model.placements), "materials": len(model.materials), "textures": len(tex_files),
             "ghost_lines": len(lines), "build": model.report, "scene": scene_summary or {}, "warnings": model.warnings,
+            "quiet_interiors": {"mode": quiet_interiors or "off", "volumes": quiet},
         }
         manager_dir = os.path.join(self.out_dir, resource_mod.MANAGER)
         # the old per-map placer (fivem2open77 < 1.2) is replaced by the map manager

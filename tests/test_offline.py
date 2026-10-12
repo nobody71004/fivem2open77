@@ -217,6 +217,105 @@ def test_resource_ids_follow_open77_name_rules():
     assert _sanitize("i8rpncs") == "i8rpncs" and _sanitize("911turbo") == "v_911turbo"
 
 
+def _fake_model(floors):
+    """A model of box colliders only: [(center, half, kind, part kind)] -> the shapes ambience reads."""
+    import types
+    parts, placements = {}, []
+    by_part = {}
+    for center, half, kind, pkind in floors:
+        by_part.setdefault(("m" if pkind == "mlo" else "o", pkind), []).append((center, half, kind))
+    for (pname, pkind), boxes in by_part.items():
+        cols = [types.SimpleNamespace(kind=kind, center=center, half=half, rotation=(0, 0, 0, 1))
+                for center, half, kind in boxes]
+        parts[pname] = types.SimpleNamespace(kind=pkind, collision_only=False, colliders=cols)
+        placements.append(types.SimpleNamespace(part=pname, position=(0.0, 0.0, 0.0), yaw=0.0))
+    return types.SimpleNamespace(parts=parts, placements=placements)
+
+
+def test_ambient_outline_buffer_is_count_points_height():
+    import base64
+    from fivem2open77.mlo import ambience
+    raw = base64.b64decode(ambience.outline_buffer([(-1, -1), (1, -1), (1, 1), (-1, 1)], 2.0))
+    (count,) = struct.unpack("<I", raw[:4])
+    assert count == 4 and len(raw) == 4 + 4 * 16 + 4
+    pts = [struct.unpack("<ffff", raw[4 + 16 * i:20 + 16 * i]) for i in range(4)]
+    assert pts == [(-1.0, -1.0, 0.0, 1.0), (1.0, -1.0, 0.0, 1.0), (1.0, 1.0, 0.0, 1.0), (-1.0, 1.0, 0.0, 1.0)]
+    (height,) = struct.unpack("<f", raw[-4:])
+    assert height == 2.0
+    node = ambience.area_node("test_quiet", ambience.UNIT_POINTS, ambience.OUTLINE_HEIGHT, 7)
+    assert node["notifiers"][0]["HandleId"] == "7"
+    settings = node["notifiers"][0]["Data"]["Settings"]["Data"]
+    assert settings["Parameters"][0]["name"]["$value"] == "amb_interior"
+    assert settings["Parameters"][0]["value"] == 1.0
+    assert settings["Priority"] == 10 and settings["Reverb"]["$value"] == "revb_interior_room_medium"
+
+
+def test_quiet_interiors_volumes_follow_the_floor_levels():
+    from fivem2open77.mlo import ambience
+    box = lambda c, h, kind="box", pkind="mlo": (c, h, kind, pkind)
+    model = _fake_model([
+        box((0, 0, -0.15), (10, 8, 0.15)),            # lower floor, top z 0
+        box((0, 0, 4.85), (10, 8, 0.15)),             # upper floor, top z 5
+        box((0, 0, 2.5), (0.15, 8, 2.5)),             # a wall: thin in x, must not be a floor
+        box((0, 0, 2.41), (1.5, 1.2, 0.09)),          # a stair landing: walkable but too small for a level
+        box((0, 0, 8.0), (10, 8, 0.2), "box", "object"),  # the shell's roof: outdoors, leave loud
+    ])
+    assert ambience.floor_volumes(model, "off") == []
+    bottom = ambience.floor_volumes(model, "bottom")
+    assert bottom == [[-11.2, -9.2, -0.5, 11.2, 9.2, 4.55]], bottom
+    both = ambience.floor_volumes(model, "all")
+    assert len(both) == 2 and both[0] == bottom[0]
+    assert both[1] == [-11.2, -9.2, 4.5, 11.2, 9.2, 8.5], both[1]
+    try:
+        ambience.floor_volumes(model, "sometimes")
+    except ValueError as e:
+        assert "quiet_interiors" in str(e)
+    else:
+        raise AssertionError("bad mode accepted")
+
+
+def test_sector_doc_emits_quiet_interior_areas():
+    from fivem2open77.mlo import ambience, world
+    layout = {
+        "name": "testmap",
+        "parts": {"p": {"mesh": "m.mesh", "ent": "p.ent", "kind": "mlo", "radius": 5.0,
+                         "collision": True, "bounds": [[-1, -1, -1], [1, 1, 1]]}},
+        "placements": [{"part": "p", "x": 1.0, "y": 2.0, "z": 3.0, "yaw": 30.0}],
+        "ambience": [{"box": [-10, -8, -0.5, 10, 8, 4.5]}],
+    }
+    anchor = {"x": 100.0, "y": 200.0, "z": 30.0, "yaw": -33.0}
+    doc, box = world.sector_doc(layout, anchor)
+    root = doc["Data"]["RootChunk"]
+    areas = [n for n in root["nodes"] if n["Data"]["$type"] == "worldAmbientAreaNode"]
+    assert len(areas) == 1 and len(root["nodes"]) == 2
+    node = areas[0]["Data"]
+    settings = node["notifiers"][0]["Data"]["Settings"]["Data"]
+    assert settings["Parameters"][0]["name"]["$value"] == "amb_interior"
+    outline = node["outline"]["Data"]
+    assert outline["height"] == ambience.OUTLINE_HEIGHT and len(outline["points"]) == 4
+    ids = []
+    def walk(o):
+        if isinstance(o, dict):
+            if "HandleId" in o:
+                ids.append(str(o["HandleId"]))
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, list):
+            for v in o:
+                walk(v)
+    walk(root["nodes"])
+    assert len(ids) == len(set(ids)), ids
+    area_data = [d for d in root["nodeData"]["Data"] if d["Uk12"] == 1]
+    assert len(area_data) == 1
+    d = area_data[0]
+    assert (d["Uk10"], d["Uk11"], d["Uk12"]) == (1056, 65024, 1)
+    # unit square scaled by Scale: half extents 10 x 8, prism height (4.5 - -0.5) * Scale.Z = 5
+    assert abs(d["Scale"]["X"] - 10.0) < 1e-6 and abs(d["Scale"]["Y"] - 8.0) < 1e-6
+    assert abs(d["Scale"]["Z"] - 2.5) < 1e-6
+    # the prism starts at the volume's floor and rises: position z == box z0
+    assert abs(d["Position"]["Z"] - 30.0 - -0.5) < 1e-6
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

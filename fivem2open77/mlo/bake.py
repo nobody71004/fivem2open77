@@ -179,7 +179,9 @@ def bake(res_dir: str, anchor: dict, wk, log=print, keep_work=False, out_dir: st
     baked = {
         "anchor": anchor, "id": bake_id, "package": zname, "bytes": zsize, "sha256": _sha256(zpath),
         "archive": aname + ".archive", "sector": sector_path, "block": block_path,
-        "nodes": len(layout["placements"]), "streamingBox": {"min": list(box[0]), "max": list(box[1])},
+        "nodes": len(layout["placements"]) + len(layout.get("ambience") or []),
+        "quietAreas": len(layout.get("ambience") or []),
+        "streamingBox": {"min": list(box[0]), "max": list(box[1])},
         "doors": len(devs), "devices": dev_path,
         "bakedAt": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
