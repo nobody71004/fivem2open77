@@ -157,7 +157,12 @@ class MapOps:
             info = {"n": n, "time": time.time(), "ok": False, "kind": "map", "version": version,
                     "place": opts.get("place")}
             try:
-                conv = MapConverter(wk, cache, out, log=log,
+                from . import ncweassets
+                prepared, asset_warnings = ncweassets.prepare(p.path("assets", "ncwe"),
+                                                              os.path.join(bdir, "_ncwe"), log=job.log)
+                for w in asset_warnings:
+                    job.log("NCWE assets: " + w)
+                conv = MapConverter(wk, cache, out, log=log, extra_packages=prepared,
                                     **maps_mod.converter_opts(opts, version=version,
                                                               keep_work=self.settings.get()["build"]["keep_work"]))
                 r = conv.convert(p.source)

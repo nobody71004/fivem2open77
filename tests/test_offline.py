@@ -316,6 +316,34 @@ def test_sector_doc_emits_quiet_interior_areas():
     assert abs(d["Position"]["Z"] - 30.0 - -0.5) < 1e-6
 
 
+def test_baker_toolkit_imports_and_emits_quiet_areas_without_source_tree(tmp_path):
+    """The Linux baker gets only BAKER_LIB, not Studio's full package or numpy."""
+    import json
+    import subprocess
+    import tarfile
+    from fivem2open77.mlo import toolkit
+    archive = tmp_path / "baker-lib.tgz"
+    toolkit.build_lib(str(archive), "test-version", log=lambda *_: None)
+    with tarfile.open(archive) as tar:
+        assert "toolkit/lib/fivem2open77/mlo/ambience.py" in tar.getnames()
+        tar.extractall(tmp_path / "unpacked", filter="data")
+    lib = tmp_path / "unpacked" / "toolkit" / "lib"
+    script = (
+        "import json, sys; sys.path.insert(0, sys.argv[1]); "
+        "from fivem2open77.mlo import bake, world; "
+        "doc, box = world.sector_doc({'name':'testmap', 'parts':{}, 'placements':[], "
+        "'ambience':[{'box':[-10,-8,0,10,8,4]}]}, {'x':0,'y':0,'z':0,'yaw':0}); "
+        "print(json.dumps(doc['Data']['RootChunk']['nodes'][0]['Data']))"
+    )
+    result = subprocess.run([sys.executable, "-I", "-S", "-c", script, str(lib)],
+                            cwd=tmp_path, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    area = json.loads(result.stdout)
+    assert area["$type"] == "worldAmbientAreaNode"
+    settings = area["notifiers"][0]["Data"]["Settings"]["Data"]
+    assert settings["Parameters"][0]["value"] == 1
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

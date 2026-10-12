@@ -1,0 +1,3682 @@
+{
+  "tools": [
+    {
+      "name": "studio_status",
+      "title": "Studio status",
+      "description": "Connects to NCWE Studio (starting it if needed) and reports the game, the project, the camera, the selection and streaming. Call it first.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "annotations": {
+        "title": "Studio status",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "set_camera",
+      "title": "Move the camera",
+      "description": "Moves the editor camera (and with it what is loaded around it). Use look_at to aim at a point, frame_ids to frame objects, bookmark for a saved view. wait (default true) waits until the area has streamed in.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "position": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 3,
+            "description": "[x, y, z] in metres, game space (Z up)"
+          },
+          "look_at": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 3,
+            "description": "[x, y, z] in metres, game space (Z up)"
+          },
+          "heading": {
+            "type": "number",
+            "description": "View direction in degrees (0 = looking along +Y, 90 = along -X)"
+          },
+          "pitch": {
+            "type": "number",
+            "description": "Degrees, negative looks down (-90 straight down)"
+          },
+          "distance": {
+            "type": "number",
+            "description": "With look_at and no position: distance from the target (default 12 m)"
+          },
+          "frame_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Object ids (from query_objects, place_objects…)"
+          },
+          "bookmark": {
+            "type": "string",
+            "description": "Name of one of the user's bookmarks"
+          },
+          "fov": {
+            "type": "number",
+            "description": "Field of view in degrees across the shorter image side, 10-120 (default 45; 70-90 shows a whole room from inside). It stays until changed: it is the user's view too."
+          },
+          "wait": {
+            "type": "boolean"
+          },
+          "timeout_ms": {
+            "type": "integer"
+          }
+        }
+      },
+      "annotations": {
+        "title": "Move the camera",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "screenshot",
+      "title": "Screenshot",
+      "description": "Renders the 3D view and returns it as an image (after waiting for streaming). Optional camera arguments move the camera first. labels:true numbers your project objects in the image (the reply maps numbers to ids); label_ids numbers chosen objects.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "position": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 3,
+            "description": "[x, y, z] in metres, game space (Z up)"
+          },
+          "look_at": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 3,
+            "description": "[x, y, z] in metres, game space (Z up)"
+          },
+          "heading": {
+            "type": "number",
+            "description": "View direction in degrees (0 = looking along +Y, 90 = along -X)"
+          },
+          "pitch": {
+            "type": "number",
+            "description": "Degrees, negative looks down (-90 straight down)"
+          },
+          "distance": {
+            "type": "number",
+            "description": "With look_at and no position: distance from the target (default 12 m)"
+          },
+          "frame_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Object ids (from query_objects, place_objects…)"
+          },
+          "bookmark": {
+            "type": "string",
+            "description": "Name of one of the user's bookmarks"
+          },
+          "fov": {
+            "type": "number",
+            "description": "Field of view in degrees across the shorter image side, 10-120 (default 45; 70-90 shows a whole room from inside). It stays until changed: it is the user's view too."
+          },
+          "labels": {
+            "type": "boolean"
+          },
+          "label_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Object ids (from query_objects, place_objects…)"
+          },
+          "max_width": {
+            "type": "integer",
+            "description": "Image width cap (default 1024)"
+          },
+          "wait": {
+            "type": "boolean"
+          },
+          "timeout_ms": {
+            "type": "integer"
+          },
+          "quality": {
+            "type": "integer"
+          }
+        }
+      },
+      "annotations": {
+        "title": "Screenshot",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "wait_for_streaming",
+      "title": "Wait for streaming",
+      "description": "Waits until the sectors and meshes around the camera are loaded.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "timeout_ms": {
+            "type": "integer"
+          }
+        }
+      },
+      "annotations": {
+        "title": "Wait for streaming",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "pick_screen_point",
+      "title": "What is at a pixel",
+      "description": "Tells which object (and which 3D point) is under a pixel of the last screenshot.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "number"
+          },
+          "y": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "x",
+          "y"
+        ]
+      },
+      "annotations": {
+        "title": "What is at a pixel",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "raycast",
+      "title": "Ray cast",
+      "description": "Casts rays against the loaded geometry: one from origin along direction (or towards a point), or up to 512 at once (rays). Returns the hit point, distance, object and the surface normal (which way a wall or floor faces). The user sees each ray shot and landing in the 3D view.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "origin": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 3,
+            "description": "[x, y, z] in metres, game space (Z up)"
+          },
+          "direction": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 3,
+            "description": "[x, y, z] in metres, game space (Z up)"
+          },
+          "towards": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 3,
+            "description": "[x, y, z] in metres, game space (Z up)"
+          },
+          "max_distance": {
+            "type": "number"
+          },
+          "ignore": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Object ids (from query_objects, place_objects…)"
+          },
+          "rays": {
+            "type": "array",
+            "description": "Several rays in one call (each: origin, direction or towards, max_distance)",
+            "items": {
+              "type": "object",
+              "properties": {
+                "origin": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 2,
+                  "maxItems": 3,
+                  "description": "[x, y, z] in metres, game space (Z up)"
+                },
+                "direction": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 2,
+                  "maxItems": 3,
+                  "description": "[x, y, z] in metres, game space (Z up)"
+                },
+                "towards": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 2,
+                  "maxItems": 3,
+                  "description": "[x, y, z] in metres, game space (Z up)"
+                },
+                "max_distance": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "origin"
+              ]
+            }
+          },
+          "normal": {
+            "type": "boolean",
+            "description": "Estimate the surface normal (default: one ray yes, batches of more than 16 no)"
+          },
+          "show": {
+            "type": "boolean",
+            "description": "Animate the rays in the user's view (default true)"
+          }
+        }
+      },
+      "annotations": {
+        "title": "Ray cast",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "ground_height",
+      "title": "Ground height",
+      "description": "Height of the first surface below points ([x, y, z] probes from 2 m above z; [x, y] from high above), or over a grid {min:[x,y], max:[x,y], step} (at most 2,500 samples) to read the terrain before building. The user sees the probes drop onto the ground.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "points": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            }
+          },
+          "grid": {
+            "type": "object",
+            "properties": {
+              "min": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                }
+              },
+              "max": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                }
+              },
+              "step": {
+                "type": "number"
+              },
+              "z": {
+                "type": "number",
+                "description": "Probe height reference (optional)"
+              }
+            },
+            "required": [
+              "min",
+              "max",
+              "step"
+            ]
+          },
+          "ignore": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "show": {
+            "type": "boolean"
+          }
+        }
+      },
+      "annotations": {
+        "title": "Ground height",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "measure",
+      "title": "Measure",
+      "description": "Measures in the world and draws the measure in the user's view (the line traces itself, graduated, with its lengths). Either points (a polyline: each segment, the total; closed:true adds the perimeter and the floor area), or from and to, each a point [x, y, z] ([x, y]: on the ground there) or an object id: distance, horizontal distance, height difference, heading, slope; between objects also the gap between their boxes (clearance per axis, closest points, overlapping).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "points": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 2,
+              "maxItems": 3,
+              "description": "[x, y, z] in metres, game space (Z up)"
+            }
+          },
+          "closed": {
+            "type": "boolean"
+          },
+          "from": {
+            "description": "A point [x, y, z] or an object id",
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 2,
+                "maxItems": 3,
+                "description": "[x, y, z] in metres, game space (Z up)"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "to": {
+            "description": "A point [x, y, z] or an object id",
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 2,
+                "maxItems": 3,
+                "description": "[x, y, z] in metres, game space (Z up)"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "show": {
+            "type": "boolean"
+          },
+          "duration": {
+            "type": "number",
+            "description": "Seconds it stays drawn (default 20, 0 = until annotate clear)"
+          }
+        }
+      },
+      "annotations": {
+        "title": "Measure",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "measure_space",
+      "title": "Measure the space around a point",
+      "description": "Casts rays all around a point (directions, default 16), up and down: distance to the walls in each heading, floor and ceiling heights, clear height, widths east-west and north-south, the narrowest width, and headings that hit nothing (doorways, open air). Use it inside a room or a street before building. The user sees the rays burst out and the free space outlined.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "position": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "[x, y, z], or [x, y]: height metres above the ground there"
+          },
+          "height": {
+            "type": "number",
+            "description": "With [x, y]: metres above the ground (default 1.2)"
+          },
+          "directions": {
+            "type": "integer",
+            "minimum": 4,
+            "maximum": 72
+          },
+          "heading": {
+            "type": "number",
+            "description": "Heading of the first ray (default 0 = +Y)"
+          },
+          "max_distance": {
+            "type": "number",
+            "description": "Default 40 m"
+          },
+          "ignore": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Object ids (from query_objects, place_objects…)"
+          },
+          "show": {
+            "type": "boolean"
+          },
+          "duration": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "position"
+        ]
+      },
+      "annotations": {
+        "title": "Measure the space around a point",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "annotate",
+      "title": "Draw in the user's view",
+      "description": "Draws marks in Studio's 3D view to show the user what you mean or plan, without changing the world (they are not exported): point (a pin with text), label, arrow (from, to), line (points, closed), measure (points, with lengths), box (min/max or center/size), sphere (center, radius), objects (ids: their boxes). color: cyan, violet, amber, green, red, white, #RRGGBB or [r,g,b]. duration seconds (default 30; 0 = until clear). clear:true removes your earlier marks first.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "point",
+                    "label",
+                    "arrow",
+                    "line",
+                    "measure",
+                    "box",
+                    "sphere",
+                    "objects"
+                  ]
+                },
+                "text": {
+                  "type": "string"
+                },
+                "position": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 2,
+                  "maxItems": 3,
+                  "description": "[x, y, z] in metres, game space (Z up)"
+                },
+                "from": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 2,
+                  "maxItems": 3,
+                  "description": "[x, y, z] in metres, game space (Z up)"
+                },
+                "to": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 2,
+                  "maxItems": 3,
+                  "description": "[x, y, z] in metres, game space (Z up)"
+                },
+                "points": {
+                  "type": "array",
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    },
+                    "minItems": 2,
+                    "maxItems": 3,
+                    "description": "[x, y, z] in metres, game space (Z up)"
+                  }
+                },
+                "closed": {
+                  "type": "boolean"
+                },
+                "min": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 2,
+                  "maxItems": 3,
+                  "description": "[x, y, z] in metres, game space (Z up)"
+                },
+                "max": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 2,
+                  "maxItems": 3,
+                  "description": "[x, y, z] in metres, game space (Z up)"
+                },
+                "center": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 2,
+                  "maxItems": 3,
+                  "description": "[x, y, z] in metres, game space (Z up)"
+                },
+                "size": {
+                  "description": "Uniform factor or [x, y, z] factors",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 3,
+                      "maxItems": 3
+                    }
+                  ]
+                },
+                "radius": {
+                  "type": "number"
+                },
+                "ids": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Object ids (from query_objects, place_objects…)"
+                },
+                "color": {
+                  "description": "Name, #RRGGBB or [r, g, b] 0..1",
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      }
+                    }
+                  ]
+                },
+                "duration": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            }
+          },
+          "duration": {
+            "type": "number"
+          },
+          "clear": {
+            "type": "boolean"
+          }
+        }
+      },
+      "annotations": {
+        "title": "Draw in the user's view",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "narrate",
+      "title": "Tell the user what you do",
+      "description": "Shows a message to the user in a feed at the left of Studio's 3D view: they watch you work there and cannot answer in it (they answer in your chat). Post what you are about to do (kind plan, with its steps), what you are doing (doing), what you finished (done), and notes (info), warnings, problems (error) or questions for the user. Each message slides in and types itself out; the running one pulses. Returns the message id: update that message (id with done_steps to tick a plan's steps as you go, status done or failed, or new text) rather than posting many. One or two sentences per message, in the user's language; clear:true removes the earlier messages.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "The message (one or two sentences)"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "plan",
+              "doing",
+              "done",
+              "info",
+              "warning",
+              "error",
+              "question"
+            ],
+            "description": "Default info"
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "plan: the steps (12 at most), ticked later with done_steps"
+          },
+          "id": {
+            "type": "integer",
+            "description": "Update this earlier message instead of posting a new one"
+          },
+          "done_steps": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "description": "Indexes (from 0) of the plan's steps now done"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "running",
+              "done",
+              "failed"
+            ],
+            "description": "done settles a plan (every step ticked) or turns a doing message into done; failed marks it as a problem"
+          },
+          "clear": {
+            "type": "boolean",
+            "description": "Remove the earlier messages first"
+          }
+        }
+      },
+      "annotations": {
+        "title": "Tell the user what you do",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "lock_view",
+      "title": "Take or give back the view",
+      "description": "locked:true takes Studio's 3D view for yourself while you work through a sequence (camera moves, screenshots, measures): the user's mouse and keys no longer move the camera or pick in the view, its edges glow and breathe, and a pill says what you are doing (reason). The user keeps a Take back control button (and Esc). locked:false gives it back: do it as soon as you are done or need the user. It is released by itself after 5 minutes without a command. If the reply says the user took the view back (user_took_back), ask before taking it again.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "locked": {
+            "type": "boolean",
+            "description": "true takes the view (default), false gives it back"
+          },
+          "reason": {
+            "type": "string",
+            "description": "What you are doing, shown to the user (e.g. Furnishing the kitchen)"
+          }
+        }
+      },
+      "annotations": {
+        "title": "Take or give back the view",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "query_objects",
+      "title": "Find objects",
+      "description": "Objects (game and project) inside a sphere (center + radius) or a box (min/max), nearest first, with kind, asset, position, rotation, scale, size and whether they can be edited. Filter by kinds, text and source.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "center": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 3,
+            "description": "[x, y, z] in metres, game space (Z up)"
+          },
+          "radius": {
+            "type": "number",
+            "description": "Sphere radius around center (default 30 m)"
+          },
+          "min": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 3,
+            "description": "[x, y, z] in metres, game space (Z up)"
+          },
+          "max": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 3,
+            "description": "[x, y, z] in metres, game space (Z up)"
+          },
+          "kinds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "mesh",
+                "instanced_mesh",
+                "entity",
+                "door",
+                "light",
+                "particle",
+                "effect",
+                "sound",
+                "decal",
+                "occluder",
+                "occluder_instanced",
+                "collision",
+                "proxy",
+                "road_piece",
+                "other"
+              ]
+            }
+          },
+          "text": {
+            "type": "string",
+            "description": "Words that must appear in the name or asset path"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "all",
+              "game",
+              "project"
+            ]
+          },
+          "show": {
+            "type": "boolean",
+            "description": "Animate the search in the user's view (default true)"
+          },
+          "include_deleted": {
+            "type": "boolean"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Default 100, at most 2000"
+          }
+        }
+      },
+      "annotations": {
+        "title": "Find objects",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_objects",
+      "title": "Object details",
+      "description": "Full details of objects: element properties, collision shapes, occlusion, links (collision and occluders that follow a mesh).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Object ids (from query_objects, place_objects…)"
+          }
+        },
+        "required": [
+          "ids"
+        ]
+      },
+      "annotations": {
+        "title": "Object details",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "select_objects",
+      "title": "Select objects",
+      "description": "Selects objects in Studio (to show the user) and optionally frames them.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Object ids (from query_objects, place_objects…)"
+          },
+          "frame": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ids"
+        ]
+      },
+      "annotations": {
+        "title": "Select objects",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "view_settings",
+      "title": "View settings",
+      "description": "Changes what the 3D view shows: layer scene/collision/occlusion (wireframes of collision or occluders), shading, night lighting preview, distant city, icons.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "layer": {
+            "type": "string",
+            "enum": [
+              "scene",
+              "collision",
+              "occlusion"
+            ]
+          },
+          "shading": {
+            "type": "string"
+          },
+          "night": {
+            "type": "boolean"
+          },
+          "show_collision": {
+            "type": "boolean"
+          },
+          "show_occluders": {
+            "type": "boolean"
+          },
+          "collision_range": {
+            "type": "number"
+          },
+          "distant_city": {
+            "type": "boolean"
+          },
+          "icons": {
+            "type": "boolean"
+          }
+        }
+      },
+      "annotations": {
+        "title": "View settings",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "bookmarks",
+      "title": "Bookmarks",
+      "description": "The user's saved camera views (name, position, heading, pitch).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "annotations": {
+        "title": "Bookmarks",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "search_assets",
+      "title": "Search assets",
+      "description": "Searches the game's assets: meshes (props, architecture modules), entity templates (.ent: doors, devices…), particles, effects, decal materials. All words must match the name or folder. favorites:true limits to the user's library.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "any",
+              "mesh",
+              "entity",
+              "door",
+              "particle",
+              "effect",
+              "decal"
+            ]
+          },
+          "category": {
+            "type": "string",
+            "description": "Decoration, Furniture, Architecture, Devices, Doors, Vegetation, Vehicles, Characters, Weapons and items, Effects, Environment, Quests, Other"
+          },
+          "folder": {
+            "type": "string",
+            "description": "Path prefix, e.g. base\\environment\\furniture\\"
+          },
+          "favorites": {
+            "type": "boolean"
+          },
+          "limit": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "query"
+        ]
+      },
+      "annotations": {
+        "title": "Search assets",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "browse_assets",
+      "title": "Browse asset folders",
+      "description": "Lists the subfolders and files of an archive folder (e.g. base\\environment\\architecture\\watson\\).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "folder": {
+            "type": "string"
+          },
+          "extension": {
+            "type": "string",
+            "description": ".mesh, .ent…"
+          },
+          "limit": {
+            "type": "integer"
+          }
+        }
+      },
+      "annotations": {
+        "title": "Browse asset folders",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "asset_info",
+      "title": "Asset sizes",
+      "description": "Box (min, max, size, center relative to the pivot at yaw 0), appearances, default look, parts and triangles of meshes and entity templates. Measure modules before tiling them.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "appearance": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "paths"
+        ]
+      },
+      "annotations": {
+        "title": "Asset sizes",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "preview_asset",
+      "title": "Preview an asset",
+      "description": "Renders one mesh or entity template on its own (with its approximate colours) and returns the image.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "asset": {
+            "type": "string"
+          },
+          "appearance": {
+            "type": "string"
+          },
+          "width": {
+            "type": "integer"
+          },
+          "height": {
+            "type": "integer"
+          },
+          "view_yaw": {
+            "type": "number"
+          },
+          "view_pitch": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "asset"
+        ]
+      },
+      "annotations": {
+        "title": "Preview an asset",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "list_sounds",
+      "title": "Sound emitters",
+      "description": "Sound emitters loaded around the camera, by name: add_elements kind sound copies one of them.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "annotations": {
+        "title": "Sound emitters",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "place_objects",
+      "title": "Place objects",
+      "description": "Adds meshes and entity templates (one undo step), optionally with elements (lights…) and collisions in the same step. Per item: ground snapping, a fitted collision box, appearance, door behaviour. Returns the new ids.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "asset": {
+                  "type": "string",
+                  "description": "Mesh (.mesh) or entity template (.ent) path from search_assets"
+                },
+                "position": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "description": "[x, y, z] metres; [x, y] drops it onto the first surface from above"
+                },
+                "rotation": {
+                  "type": "object",
+                  "description": "Rotation in degrees. yaw turns about +Z (counter-clockwise from above, 0 faces +Y); pitch about X; roll about Y.",
+                  "properties": {
+                    "yaw": {
+                      "type": "number"
+                    },
+                    "pitch": {
+                      "type": "number"
+                    },
+                    "roll": {
+                      "type": "number"
+                    }
+                  }
+                },
+                "scale": {
+                  "description": "Uniform factor or [x, y, z] factors",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 3,
+                      "maxItems": 3
+                    }
+                  ]
+                },
+                "appearance": {
+                  "type": "string",
+                  "description": "Appearance name (asset_info lists them)"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "ground": {
+                  "type": "string",
+                  "enum": [
+                    "none",
+                    "bottom",
+                    "pivot"
+                  ],
+                  "description": "bottom: rest the asset's box on the surface below; pivot: put its pivot there"
+                },
+                "collision": {
+                  "type": "string",
+                  "enum": [
+                    "none",
+                    "box"
+                  ],
+                  "description": "box: add a fitted collision box that follows the mesh (meshes have no game collision otherwise)"
+                },
+                "collision_preset": {
+                  "type": "string"
+                },
+                "occluder_type": {
+                  "type": "string",
+                  "enum": [
+                    "Default",
+                    "None",
+                    "Detail",
+                    "MinorInterior",
+                    "MajorInterior",
+                    "Exterior"
+                  ],
+                  "description": "Mesh occlusion setting"
+                },
+                "door": {
+                  "type": "object",
+                  "description": "Door behaviour for door templates (see add_elements)"
+                }
+              },
+              "required": [
+                "asset",
+                "position"
+              ]
+            }
+          },
+          "elements": {
+            "type": "array",
+            "description": "Lights and other elements added in the same step: same items as add_elements",
+            "items": {
+              "type": "object"
+            }
+          },
+          "collisions": {
+            "type": "array",
+            "description": "Collisions added in the same step: same items as add_collision",
+            "items": {
+              "type": "object"
+            }
+          },
+          "select": {
+            "type": "boolean"
+          }
+        }
+      },
+      "annotations": {
+        "title": "Place objects",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "place_pattern",
+      "title": "Place a pattern",
+      "description": "Places one or more assets in a pattern (one undo step): grid (rows × columns), line (from → to), circle/arc, scatter (random in a disc or box, min_distance apart) or path (along points). Spacing defaults to the asset's footprint + gap; items can follow the line or face the center. assets are cycled (or picked at random with choose:\"random\").",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "enum": [
+              "grid",
+              "line",
+              "circle",
+              "scatter",
+              "path"
+            ]
+          },
+          "assets": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "choose": {
+            "type": "string",
+            "enum": [
+              "cycle",
+              "random"
+            ]
+          },
+          "origin": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 3,
+            "description": "[x, y, z] in metres, game space (Z up)"
+          },
+          "rows": {
+            "type": "integer"
+          },
+          "columns": {
+            "type": "integer"
+          },
+          "spacing": {
+            "description": "grid: [x, y] metres; line/path: metres",
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                }
+              }
+            ]
+          },
+          "gap": {
+            "type": "number"
+          },
+          "centered": {
+            "type": "boolean",
+            "description": "grid: origin is the grid centre (default true)"
+          },
+          "heading": {
+            "type": "number",
+            "description": "grid: rotation of the grid"
+          },
+          "from": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 3,
+            "description": "[x, y, z] in metres, game space (Z up)"
+          },
+          "to": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 3,
+            "description": "[x, y, z] in metres, game space (Z up)"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "points": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            }
+          },
+          "closed": {
+            "type": "boolean"
+          },
+          "follow": {
+            "type": "boolean",
+            "description": "line/path: turn items along the line (default true)"
+          },
+          "center": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 3,
+            "description": "[x, y, z] in metres, game space (Z up)"
+          },
+          "radius": {
+            "type": "number"
+          },
+          "start_angle": {
+            "type": "number"
+          },
+          "end_angle": {
+            "type": "number"
+          },
+          "face": {
+            "type": "string",
+            "enum": [
+              "center",
+              "outward",
+              "tangent",
+              "none"
+            ]
+          },
+          "min": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 3,
+            "description": "[x, y, z] in metres, game space (Z up)"
+          },
+          "max": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 3,
+            "description": "[x, y, z] in metres, game space (Z up)"
+          },
+          "min_distance": {
+            "type": "number"
+          },
+          "random_yaw": {
+            "type": "boolean"
+          },
+          "scale_min": {
+            "type": "number"
+          },
+          "scale_max": {
+            "type": "number"
+          },
+          "seed": {
+            "type": "integer"
+          },
+          "item_yaw": {
+            "type": "number",
+            "description": "Extra yaw of every item"
+          },
+          "jitter": {
+            "type": "number",
+            "description": "Random offset in metres"
+          },
+          "jitter_yaw": {
+            "type": "number"
+          },
+          "ground": {
+            "type": "string",
+            "enum": [
+              "none",
+              "bottom",
+              "pivot"
+            ]
+          },
+          "collision": {
+            "type": "string",
+            "enum": [
+              "none",
+              "box"
+            ]
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "Return the computed items without placing them"
+          }
+        },
+        "required": [
+          "pattern",
+          "assets"
+        ]
+      },
+      "annotations": {
+        "title": "Place a pattern",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "build_room",
+      "title": "Build a room",
+      "description": "Builds a rectangular room in one undo step: floor tiles, wall modules (stacked to the height, stretched to fit, with door openings), an optional ceiling, ceiling lights and collision (floor, walls, ceiling). Modules are measured with asset_info first. flip_walls turns wall modules around when their good side faces out. dry_run returns the plan.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "center": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "[x, y, z] middle of the room at floor level"
+          },
+          "size": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "[width, depth] metres (local X, local Y)"
+          },
+          "height": {
+            "type": "number"
+          },
+          "heading": {
+            "type": "number",
+            "description": "Room rotation; local +Y is the north wall"
+          },
+          "floor_asset": {
+            "type": "string"
+          },
+          "wall_asset": {
+            "type": "string"
+          },
+          "ceiling_asset": {
+            "type": "string"
+          },
+          "flip_walls": {
+            "type": "boolean"
+          },
+          "stretch": {
+            "type": "boolean",
+            "description": "Scale modules to fit exactly (default true)"
+          },
+          "doors": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "wall": {
+                  "type": "string",
+                  "enum": [
+                    "north",
+                    "south",
+                    "east",
+                    "west"
+                  ]
+                },
+                "offset": {
+                  "type": "number",
+                  "description": "From the wall's middle along it, metres"
+                },
+                "width": {
+                  "type": "number"
+                },
+                "height": {
+                  "type": "number"
+                },
+                "asset": {
+                  "type": "string",
+                  "description": "Optional door template (.ent) placed in the opening"
+                },
+                "appearance": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "wall"
+              ]
+            }
+          },
+          "lights": {
+            "type": "integer",
+            "description": "Number of ceiling lights (default one per 16 m², 0 for none)"
+          },
+          "light_temperature": {
+            "type": "number"
+          },
+          "light_intensity": {
+            "type": "number"
+          },
+          "collision": {
+            "type": "boolean",
+            "description": "Floor, wall and ceiling collision boxes (default true)"
+          },
+          "dry_run": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "center",
+          "size"
+        ]
+      },
+      "annotations": {
+        "title": "Build a room",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "add_elements",
+      "title": "Add lights and elements",
+      "description": "Adds lights, particles, effects, decals, sound emitters, occluders, doors or entities (one undo step).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "light",
+                    "particle",
+                    "effect",
+                    "sound",
+                    "customsound",
+                    "decal",
+                    "occluder",
+                    "door",
+                    "entity"
+                  ]
+                },
+                "position": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 2,
+                  "maxItems": 3,
+                  "description": "[x, y, z] in metres, game space (Z up)"
+                },
+                "rotation": {
+                  "type": "object",
+                  "description": "Rotation in degrees. yaw turns about +Z (counter-clockwise from above, 0 faces +Y); pitch about X; roll about Y.",
+                  "properties": {
+                    "yaw": {
+                      "type": "number"
+                    },
+                    "pitch": {
+                      "type": "number"
+                    },
+                    "roll": {
+                      "type": "number"
+                    }
+                  }
+                },
+                "scale": {
+                  "description": "Uniform factor or [x, y, z] factors",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 3,
+                      "maxItems": 3
+                    }
+                  ]
+                },
+                "name": {
+                  "type": "string"
+                },
+                "light_type": {
+                  "type": "string",
+                  "enum": [
+                    "point",
+                    "spot",
+                    "area"
+                  ]
+                },
+                "temperature": {
+                  "type": "number",
+                  "description": "Kelvin (2700 warm … 6500 white); overrides color"
+                },
+                "color": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "description": "[r, g, b] 0..1 (lights without temperature, decal tint)"
+                },
+                "intensity": {
+                  "type": "number",
+                  "description": "Lumen"
+                },
+                "radius": {
+                  "type": "number",
+                  "description": "Light or sound reach, metres"
+                },
+                "inner_angle": {
+                  "type": "number"
+                },
+                "outer_angle": {
+                  "type": "number"
+                },
+                "shadows": {
+                  "type": "boolean"
+                },
+                "resource": {
+                  "type": "string",
+                  "description": ".particle / .effect / decal .mi / .ent path"
+                },
+                "appearance": {
+                  "type": "string"
+                },
+                "alpha": {
+                  "type": "number",
+                  "description": "Decal opacity 0..1"
+                },
+                "sound": {
+                  "type": "string",
+                  "description": "sound: name of a loaded game emitter to copy (list_sounds). customsound: id or name of a sound of the custom sound library (custom_sounds)"
+                },
+                "volume": {
+                  "type": "number",
+                  "description": "customsound: 0..1"
+                },
+                "min_distance": {
+                  "type": "number",
+                  "description": "customsound: full volume within (m); radius = silent beyond"
+                },
+                "playback": {
+                  "type": "string",
+                  "enum": [
+                    "loop",
+                    "interval"
+                  ],
+                  "description": "customsound: in a loop, or again after a random pause"
+                },
+                "pause": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "description": "customsound interval: [shortest, longest] seconds of silence between plays"
+                },
+                "synced": {
+                  "type": "boolean",
+                  "description": "customsound loop played by the server, the same moment for every player (16 at most per world)"
+                },
+                "occluder_type": {
+                  "type": "string",
+                  "enum": [
+                    "Default",
+                    "None",
+                    "Detail",
+                    "MinorInterior",
+                    "MajorInterior",
+                    "Exterior"
+                  ]
+                },
+                "autohide": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 255
+                },
+                "plane": {
+                  "type": "boolean",
+                  "description": "Occluder: a plane instead of a box"
+                },
+                "door": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "INTERACTIVE",
+                        "AUTOMATIC",
+                        "PHYSICAL",
+                        "REMOTELY_CONTROLLED",
+                        "NONE"
+                      ]
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "CLOSED",
+                        "OPENED",
+                        "LOCKED",
+                        "SEALED"
+                      ]
+                    },
+                    "opening": {
+                      "type": "string",
+                      "enum": [
+                        "SLIDING_HORIZONTALLY",
+                        "SLIDING_VERTICALLY",
+                        "HINGED",
+                        "GATE",
+                        "HINGED_SIDE_ONE",
+                        "HINGED_SIDE_TWO"
+                      ]
+                    },
+                    "close_delay": {
+                      "type": "number"
+                    },
+                    "auto_close": {
+                      "type": "boolean"
+                    },
+                    "speed": {
+                      "type": "number"
+                    },
+                    "player_can_toggle_lock": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              },
+              "required": [
+                "kind",
+                "position"
+              ]
+            }
+          },
+          "select": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items"
+        ]
+      },
+      "annotations": {
+        "title": "Add lights and elements",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "edit_element",
+      "title": "Edit an element",
+      "description": "Changes the properties of a light, effect, decal, sound, occluder, door or entity (project or game; a game one becomes a project copy that replaces it). Same property names as add_elements.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "properties": {
+            "type": "object",
+            "description": "Properties to change, with the same keys as add_elements items (temperature, color, intensity, radius, resource, appearance, occluder_type, autohide, door…)"
+          }
+        },
+        "required": [
+          "id",
+          "properties"
+        ]
+      },
+      "annotations": {
+        "title": "Edit an element",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "transform_objects",
+      "title": "Move, turn, scale",
+      "description": "Moves, turns or scales objects (one undo step). Either items [{id, position | offset, rotation | rotate_yaw, scale}] or ids with a group offset, rotate_yaw about a pivot (default: their centre) and scale_factor. snap_to_ground rests them on the surface below. Game collision and occluders at a moved mesh follow it.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "position": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 2,
+                  "maxItems": 3,
+                  "description": "[x, y, z] in metres, game space (Z up)"
+                },
+                "offset": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 2,
+                  "maxItems": 3,
+                  "description": "[x, y, z] in metres, game space (Z up)"
+                },
+                "rotation": {
+                  "type": "object",
+                  "description": "Rotation in degrees. yaw turns about +Z (counter-clockwise from above, 0 faces +Y); pitch about X; roll about Y.",
+                  "properties": {
+                    "yaw": {
+                      "type": "number"
+                    },
+                    "pitch": {
+                      "type": "number"
+                    },
+                    "roll": {
+                      "type": "number"
+                    }
+                  }
+                },
+                "rotate_yaw": {
+                  "type": "number"
+                },
+                "scale": {
+                  "description": "Uniform factor or [x, y, z] factors",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 3,
+                      "maxItems": 3
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "id"
+              ]
+            }
+          },
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Object ids (from query_objects, place_objects…)"
+          },
+          "offset": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 3,
+            "description": "[x, y, z] in metres, game space (Z up)"
+          },
+          "rotate_yaw": {
+            "type": "number"
+          },
+          "scale_factor": {
+            "type": "number"
+          },
+          "pivot": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 3,
+            "description": "[x, y, z] in metres, game space (Z up)"
+          },
+          "snap_to_ground": {
+            "type": "boolean"
+          }
+        }
+      },
+      "annotations": {
+        "title": "Move, turn, scale",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "duplicate_objects",
+      "title": "Duplicate",
+      "description": "Copies objects (game or project) as new project objects, optionally offset.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Object ids (from query_objects, place_objects…)"
+          },
+          "offset": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 3,
+            "description": "[x, y, z] in metres, game space (Z up)"
+          }
+        },
+        "required": [
+          "ids"
+        ]
+      },
+      "annotations": {
+        "title": "Duplicate",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "delete_objects",
+      "title": "Delete",
+      "description": "Deletes objects (one undo step): project objects are removed, game objects are hidden by the exported mod. The collision and occluders placed exactly at a deleted mesh go with it.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Object ids (from query_objects, place_objects…)"
+          }
+        },
+        "required": [
+          "ids"
+        ]
+      },
+      "annotations": {
+        "title": "Delete",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "clear_area",
+      "title": "Clear an area",
+      "description": "Deletes every editable object in a sphere or box matching the filters (one undo step). Use dry_run:true first to see what would go. Remember occluders when you remove buildings.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "center": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 3,
+            "description": "[x, y, z] in metres, game space (Z up)"
+          },
+          "radius": {
+            "type": "number",
+            "description": "Sphere radius around center (default 30 m)"
+          },
+          "min": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 3,
+            "description": "[x, y, z] in metres, game space (Z up)"
+          },
+          "max": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 3,
+            "description": "[x, y, z] in metres, game space (Z up)"
+          },
+          "kinds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "mesh",
+                "instanced_mesh",
+                "entity",
+                "door",
+                "light",
+                "particle",
+                "effect",
+                "sound",
+                "decal",
+                "occluder",
+                "occluder_instanced",
+                "collision",
+                "proxy",
+                "road_piece",
+                "other"
+              ]
+            }
+          },
+          "text": {
+            "type": "string",
+            "description": "Words that must appear in the name or asset path"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "all",
+              "game",
+              "project"
+            ]
+          },
+          "show": {
+            "type": "boolean",
+            "description": "Animate the search in the user's view (default true)"
+          },
+          "dry_run": {
+            "type": "boolean"
+          }
+        }
+      },
+      "annotations": {
+        "title": "Clear an area",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "add_collision",
+      "title": "Add collision",
+      "description": "Adds collision (boxes, spheres, capsules) in one undo step; attach_to makes it follow an object.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "position": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 2,
+                  "maxItems": 3,
+                  "description": "[x, y, z] in metres, game space (Z up)"
+                },
+                "rotation": {
+                  "type": "object",
+                  "description": "Rotation in degrees. yaw turns about +Z (counter-clockwise from above, 0 faces +Y); pitch about X; roll about Y.",
+                  "properties": {
+                    "yaw": {
+                      "type": "number"
+                    },
+                    "pitch": {
+                      "type": "number"
+                    },
+                    "roll": {
+                      "type": "number"
+                    }
+                  }
+                },
+                "scale": {
+                  "description": "Uniform factor or [x, y, z] factors",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 3,
+                      "maxItems": 3
+                    }
+                  ]
+                },
+                "name": {
+                  "type": "string"
+                },
+                "attach_to": {
+                  "type": "string",
+                  "description": "Object id this collision follows (moved and deleted with it)"
+                },
+                "preset": {
+                  "type": "string",
+                  "description": "World Static (default, blocks everything), Player Blocker, Block Player and Vehicles, Vehicle Blocker, Simple Environment Collision, Complex Environment Collision, World Dynamic, Destructible, Shooting, Debris"
+                },
+                "material": {
+                  "type": "string",
+                  "description": "concrete.physmat (default), metal.physmat, wood.physmat, glass.physmat, plastic.physmat…"
+                },
+                "shapes": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "box",
+                          "sphere",
+                          "capsule"
+                        ]
+                      },
+                      "size": {
+                        "type": "array",
+                        "items": {
+                          "type": "number"
+                        },
+                        "description": "Box: full size [x, y, z] in metres"
+                      },
+                      "radius": {
+                        "type": "number"
+                      },
+                      "length": {
+                        "type": "number",
+                        "description": "Capsule: length of its straight part"
+                      },
+                      "axis": {
+                        "type": "string",
+                        "enum": [
+                          "x",
+                          "y",
+                          "z"
+                        ],
+                        "description": "Capsule axis (default z, upright)"
+                      },
+                      "offset": {
+                        "type": "array",
+                        "items": {
+                          "type": "number"
+                        },
+                        "description": "Shape position relative to the collision, metres"
+                      },
+                      "rotation": {
+                        "type": "object",
+                        "properties": {
+                          "yaw": {
+                            "type": "number"
+                          },
+                          "pitch": {
+                            "type": "number"
+                          },
+                          "roll": {
+                            "type": "number"
+                          }
+                        }
+                      },
+                      "preset": {
+                        "type": "string"
+                      },
+                      "material": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "position",
+                "shapes"
+              ]
+            }
+          },
+          "select": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items"
+        ]
+      },
+      "annotations": {
+        "title": "Add collision",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "fit_collision",
+      "title": "Fit collision boxes",
+      "description": "Adds a collision box fitted to each mesh (it follows the mesh).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Object ids (from query_objects, place_objects…)"
+          },
+          "preset": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ids"
+        ]
+      },
+      "annotations": {
+        "title": "Fit collision boxes",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "edit_collision",
+      "title": "Edit a project collision",
+      "description": "Replaces the shapes, preset, material, name or attachment of a project collision.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "shapes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "box",
+                    "sphere",
+                    "capsule"
+                  ]
+                },
+                "size": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "description": "Box: full size [x, y, z] in metres"
+                },
+                "radius": {
+                  "type": "number"
+                },
+                "length": {
+                  "type": "number",
+                  "description": "Capsule: length of its straight part"
+                },
+                "axis": {
+                  "type": "string",
+                  "enum": [
+                    "x",
+                    "y",
+                    "z"
+                  ],
+                  "description": "Capsule axis (default z, upright)"
+                },
+                "offset": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "description": "Shape position relative to the collision, metres"
+                },
+                "rotation": {
+                  "type": "object",
+                  "properties": {
+                    "yaw": {
+                      "type": "number"
+                    },
+                    "pitch": {
+                      "type": "number"
+                    },
+                    "roll": {
+                      "type": "number"
+                    }
+                  }
+                },
+                "preset": {
+                  "type": "string"
+                },
+                "material": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            }
+          },
+          "preset": {
+            "type": "string"
+          },
+          "material": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "attach_to": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "annotations": {
+        "title": "Edit a project collision",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "game_collision",
+      "title": "Edit game collision",
+      "description": "Game collision actors (query_objects kinds collision): switch one shape off or back on (e.g. an invisible wall left in a doorway), or make an editable project copy that replaces it. Moving and deleting use transform_objects / delete_objects.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "disable_shape",
+              "enable_shape",
+              "make_editable"
+            ]
+          },
+          "shape": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "action"
+        ]
+      },
+      "annotations": {
+        "title": "Edit game collision",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "set_mesh_occlusion",
+      "title": "Mesh occlusion",
+      "description": "Sets how a mesh occludes what is behind it (type Default/None/Detail/MinorInterior/MajorInterior/Exterior, autohide 0–255). A game mesh becomes a project copy of its node that keeps its collision.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "Default",
+              "None",
+              "Detail",
+              "MinorInterior",
+              "MajorInterior",
+              "Exterior"
+            ]
+          },
+          "autohide": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "type"
+        ]
+      },
+      "annotations": {
+        "title": "Mesh occlusion",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "expand_instanced_occluder",
+      "title": "Split an instanced occluder",
+      "description": "Turns an instanced occluder node (several boxes, kind occluder_instanced) into individual occluders you can move, retype or delete one by one.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "annotations": {
+        "title": "Split an instanced occluder",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "road_types",
+      "title": "Road types",
+      "description": "Road pieces the game can bend along a road (exportable ones by default), by name.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "include_preview_only": {
+            "type": "boolean"
+          },
+          "limit": {
+            "type": "integer"
+          }
+        }
+      },
+      "annotations": {
+        "title": "Road types",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "create_road",
+      "title": "Create a road",
+      "description": "Creates a road through game-space points with a road type (road_types), optional banking (degrees) and ground snapping.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "points": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 2,
+              "maxItems": 3,
+              "description": "[x, y, z] in metres, game space (Z up)"
+            }
+          },
+          "type": {
+            "type": "string"
+          },
+          "banking": {
+            "type": "number"
+          },
+          "name": {
+            "type": "string"
+          },
+          "snap_to_ground": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "points",
+          "type"
+        ]
+      },
+      "annotations": {
+        "title": "Create a road",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "edit_road",
+      "title": "Edit a road",
+      "description": "Changes a project road: points, type, banking, name, or action reverse / snap_to_ground / delete.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "points": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 2,
+              "maxItems": 3,
+              "description": "[x, y, z] in metres, game space (Z up)"
+            }
+          },
+          "type": {
+            "type": "string"
+          },
+          "banking": {
+            "type": "number"
+          },
+          "name": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "reverse",
+              "snap_to_ground",
+              "delete"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "annotations": {
+        "title": "Edit a road",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "list_roads",
+      "title": "Project roads",
+      "description": "The project's roads with their points.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "annotations": {
+        "title": "Project roads",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "rebuild_game_road",
+      "title": "Edit a game road",
+      "description": "Turns a game road piece (kind road_piece) and the pieces continuing it into one editable project road that replaces them.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "annotations": {
+        "title": "Edit a game road",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "elevator_types",
+      "title": "Elevator types",
+      "description": "The elevator types (cabin templates: common, with many looks; industrial; megabuilding) with their footprints; with type, that type's looks (appearances).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string"
+          }
+        }
+      },
+      "annotations": {
+        "title": "Elevator types",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "create_elevator",
+      "title": "Create an elevator",
+      "description": "Creates a working elevator: the cabin, a call panel and a landing door on every floor, floor markers and invisible shaft walls. position: the cabin floor on the lowest floor (ground:true snaps it to the surface); floors: heights above it (2.5 m apart at least) or {height, name, door}; yaw: the side its doors open (default: towards the camera, 0 = -Y).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "position": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 3,
+            "description": "[x, y, z] in metres, game space (Z up)"
+          },
+          "type": {
+            "type": "string"
+          },
+          "appearance": {
+            "type": "string"
+          },
+          "floors": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "height": {
+                      "type": "number"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "door": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "height"
+                  ]
+                }
+              ]
+            }
+          },
+          "yaw": {
+            "type": "number"
+          },
+          "name": {
+            "type": "string"
+          },
+          "ground": {
+            "type": "boolean"
+          },
+          "speed": {
+            "type": "number"
+          },
+          "start_floor": {
+            "type": "integer"
+          },
+          "panel_on_left": {
+            "type": "boolean"
+          },
+          "shaft": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "position"
+        ]
+      },
+      "annotations": {
+        "title": "Create an elevator",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "edit_elevator",
+      "title": "Edit an elevator",
+      "description": "Changes a project elevator: floors (a new list), add_floors_at (world heights: a floor at each), floor {index, height, name, door}, remove_floor (index), type, appearance, yaw, position, name, speed, start_floor, panel_on_left, shaft, or action snap_to_ground / duplicate / delete.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "floors": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "height": {
+                      "type": "number"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "door": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "height"
+                  ]
+                }
+              ]
+            }
+          },
+          "add_floors_at": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          },
+          "floor": {
+            "type": "object",
+            "properties": {
+              "index": {
+                "type": "integer"
+              },
+              "height": {
+                "type": "number"
+              },
+              "name": {
+                "type": "string"
+              },
+              "door": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "index"
+            ]
+          },
+          "remove_floor": {
+            "type": "integer"
+          },
+          "type": {
+            "type": "string"
+          },
+          "appearance": {
+            "type": "string"
+          },
+          "yaw": {
+            "type": "number"
+          },
+          "position": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 3,
+            "description": "[x, y, z] in metres, game space (Z up)"
+          },
+          "name": {
+            "type": "string"
+          },
+          "speed": {
+            "type": "number"
+          },
+          "start_floor": {
+            "type": "integer"
+          },
+          "panel_on_left": {
+            "type": "boolean"
+          },
+          "shaft": {
+            "type": "boolean"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "snap_to_ground",
+              "duplicate",
+              "delete"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "annotations": {
+        "title": "Edit an elevator",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "list_elevators",
+      "title": "Project elevators",
+      "description": "The project's elevators: type, look, base position, the side their doors face, and every floor (height above the base, world z, name, landing door).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "annotations": {
+        "title": "Project elevators",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "prefab_save",
+      "title": "Save a prefab",
+      "description": "Saves objects (meshes, elements, entities, collisions) relative to a pivot (default: their footprint centre at the lowest point) as a named prefab, reusable in any project and session.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Object ids (from query_objects, place_objects…)"
+          },
+          "pivot": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 3,
+            "description": "[x, y, z] in metres, game space (Z up)"
+          },
+          "description": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "ids"
+        ]
+      },
+      "annotations": {
+        "title": "Save a prefab",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "prefab_place",
+      "title": "Place a prefab",
+      "description": "Places a saved prefab at a position with a yaw (one undo step); ground:true puts its pivot on the surface below.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "position": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 3,
+            "description": "[x, y, z] in metres, game space (Z up)"
+          },
+          "rotation": {
+            "type": "object",
+            "description": "Rotation in degrees. yaw turns about +Z (counter-clockwise from above, 0 faces +Y); pitch about X; roll about Y.",
+            "properties": {
+              "yaw": {
+                "type": "number"
+              },
+              "pitch": {
+                "type": "number"
+              },
+              "roll": {
+                "type": "number"
+              }
+            }
+          },
+          "yaw": {
+            "type": "number"
+          },
+          "ground": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "position"
+        ]
+      },
+      "annotations": {
+        "title": "Place a prefab",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "prefab_list",
+      "title": "List prefabs",
+      "description": "Saved prefabs with their descriptions and contents.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "annotations": {
+        "title": "List prefabs",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "prefab_delete",
+      "title": "Delete a prefab",
+      "description": "Deletes a saved prefab file.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "annotations": {
+        "title": "Delete a prefab",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "undo",
+      "title": "Undo",
+      "description": "Undoes the last edits (each tool call that changed the world is one step).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "steps": {
+            "type": "integer"
+          }
+        }
+      },
+      "annotations": {
+        "title": "Undo",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "redo",
+      "title": "Redo",
+      "description": "Redoes undone edits.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "steps": {
+            "type": "integer"
+          }
+        }
+      },
+      "annotations": {
+        "title": "Redo",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "project",
+      "title": "Project",
+      "description": "summary: what the project changed (counts, added objects, elements, collisions, roads); new: a new empty project (name); open / save: a .ncwe file (path; save without path saves in place); rename; validate: check against the installed game.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "summary",
+              "new",
+              "open",
+              "save",
+              "rename",
+              "validate"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "annotations": {
+        "title": "Project",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "organize",
+      "title": "Organize the project (outliner)",
+      "description": "The outliner of the user's project: folders (nested, named, coloured) holding the project's objects (added meshes, elements, collision, roads, edited game objects). list: folders and objects; new_folder: name, folder (parent), ids (objects and folders to move in), color; move: ids into folder (empty: top level), before (an object id of that folder); rename: one id (object or folder), name; color: ids, color (#RRGGBB, absent clears); delete_folder: one folder id (with_contents also deletes its objects); active: folder new objects go into. A folder can be given by id (f:…) or path (\"Apartment/Kitchen\"). Organise what you build: one folder per room or area, colours by purpose.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "list",
+              "new_folder",
+              "move",
+              "rename",
+              "color",
+              "delete_folder",
+              "active"
+            ]
+          },
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Object ids (from query_objects, place_objects…)"
+          },
+          "folder": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "color": {
+            "type": "string",
+            "description": "#RRGGBB, e.g. #E05D5D red, #E8934A orange, #D9C24A yellow, #6DBA6A green, #4FB8B0 teal, #4F8FE0 blue, #9C7BE0 violet, #DE6FB4 pink"
+          },
+          "before": {
+            "type": "string"
+          },
+          "with_contents": {
+            "type": "boolean"
+          },
+          "limit": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "annotations": {
+        "title": "Organize the project (outliner)",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "import_model",
+      "title": "Import a 3D model",
+      "description": "Imports a model file into the user's custom mesh library (FBX, glTF, GLB, OBJ, DAE, 3DS..., or a zip holding one): geometry, materials and textures. Rigged models keep the pose of the file. Give height (metres) to set its real size, or scale; up_axis Y or Z (FBX/glTF: Y). analyze_only reports what would be imported (size, materials, missing textures) without importing. The reply's mesh.asset is placed with place_objects like any prop; exports include its game files.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Absolute path of the model or zip"
+          },
+          "name": {
+            "type": "string"
+          },
+          "height": {
+            "type": "number",
+            "description": "Wanted height in metres (sets the scale)"
+          },
+          "scale": {
+            "type": "number",
+            "description": "File units to metres (FBX in cm: 0.01)"
+          },
+          "up_axis": {
+            "type": "string",
+            "enum": [
+              "Y",
+              "Z"
+            ]
+          },
+          "pivot": {
+            "type": "string",
+            "enum": [
+              "bottom",
+              "center",
+              "original"
+            ]
+          },
+          "yaw": {
+            "type": "number"
+          },
+          "import_materials": {
+            "type": "boolean"
+          },
+          "max_texture_size": {
+            "type": "integer",
+            "enum": [
+              512,
+              1024,
+              2048,
+              4096
+            ]
+          },
+          "analyze_only": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
+      "annotations": {
+        "title": "Import a 3D model",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "custom_meshes",
+      "title": "Custom mesh library",
+      "description": "The user's custom meshes (imported models): list them (id, asset path, size, materials), set a material (index or material name; base_color [r,g,b,a] 0-1, roughness, metalness, normal_strength, emissive_color, emissive_ev (0 = no glow, 4-8 glowing), alpha_cutout, double_sided, kind Standard/Glass/Game, game_material (a .mi/.mt path of the game), textures: base_color_texture, roughness_texture, metalness_texture, normal_texture, emissive_texture as absolute image paths), reimport (another height/scale/up_axis/pivot/yaw: placed copies follow), rename, delete.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "list",
+              "material",
+              "reimport",
+              "rename",
+              "delete"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "index": {
+            "type": "integer"
+          },
+          "material": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "base_color": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          },
+          "roughness": {
+            "type": "number"
+          },
+          "metalness": {
+            "type": "number"
+          },
+          "normal_strength": {
+            "type": "number"
+          },
+          "emissive_color": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          },
+          "emissive_ev": {
+            "type": "number"
+          },
+          "alpha_cutout": {
+            "type": "boolean"
+          },
+          "alpha_threshold": {
+            "type": "number"
+          },
+          "double_sided": {
+            "type": "boolean"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "Standard",
+              "Glass",
+              "Game"
+            ]
+          },
+          "game_material": {
+            "type": "string"
+          },
+          "glass_opacity": {
+            "type": "number"
+          },
+          "base_color_texture": {
+            "type": "string"
+          },
+          "roughness_texture": {
+            "type": "string"
+          },
+          "metalness_texture": {
+            "type": "string"
+          },
+          "normal_texture": {
+            "type": "string"
+          },
+          "emissive_texture": {
+            "type": "string"
+          },
+          "height": {
+            "type": "number"
+          },
+          "scale": {
+            "type": "number"
+          },
+          "up_axis": {
+            "type": "string",
+            "enum": [
+              "Y",
+              "Z"
+            ]
+          },
+          "pivot": {
+            "type": "string",
+            "enum": [
+              "bottom",
+              "center",
+              "original"
+            ]
+          },
+          "yaw": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "annotations": {
+        "title": "Custom mesh library",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "custom_sounds",
+      "title": "Custom sound library",
+      "description": "The user's own sounds, played by Open77 only (an Open77 export writes them into its resource; ArchiveXL mods cannot carry new sounds). import: an audio file (MP3, WAV, OGG, FLAC, M4A, WMA; converted when Open77 cannot play it as is: 16 MiB, 10 minutes at most). list, rename, delete. Place one with add_elements: kind customsound, sound = its id, radius = reach in metres, min_distance, volume, playback loop/interval, synced.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "list",
+              "import",
+              "rename",
+              "delete"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "description": "import: absolute path of the audio file"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "annotations": {
+        "title": "Custom sound library",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "traffic",
+      "title": "Traffic paths",
+      "description": "The lanes vehicles and pedestrians follow (the game's ~34,000 lanes are keyed g:<index>, lanes drawn in the project t:<id>; game space, points in the direction of travel). query: lanes near center [x,y,z] within radius (kind Road, Pavement, Intersection, Highway, Crosswalk). lane: one lane's points and links. edit: key with points, width (m), speed (m/s: 10 ≈ 36 km/h, 15 ≈ 54, pavements 1), flags (names: Road, Pavement, Intersection, Highway, CrossWalk, Bidirectional, TrafficDisabled, NoAIDriving, NoAutodrive, GPSOnly, Yield, Blockade, PatrolRoute, NeverDeadEnd, FromRoadSpline); both_ways (default true) keeps the reverse lane in step. link / unlink: from and to keys (entry: metres along `to` where it joins mid-way). delete: a game lane is disabled and unlinked, a drawn one removed (both_ways for the reverse too). revert: back to the game's lane. create: points, kind road|intersection|highway|pavement|crosswalk, width, speed, both_ways (two lanes), auto_connect (default true: its ends link to the lanes they meet). along_road: lanes along an editor road (road id from list_roads; forward and backward lane counts, width, speed; driving on the right), linked at its ends. show: the overlay on/off and its range. Exports (ArchiveXL, Open77) replace the game's traffic files with these lanes.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "query",
+              "lane",
+              "edit",
+              "link",
+              "unlink",
+              "delete",
+              "revert",
+              "create",
+              "along_road",
+              "show",
+              "status"
+            ]
+          },
+          "key": {
+            "type": "string"
+          },
+          "road": {
+            "type": "string"
+          },
+          "forward": {
+            "type": "integer"
+          },
+          "backward": {
+            "type": "integer"
+          },
+          "center": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 3,
+            "description": "[x, y, z] in metres, game space (Z up)"
+          },
+          "radius": {
+            "type": "number"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "points": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 2,
+              "maxItems": 3,
+              "description": "[x, y, z] in metres, game space (Z up)"
+            }
+          },
+          "width": {
+            "type": "number"
+          },
+          "speed": {
+            "type": "number"
+          },
+          "flags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "both_ways": {
+            "type": "boolean"
+          },
+          "auto_connect": {
+            "type": "boolean"
+          },
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "entry": {
+            "type": "number"
+          },
+          "name": {
+            "type": "string"
+          },
+          "on": {
+            "type": "boolean"
+          },
+          "range": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "annotations": {
+        "title": "Traffic paths",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "export_mod",
+      "title": "Export the mod",
+      "description": "Exports the project: archivexl (an ArchiveXL mod: copy its archive\\pc\\mod into the game), open77 (an Open77 world resource folder) or worldbuilder (entSpawner JSON, added meshes only).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "format": {
+            "type": "string",
+            "enum": [
+              "archivexl",
+              "open77",
+              "worldbuilder"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "description": "Output folder"
+          }
+        },
+        "required": [
+          "format",
+          "path"
+        ]
+      },
+      "annotations": {
+        "title": "Export the mod",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "studio_command",
+      "title": "Raw Studio command",
+      "description": "Advanced: sends one command to Studio's automation pipe as is (op plus arguments) and returns its reply. Prefer the dedicated tools.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "op": {
+            "type": "string"
+          },
+          "args": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "op"
+        ]
+      },
+      "annotations": {
+        "title": "Raw Studio command",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    }
+  ],
+  "resources": [
+    {
+      "uri": "ncwe://guide",
+      "name": "guide",
+      "title": "How to build worlds with NCWE",
+      "description": "Conventions, workflows, asset folders and pitfalls (collision, occlusion, streaming).",
+      "mimeType": "text/markdown"
+    },
+    {
+      "uri": "ncwe://project",
+      "name": "project",
+      "title": "Current project",
+      "description": "What the open project changes (live from Studio).",
+      "mimeType": "application/json"
+    },
+    {
+      "uri": "ncwe://prefabs",
+      "name": "prefabs",
+      "title": "Prefab library",
+      "description": "Saved prefabs and their contents.",
+      "mimeType": "application/json"
+    }
+  ],
+  "prompts": [
+    {
+      "name": "build_interior",
+      "title": "Build an interior",
+      "description": "Design and build a furnished interior (room, shop, apartment, club…) at a location.",
+      "arguments": [
+        {
+          "name": "location",
+          "description": "Where: coordinates [x, y, z] or a description / bookmark name",
+          "required": true
+        },
+        {
+          "name": "brief",
+          "description": "What to build: purpose, style, size, mood",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "build_exterior",
+      "title": "Build an exterior",
+      "description": "Shape an outdoor area: a plaza, a street corner, a camp, a park, a parking lot…",
+      "arguments": [
+        {
+          "name": "location",
+          "description": "Where: coordinates or description",
+          "required": true
+        },
+        {
+          "name": "brief",
+          "description": "What to build",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "edit_location",
+      "title": "Rework a location",
+      "description": "Change an existing place of the game: remove, move or replace objects, add details.",
+      "arguments": [
+        {
+          "name": "location",
+          "description": "Where",
+          "required": true
+        },
+        {
+          "name": "goal",
+          "description": "What should change",
+          "required": true
+        }
+      ]
+    }
+  ]
+}

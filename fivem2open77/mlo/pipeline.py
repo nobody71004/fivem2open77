@@ -168,7 +168,8 @@ class MapConverter:
                                   source_info={"resource": res_name, "input": os.path.basename(resource_path),
                                                "stream_files": len(stream), "coords": coords},
                                   scene_summary=scene.summary(), agent_token=token,
-                                  quiet_interiors=self.opts.get("quiet_interiors") or "off")
+                                  quiet_interiors=self.opts.get("quiet_interiors") or "off",
+                                  extra_packages=self.opts.get("extra_packages") or ())
             result["agent_token"] = token
             return result
         finally:

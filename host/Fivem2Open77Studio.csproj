@@ -11,10 +11,10 @@
     <RootNamespace>Fivem2Open77.Studio</RootNamespace>
     <ApplicationIcon>app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>1.1.1</Version>
+    <Version>1.4.0</Version>
     <Company>fivem2open77</Company>
     <Product>fivem2open77 Studio</Product>
-    <Description>Converts FiveM cars into Open77 (Cyberpunk 2077 multiplayer) cars</Description>
+    <Description>FiveM cars and MLOs for Open77, with AI-assisted world editing</Description>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <DebugType>none</DebugType>

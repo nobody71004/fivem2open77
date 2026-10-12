@@ -100,7 +100,7 @@ class AnthropicProvider:
                 if b["text"]:
                     out.append({"type": "text", "text": b["text"]})
             elif b["type"] == "image":
-                out.append({"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": b["png"]}})
+                out.append({"type": "image", "source": {"type": "base64", "media_type": b.get("mimeType", "image/png"), "data": b["png"]}})
         return out
 
     def _messages(self, messages):

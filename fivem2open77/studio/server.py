@@ -28,6 +28,7 @@ from .deploy import DeployError
 from .maplink import LinkError, Unreachable
 from .maps import LookMissing, MapOptionsError
 from .paths import default_workspace, web_dir
+from . import ncweassets
 from .projects import ProjectError
 from .settings import SettingsError
 from ..world.edits import EditError
@@ -331,6 +332,26 @@ def api_profile_schema(h, q):
     h.json({"defaults": profile_mod.default_profile(), "roles": profile_mod.ROLE_VALUES,
             "light_types": profile_mod.LIGHT_TYPES, "multiplier_range": profile_mod.MULT_RANGE,
             "donors": sorted(DONORS)})
+
+
+# ---------------------------------------------------------------- NCWE asset imports (map projects)
+@route("GET", r"/api/projects/([a-f0-9]{12})/ncwe_assets")
+def api_ncwe_assets(h, q, pid):
+    p = h.studio.projects.get(pid).need("map")
+    h.json({"assets": ncweassets.list_imports(p)})
+
+
+@route("POST", r"/api/projects/([a-f0-9]{12})/ncwe_assets")
+def api_ncwe_asset_add(h, q, pid):
+    p = h.studio.projects.get(pid).need("map")
+    stream, n = h.raw_body()
+    h.json({"asset": ncweassets.add_import(p, q.get("name", ""), stream, n)})
+
+
+@route("DELETE", r"/api/projects/([a-f0-9]{12})/ncwe_assets/([^/]+)")
+def api_ncwe_asset_remove(h, q, pid, name):
+    p = h.studio.projects.get(pid).need("map")
+    h.json({"removed": ncweassets.remove_import(p, name)})
 
 
 # ---------------------------------------------------------------- uploads / projects

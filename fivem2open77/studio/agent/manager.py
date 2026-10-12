@@ -127,8 +127,22 @@ change to Night City itself. Server questions (status, logs, the agent API, the 
 them) work without a project."""
 
 
+SYSTEM_NCWE = """
+NCWE integration: all 60 native editor tools are available as ncwe_<original_name>. Settings > Agents
+configures NCWE.Mcp.exe; normally attach to the user's open, signed-in NCWE editor. Never bypass NCWE's
+account/access checks. NCWE has a separate project: Studio's converted MLO is NOT automatically loaded
+there. Begin with ncwe_studio_status and inspect the actual editor project before changes. Use asset
+search, camera/screenshots, raycasts and measurements to inspect; save a project before edits, make small
+changes with matching collision, then inspect screenshots and passage clearance. Use undo for mistakes.
+Treat edits, custom imports, raw commands and exports as approval-gated operations. Export only to a
+user-approved destination; export is NOT installation or deployment. NCWE project edits do not repair a
+Studio build until the resulting assets are explicitly integrated and verified. Report unavailable editor,
+login, export and runtime checks honestly. Never promise perfect appearance without visual inspection.
+"""
+
+
 def build_system(kind: str | None) -> str:
-    return SYSTEM_BASE + {"car": SYSTEM_CAR, "map": SYSTEM_MAP, "world": SYSTEM_WORLD}.get(kind, SYSTEM_STUDIO)
+    return SYSTEM_BASE + {"car": SYSTEM_CAR, "map": SYSTEM_MAP, "world": SYSTEM_WORLD}.get(kind, SYSTEM_STUDIO) + SYSTEM_NCWE
 
 
 SYSTEM = build_system("car")      # (the car prompt, as before)

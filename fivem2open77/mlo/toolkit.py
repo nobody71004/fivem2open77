@@ -18,7 +18,7 @@ import tarfile
 
 PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 BAKER_LIB = ("fivem2open77/__init__.py", "fivem2open77/argv.py", "fivem2open77/mlo/__init__.py", "fivem2open77/mlo/baker.py",
-             "fivem2open77/mlo/bake.py", "fivem2open77/mlo/world.py", "fivem2open77/mlo/doors.py",
+             "fivem2open77/mlo/bake.py", "fivem2open77/mlo/world.py", "fivem2open77/mlo/ambience.py", "fivem2open77/mlo/doors.py",
              "fivem2open77/mlo/resource.py", "fivem2open77/cp77/package.py", "fivem2open77/cp77/wkjson.py",
              "fivem2open77/cp77/wolvenkit.py")
 

@@ -85,7 +85,7 @@ def reset_token(workspace: str) -> str:
 
 # ----------------------------------------------------------------------------- guide, prompts
 def guide() -> str:
-    from .agent.manager import SYSTEM_CAR, SYSTEM_MAP, SYSTEM_WORLD
+    from .agent.manager import SYSTEM_CAR, SYSTEM_MAP, SYSTEM_WORLD, SYSTEM_NCWE
     return "\n".join([
         "# fivem2open77 Studio for agents",
         "",
@@ -106,6 +106,8 @@ def guide() -> str:
         "## Maps" + SYSTEM_MAP.replace("ask_user", "ask the user").replace("finish with", "End with"),
         "",
         "## World edits" + SYSTEM_WORLD.replace("finish with", "End with"),
+        "",
+        "## NCWE editor" + SYSTEM_NCWE,
         "",
         "## Long calls",
         "build_car, build_map, build_world_edit and the deploys can take minutes. When a call answers",

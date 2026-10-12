@@ -51,6 +51,39 @@ def _placeholder_submesh() -> SubMesh:
                    indices=np.array([0, 1, 2], np.uint32), lod=1)
 
 
+def _asset_slug(source: str, seen: set) -> str:
+    slug = "".join(c if c.isalnum() else "_" for c in str(source).lower())[:24].strip("_") or "import"
+    base, n = slug, 2
+    while f"{base}.zip" in seen:
+        base, n = f"{slug}_{n}", n + 1
+    seen.add(f"{base}.zip")
+    return base
+
+
+def attach_extra_packages(res_dir: str, name: str, layout: dict, zips: list, extra_packages, log=print) -> list:
+    """NCWE asset imports (studio/ncweassets.prepare): copy each prepared package into dist/ and
+    declare it in the manifest, the server script and the layout, so it ships with every bake."""
+    added = []
+    seen = set(layout["packages"])
+    for ex in extra_packages or ():
+        slug = _asset_slug(ex.get("source") or "import", seen)
+        zname = f"{name}_ncwe_{slug}.zip"
+        dst = os.path.join(res_dir, "dist", zname)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copyfile(ex["zip"], dst)
+        zsize = os.path.getsize(dst)
+        if zsize > package.MAX_PACKAGE:
+            raise RuntimeError(f"{zname} is {zsize / 1048576:.1f} MiB, over Open77's 64 MiB preload limit")
+        layout["packages"].append(zname)
+        layout["archives"].extend(ex["archives"])
+        info = {"file": zname, "bytes": zsize, "archive": ", ".join(ex["archives"]),
+                "files": len(ex["archives"]), "source": ex.get("source")}
+        zips.append(info)
+        added.append(info)
+        log(f"[{name}] imported NCWE asset {ex.get('source')} -> {zname} ({zsize / 1048576:.1f} MiB)")
+    return added
+
+
 class MapWriter:
     def __init__(self, wk, cache, out_dir: str, log=print, keep_work=False, version="1.0.0"):
         self.wk = wk
@@ -61,7 +94,7 @@ class MapWriter:
         self.version = version
 
     def write(self, model, *, defaults=None, source_info=None, scene_summary=None, agent_token="",
-              quiet_interiors="off") -> dict:
+              quiet_interiors="off", extra_packages=()) -> dict:
         t0 = time.time()
         name = model.name
         work = os.path.join(self.out_dir, "_work", name)
@@ -154,9 +187,10 @@ class MapWriter:
         for p in expected:
             files.append((p, os.path.getsize(os.path.join(adir, p.replace("\\", os.sep)))))
         groups = _bin_pack(files, ARCHIVE_RAW_BUDGET)
-        if len(groups) > package.MAX_PACKAGES:
-            raise RuntimeError(f"{len(groups)} packages needed (Open77 allows {package.MAX_PACKAGES}); "
-                               "the map is too large for one resource (try --exclude or --cell)")
+        if len(groups) + len(extra_packages) > package.MAX_PACKAGES:
+            raise RuntimeError(f"{len(groups) + len(extra_packages)} packages needed (Open77 allows {package.MAX_PACKAGES}): "
+                               f"the map itself needs {len(groups)} and {len(extra_packages)} NCWE asset import(s) were "
+                               "dropped in (remove some imports in the Studio, or use --exclude/--cell)")
         archive_base = f"{MOD_ROOT}_map_{name}"
         res_dir = os.path.join(self.out_dir, name)
         shutil.rmtree(os.path.join(res_dir, "dist"), ignore_errors=True)
@@ -197,6 +231,7 @@ class MapWriter:
             "archives": [z["archive"] for z in zips],
             "default": defaults,
         }
+        attach_extra_packages(res_dir, name, layout, zips, extra_packages, log=self.log)
         lines = ghost_mod.ghost_lines(model)
         ghost_text = ghost_mod.encode(lines)
         report = {

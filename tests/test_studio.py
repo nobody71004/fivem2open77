@@ -222,6 +222,14 @@ def test_api_auth_settings_servers():
         # static UI and path traversal
         code, body = st.req("GET", "/", token=False)
         assert code == 200 and b"fivem2open77 Studio" in body
+        assert b'/css/universe.css' in body and b'data-nav="home"' in body
+        code, body = st.req("GET", "/js/pages/home.js", token=False)
+        assert code == 200 and b"homePage" in body and b"prefers-reduced-motion" in body
+        code, body = st.req("GET", "/css/universe.css", token=False)
+        assert code == 200 and b".featured-grid" in body
+        code, s = st.req("PATCH", "/api/settings", {"paths": {"ncwe_mcp": "C:/Games/NCWE/NCWE.Mcp.exe"},
+                                                     "mcp": {"ncwe_launch": False}})
+        assert code == 200 and s["paths"]["ncwe_mcp"].endswith("NCWE.Mcp.exe") and not s["mcp"]["ncwe_launch"]
         assert st.req("GET", "/../settings.json", token=False)[0] == 404
         assert st.req("GET", "/js/../../server.py", token=False)[0] == 404
     finally:
@@ -285,6 +293,37 @@ def test_api_project_flow():
         assert code == 200 and abs(r["seconds"] - 1.0) < 0.01 and r["profile"]["chime"]["enabled"]
         code, r = st.req("POST", f"/api/projects/{pid}/chime?name=x.exe", raw=b"MZ", headers={"Content-Type": "application/octet-stream"})
         assert code == 400
+    finally:
+        shutil.rmtree(st.ws, ignore_errors=True)
+
+
+def test_api_ncwe_assets_import_flow():
+    """NCWE asset imports on a map project: raw upload, list, remove, and the path rules."""
+    import io
+    import zipfile as _zip
+    st = _Studio()
+    try:
+        pid = "a1b2c3d4e5f6"
+        d = os.path.join(st.ws, "projects", pid)
+        os.makedirs(d)
+        with open(os.path.join(d, "project.json"), "w", encoding="utf-8") as f:
+            json.dump({"id": pid, "kind": "map", "name": "cookiemap", "created": 1.0, "updated": 1.0,
+                       "source": {"file": "m", "original": "m", "hash": "x"},
+                       "builds": [], "build_counter": 0, "deployments": []}, f)
+        buf = io.BytesIO()
+        with _zip.ZipFile(buf, "w") as z:
+            z.writestr("MyMod/archive/pc/mod/myprops.archive", b"RDAR")
+        raw, up = buf.getvalue(), {"Content-Type": "application/octet-stream"}
+        code, r = st.req("POST", f"/api/projects/{pid}/ncwe_assets?name=props.zip", raw=raw, headers=up)
+        assert code == 200 and r["asset"]["archives"] == 1 and r["asset"]["ready"], r
+        code, r = st.req("GET", f"/api/projects/{pid}/ncwe_assets")
+        assert code == 200 and [a["name"] for a in r["assets"]] == ["props.zip"], r
+        code, r = st.req("POST", f"/api/projects/{pid}/ncwe_assets?name=..%2Fevil.zip", raw=raw, headers=up)
+        assert code == 400, r
+        code, r = st.req("DELETE", f"/api/projects/{pid}/ncwe_assets/props.zip")
+        assert code == 200 and r["removed"] == "props.zip", r
+        code, r = st.req("DELETE", f"/api/projects/{pid}/ncwe_assets/props.zip")
+        assert code == 400, r
     finally:
         shutil.rmtree(st.ws, ignore_errors=True)
 

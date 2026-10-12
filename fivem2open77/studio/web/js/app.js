@@ -2,6 +2,7 @@
 // command palette (Ctrl+K).
 import { h, clear, toast, icon, setCrumbs } from "./ui.js";
 import { store, refreshState as loadState } from "./store.js";
+import { homePage } from "./pages/home.js";
 import { projectsPage } from "./pages/projects.js";
 import { projectPage } from "./pages/project.js";
 import { serversPage } from "./pages/servers.js";
@@ -16,7 +17,7 @@ import { studioAgentPage } from "./pages/agent.js";
 let current = null;          // { dispose() }
 
 const SECTIONS = {
-  projects: "Cars", project: "Cars", maps: "Maps", map: "Maps", world: "World", live: "Live maps",
+  home: "Home", projects: "Cars", project: "Cars", maps: "Maps", map: "Maps", world: "World", live: "Live maps",
   servers: "Servers", agent: "Agent", jobs: "Activity", settings: "Settings",
 };
 const NAV_OF = { project: "projects", map: "maps" };
@@ -103,7 +104,7 @@ function connectEvents() {
 }
 
 function route() {
-  const hash = location.hash.replace(/^#\/?/, "") || "projects";
+  const hash = location.hash.replace(/^#\/?/, "") || "home";
   const parts = hash.split("/");
   const nav = NAV_OF[parts[0]] || parts[0];
   for (const a of document.querySelectorAll("#rail a[data-nav]")) a.classList.toggle("active", a.dataset.nav === nav);
@@ -113,9 +114,9 @@ function route() {
   current = null;
   // a page names its own item; until it does the trail shows the section
   setCrumbs([[SECTIONS[parts[0]] || "Cars", `#/${nav}`]]);
-  const pages = { projects: projectsPage, project: projectPage, maps: mapsPage, map: mapPage, live: livePage,
+  const pages = { home: homePage, projects: projectsPage, project: projectPage, maps: mapsPage, map: mapPage, live: livePage,
     world: worldPage, agent: studioAgentPage, servers: serversPage, settings: settingsPage, jobs: jobsPage };
-  const page = pages[parts[0]] || projectsPage;
+  const page = pages[parts[0]] || homePage;
   try {
     current = page(main, parts.slice(1)) || null;
   } catch (e) {
@@ -126,7 +127,7 @@ function route() {
 
 // ------------------------------------------------------------------ command palette
 function paletteItems() {
-  const items = Object.entries({ projects: "Cars", maps: "Maps", world: "World edits", live: "Live maps", servers: "Servers",
+  const items = Object.entries({ home: "Home", projects: "Cars", maps: "Maps", world: "World edits", live: "Live maps", servers: "Servers",
     agent: "Agent", jobs: "Activity", settings: "Settings" }).map(([k, v]) => ({ what: v, kind: "section", href: `#/${k}` }));
   const st = store.state;
   if (st) {

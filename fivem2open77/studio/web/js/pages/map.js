@@ -1,13 +1,54 @@
 // One map: overview, 3D, options, build, the local game, servers, placement, AI agent.
-import { api, waitJob } from "../api.js";
+import { api, uploadFile, waitJob } from "../api.js";
 import { store } from "../store.js";
 import { h, clear, put, toast, modal, confirmBox, prompt, fmtBytes, fmtTime, fmtAgo, pill, logLines, icon, setCrumbs } from "../ui.js";
 import { mapViewerTab } from "./mapviewer.js";
 import { placePanel } from "./place.js";
 import { agentTab } from "./agent.js";
 
-const TABS = [["overview", "Overview"], ["3d", "3D"], ["doors", "Doors"], ["options", "Options"], ["build", "Build"],
+const TABS = [["overview", "Overview"], ["3d", "3D"], ["doors", "Doors"], ["options", "Options"],
+  ["assets", "NCWE assets"], ["build", "Build"],
   ["game", "In my game"], ["deploy", "Servers"], ["place", "Placement"], ["agent", "AI agent"]];
+
+// a loose x.archive + x.archive.xl pair (no folder) becomes one import: x/x.archive + x/x.archive.xl
+export function groupLoose(pairs) {
+  const base = (n) => n.replace(/\.archive(\.xl)?$/i, "");
+  const counts = {};
+  for (const [n] of pairs) if (!n.includes("/") && /\.archive(\.xl)?$/i.test(n)) counts[base(n)] = (counts[base(n)] || 0) + 1;
+  return pairs.map(([n, f]) => (!n.includes("/") && /\.archive(\.xl)?$/i.test(n) && counts[base(n)] > 1
+    ? [`${base(n)}/${n}`, f] : [n, f]));
+}
+
+// what a drop carries: walk the drag's entries so a folder keeps its relative paths (dataTransfer.files
+// flattens it).  Falls back to the flat file list where there is no entries API.
+export function droppedFiles(dt) {
+  const entries = [...(dt.items || [])].map((i) => (i.webkitGetAsEntry ? i.webkitGetAsEntry() : null)).filter(Boolean);
+  if (!entries.length) {
+    return Promise.resolve(groupLoose([...(dt.files || [])].map((f) => [f.webkitRelativePath || f.name, f])));
+  }
+  return new Promise((resolve) => {
+    const out = [];
+    let pending = 1;
+    const done = () => { if (!--pending) resolve(groupLoose(out)); };
+    const walk = (entry, prefix) => {
+      if (entry.isFile) {
+        pending++;
+        entry.file((f) => { out.push([prefix + entry.name, f]); done(); }, done);
+      } else if (entry.isDirectory) {
+        pending++;
+        const reader = entry.createReader();
+        const readBatch = () => reader.readEntries((batch) => {
+          if (!batch.length) return done();
+          for (const e of batch) walk(e, prefix + entry.name + "/");
+          readBatch();
+        }, done);
+        readBatch();
+      }
+    };
+    for (const e of entries) walk(e, "");
+    done();
+  });
+}
 
 export function mapPage(root, args) {
   const pid = args[0];
@@ -67,7 +108,7 @@ export function mapPage(root, args) {
   (async () => {
     try {
       await ctx.reload();
-      const fn = { overview, "3d": viewer3d, doors: doorsTab, options: optionsTab, build: buildTab, game: gameTab,
+      const fn = { overview, "3d": viewer3d, doors: doorsTab, options: optionsTab, assets: assetsTab, build: buildTab, game: gameTab,
         deploy: deployTab, place: placeTab, agent: agentTab }[tab] || overview;
       clear(body);
       fn(body, ctx);
@@ -447,6 +488,85 @@ function optionsTab(root, ctx) {
         await ctx.reload(); clear(root); optionsTab(root, ctx);
       }
     } }, "Reset to defaults"), h("div.grow"), h("button.btn.primary", { onclick: save }, "Save")));
+}
+
+// ------------------------------------------------------------------ NCWE asset imports
+function assetsTab(root, ctx) {
+  const list = h("div"), progress = h("div");
+  const fileInput = h("input", { type: "file", multiple: true, class: "hidden",
+    onchange: () => { add(picked(fileInput)); fileInput.value = ""; } });
+  const dirInput = h("input", { type: "file", multiple: true, class: "hidden",
+    onchange: () => { add(picked(dirInput)); dirInput.value = ""; } });
+  dirInput.setAttribute("webkitdirectory", "");
+  const drop = h("div.dropzone",
+    h("div.big", icon("upload")),
+    h("div", h("b", "Drop NCWE exports here"), " — an exported mod (.zip, .7z, .rar), a folder, or game archives (", h("code", ".archive"), ")"),
+    h("div.help", { style: { marginTop: "6px" } }, "Imports ship with the map's next build as extra preload packages, so the props, lights and meshes you make in NCWE load wherever this map is installed. Open77 loads 8 packages per resource (the map's own included)."),
+    h("div.row", { style: { marginTop: "12px", justifyContent: "center" } },
+      h("button.btn", { onclick: () => fileInput.click() }, "Choose files"),
+      h("button.btn", { onclick: () => dirInput.click() }, "Choose a folder")),
+    fileInput, dirInput);
+  for (const ev of ["dragenter", "dragover"]) drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("over"); });
+  for (const ev of ["dragleave", "drop"]) drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("over"); });
+  drop.addEventListener("drop", (e) => { droppedFiles(e.dataTransfer).then(add); });
+
+  // the folder picker sets webkitRelativePath on its files; the plain picker is flat
+  function picked(input) {
+    return groupLoose([...input.files].map((f) => [f.webkitRelativePath || f.name, f]));
+  }
+
+  async function add(files) {
+    if (!files.length) return;
+    clear(progress);
+    for (const [name, file] of files) {
+      const bar = h("div.progress", h("div", { style: { width: "0%" } }));
+      const state = h("span.faint", "uploading");
+      const row = h("div.card", { style: { padding: "10px 14px" } },
+        h("div.row", h("b", name), h("span.muted", fmtBytes(file.size)), h("div.grow"), state), bar);
+      progress.append(row);
+      try {
+        await uploadFile(`/projects/${ctx.pid}/ncwe_assets?name=${encodeURIComponent(name)}`, file,
+          (p) => { bar.firstChild.style.width = `${(p * 100).toFixed(0)}%`; });
+        state.textContent = "imported";
+        state.className = "ok";
+      } catch (e) {
+        state.textContent = e.message;
+        state.className = "err";
+      }
+    }
+    await load();
+  }
+
+  async function load() {
+    let r;
+    try { r = await api.get(`/projects/${ctx.pid}/ncwe_assets`); } catch (e) { toast(e.message, "err"); return; }
+    clear(list);
+    if (!r.assets.length) {
+      list.append(h("div.empty", "Nothing imported yet. Drop an NCWE export above."));
+      return;
+    }
+    const body = h("tbody");
+    for (const a of r.assets) {
+      body.append(h("tr",
+        h("td", h("div.title", a.name)),
+        h("td.muted", a.kind),
+        h("td.num", fmtBytes(a.bytes)),
+        h("td", a.ready == null ? h("span.pill", "checked at build")
+          : a.ready ? h("span.pill.ok", `${a.archives} archive${a.archives === 1 ? "" : "s"}`)
+            : h("span.pill.err", "no game archives")),
+        h("td", { style: { textAlign: "right" } }, h("button.btn.ghost.small", { title: "Remove this import", onclick: async () => {
+          if (await confirmBox("Remove import", `Remove ${a.name} from this project? The next build will not ship it.`, "Remove", "danger")) {
+            try { await api.del(`/projects/${ctx.pid}/ncwe_assets/${encodeURIComponent(a.name)}`); await load(); } catch (e) { toast(e.message, "err"); }
+          }
+        } }, icon("trash")))));
+    }
+    list.append(h("div.card.table-card", h("table.tbl.list",
+      h("thead", h("tr", h("th", "Import"), h("th", "Kind"), h("th.num", "Size"), h("th", "Ships with builds"), h("th", ""))),
+      body)));
+  }
+
+  root.append(drop, progress, list);
+  load();
 }
 
 // ------------------------------------------------------------------ build

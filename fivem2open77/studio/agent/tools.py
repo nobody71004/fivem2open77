@@ -370,6 +370,8 @@ def registry() -> dict:
     from .worldtools import registry as world_registry
     out.update(map_registry())
     out.update(world_registry())
+    from .ncwe import registry as ncwe_registry
+    out.update(ncwe_registry())
     return out
 
 
@@ -377,11 +379,12 @@ def tools_for(kind: str | None) -> tuple:
     """The tool names a session offers the model for its project kind (car, map, world, or None)."""
     from .maptools import LIVE_TOOLS, MAP_TOOLS, STUDIO_TOOLS
     from .worldtools import WORLD_TOOLS
+    from .ncwe import NCWE_TOOLS
     if kind == "car":
-        return CAR_TOOLS + COMMON_TOOLS + STUDIO_TOOLS + LIVE_TOOLS
+        return CAR_TOOLS + COMMON_TOOLS + STUDIO_TOOLS + LIVE_TOOLS + NCWE_TOOLS
     if kind == "map":
-        return MAP_TOOLS + LIVE_TOOLS + COMMON_TOOLS + STUDIO_TOOLS
+        return MAP_TOOLS + LIVE_TOOLS + COMMON_TOOLS + STUDIO_TOOLS + NCWE_TOOLS
     if kind == "world":
-        return WORLD_TOOLS + COMMON_TOOLS + STUDIO_TOOLS + LIVE_TOOLS
+        return WORLD_TOOLS + COMMON_TOOLS + STUDIO_TOOLS + LIVE_TOOLS + NCWE_TOOLS
     return STUDIO_TOOLS + COMMON_TOOLS + LIVE_TOOLS + ("new_world_edit", "world_status", "world_find", "world_prepare",
-                                                      "remove_world_edit")
+                                                      "remove_world_edit") + NCWE_TOOLS

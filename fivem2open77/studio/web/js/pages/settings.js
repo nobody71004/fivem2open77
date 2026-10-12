@@ -34,6 +34,9 @@ function agents(body) {
   function renderTop() {
     const m = info.settings;
     const on = h("input", { type: "checkbox", checked: m.enabled });
+    const ncwePath = h("input", { type: "text", value: store.state.settings.paths.ncwe_mcp || "",
+      placeholder: "C:\\Games\\NCWE\\NCWE.Mcp.exe", spellcheck: false });
+    const ncweLaunch = h("input", { type: "checkbox", checked: m.ncwe_launch });
     const appr = h("select", h("option", { value: "client" }, "the agent's app asks you before each call"),
       h("option", { value: "studio" }, "installs and restarts also wait for a click here"));
     appr.value = m.approval;
@@ -57,7 +60,16 @@ function agents(body) {
         h("button.btn.primary", { onclick: async () => {
           await save({ mcp: { enabled: on.checked, approval: appr.value, call_seconds: Number(secs.value) } });
           load();
-        } }, "Save"))));
+        } }, "Save"))),
+    h("div.card", h("h3", icon("world"), "NCWE world editor · 60 native tools"),
+      h("p.help", "The built-in agent and every connected MCP client can use the complete NCWE beta.3 toolset as ncwe_* tools: assets, screenshots, raycasts, rooms, lights, sound, collision, roads, elevators, prefabs, imports and exports. NCWE edits its own project, not the converted MLO automatically."),
+      h("div.form", h("label.field", "NCWE MCP executable", ncwePath),
+        h("label.field", "Editor startup", h("label.row", ncweLaunch, h("span", "Allow NCWE to launch when it is not running")))),
+      h("p.help", "Default: attach only. Open NCWE and sign in with your accepted beta account. Studio does not bypass NCWE access checks or bundle its binaries. Editor mutations and exports use the same approval gate as server changes."),
+      h("div.row", h("a.btn", { href: "#/agent" }, "Open agent"), h("div.grow"),
+        h("button.btn.primary", { onclick: async () => {
+          if (await save({ paths: { ncwe_mcp: ncwePath.value.trim() }, mcp: { ncwe_launch: ncweLaunch.checked } })) load();
+        } }, "Save NCWE"))));
   }
 
   async function decide(id, approve) {

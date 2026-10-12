@@ -213,7 +213,9 @@ python -m fivem2open77 mlo-roads ...           Night City's road lanes for the m
   `bottom` quiets the lower floor of every MLO (the basement is silent, the street floor keeps the
   city sounds), `all` quiets every floor. In the Studio this is the map's *quiet interiors* option,
   so it can be set on any MLO; the baked sector records the quiet areas (`quietAreas` in
-  `baked.json`).
+  `baked.json`). The map baker on a server carries the same ambient module, so a map it rebuilds
+  after an in-game move keeps its quiet areas (before 1.4.0 a server re-bake silently dropped
+  them, and the floor went loud again).
 * **Baking** (`--place x,y,z[,yaw]`, or the Studio's spot picker) turns the converted map into a
   streaming sector package at that anchor; `mlo-install` unpacks a build's packages straight into a
   game folder for a direct test boot. The Studio's Build QA checks the result (roof seams, sight
@@ -238,8 +240,13 @@ longer matches this game build) and either installed in the local game for a tes
 `%LOCALAPPDATA%\Programs\fivem2open77` with everything bundled: Python + numpy, WolvenKit CLI, the
 .NET 8 runtime, 7-Zip. Data lives in `%LOCALAPPDATA%\fivem2open77\studio`. Build it with
 `tools/package/build_windows.py` (see its docstring; the window is `host/`, a .NET Framework 4.8
-WinForms + WebView2 app that needs no runtime install).
+WinForms + WebView2 app that needs no runtime install). What each release changes is in
+[CHANGELOG.md](CHANGELOG.md).
 
+* **Home**: the app opens on an animated universe home — a starfield and orbital scene that follow
+  the cursor, with your own converted cars and MLOs showcased (their real build thumbnails and
+  status, straight into each project). Motion can be switched off (remembered) and follows the
+  system's reduced-motion setting; the animation is bounded and stops when the tab is hidden.
 * **Cars**: drop a FiveM resource (.zip/.rar/.7z or a folder path). The Studio reads it at once,
   renders it and keeps it extracted while you work.
 * **3D**: the car exactly as the conversion assembles it (three.js), part by part; colour by part to
@@ -262,6 +269,14 @@ WinForms + WebView2 app that needs no runtime install).
 * **AI agent**: Claude (API key) or Ollama (local) drives the same operations through tools —
   inspect, render (the model looks at the parts renders), edit the profile, build, check, deploy,
   read server logs — asking you before changes or server actions depending on the permission level.
+  The same tools go out over MCP to Claude Code, Codex, Cursor and friends. They include the **NCWE
+  world editor's full native toolset** (`ncwe_*`, 60 tools: asset search and previews, screenshots,
+  raycasts and measurements, rooms, lights, sound, collision, roads, elevators, prefabs, custom
+  model import and exports) for getting MLOs looking right inside NCWE itself: point
+  Settings > Agents at your `NCWE.Mcp.exe` (attaches to the open, signed-in editor by default;
+  launching it is opt-in) — NCWE keeps its own account checks and project, and its binaries and
+  game data are never bundled. Editor changes, imports and exports wait for approval like server
+  actions do.
   The API is plain JSON on `http://127.0.0.1:<port>/api/...` (token in a cookie), so scripts can use
   it too.
 

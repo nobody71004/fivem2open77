@@ -16,7 +16,7 @@ AUTONOMY = ("ask", "auto_safe", "full")
 
 DEFAULTS = {
     "schema": SCHEMA,
-    "paths": {"game_dir": "", "wolvenkit": "", "dotnet": "", "sevenzip": "", "cache_dir": "", "linux_dotnet": ""},
+    "paths": {"game_dir": "", "wolvenkit": "", "dotnet": "", "sevenzip": "", "cache_dir": "", "linux_dotnet": "", "ncwe_mcp": ""},
     "ai": {
         "provider": "anthropic",             # anthropic | ollama | none
         "anthropic_model": "",               # empty: picked from the models the key can use
@@ -34,6 +34,7 @@ DEFAULTS = {
     "mcp": {
         "enabled": True,
         "approval": "client",                # client: the agent's app asks; studio: deploys wait for a click here
+        "ncwe_launch": False,                # attach to the signed-in NCWE editor unless explicitly enabled
         "call_seconds": 45,                  # a call that runs longer answers "running" (wait_job follows it)
     },
 }
@@ -144,6 +145,8 @@ def validate(data: dict) -> dict:
         errors.append("deploy.mode: stage, restart or files")
     m = d["mcp"]
     m["enabled"] = bool(m.get("enabled"))
+    if not isinstance(m.get("ncwe_launch"), bool):
+        errors.append("mcp.ncwe_launch: boolean")
     if m.get("approval") not in ("client", "studio"):
         errors.append("mcp.approval: client or studio")
     try:

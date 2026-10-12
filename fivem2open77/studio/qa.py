@@ -199,6 +199,10 @@ def check_map_build(out_dir: str) -> dict:
           f"{len(man['preload_mod'])} package(s) (Open77 allows {package.MAX_PACKAGES})")
     sizes, prefix = {}, f"fivem2open77_map_{name}"
     for rel in man["preload_mod"]:
+        # <map>_ncwe_* packages are imported NCWE assets: their archives keep the names the editor
+        # exported, so the "named after the map" rule (which keeps two maps' geometry from clashing)
+        # applies only to the map's own packages.
+        own = not os.path.basename(rel).startswith(f"{name}_ncwe_")
         zpath = os.path.join(root, rel)
         if not c.add(f"zip:{rel}", os.path.isfile(zpath), f"{rel} exists"):
             continue
@@ -212,7 +216,10 @@ def check_map_build(out_dir: str) -> dict:
                 c.add(f"zip:{rel}:archive", bool(archives), f"{rel} carries an archive under archive/pc/mod/")
                 for a in archives:
                     base = a.split("/")[-1]
-                    c.add(f"archive:{base}:name", base.startswith(prefix), f"{base} is named after the map")
+                    if own:
+                        c.add(f"archive:{base}:name", base.startswith(prefix), f"{base} is named after the map")
+                    else:
+                        c.add(f"archive:{base}:imported", True, f"{base} keeps its imported name (NCWE asset package)")
                     try:
                         n = len(archive_hashes(z.read(a)))
                         c.add(f"archive:{base}", n > 0, f"{base}: valid index, {n} files")
