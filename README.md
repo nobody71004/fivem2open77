@@ -1,10 +1,12 @@
 # fivem2open77
 
 Converts a FiveM (GTA V) add-on vehicle into a drivable Cyberpunk 2077 car for **Open77**, in one
-command: FiveM resource in, Open77 resource out.  **fivem2open77 Studio** (below) is the same
-converter as a Windows app with a 3D preview, editors for every mapping, one-click install on your
-Open77 servers, a car hub that brings new cars online without anyone restarting the server, and an
-AI agent (Claude or a local Ollama model) that can do the whole job end to end.
+command: FiveM resource in, Open77 resource out — and a FiveM map or MLO interior into a Night City
+place with its own floors, doors and quiet rooms (see [Maps and MLO interiors](#maps-and-mlo-interiors)).
+**fivem2open77 Studio** (below) is the same converter as a Windows app with a 3D preview, editors
+for every mapping, one-click install on your Open77 servers, a car hub that brings new cars online
+without anyone restarting the server, and an AI agent (Claude or a local Ollama model) that can do
+the whole job end to end.
 
 ```
 python -m fivem2open77 convert "i8rpncs.rar" --out out --game "C:\...\Cyberpunk 2077" --door-chime chime.mp3
@@ -183,6 +185,53 @@ seat further down (0-0.2 m).
 * With Easy Anti-Cheat in protected mode, TweakXL's DLL has to be in the client's integrity catalog
   like any other RED4ext plugin, or the protected boot will refuse it.
 
+## Maps and MLO interiors
+
+`mlo` converts a FiveM map or MLO interior into Open77 map resources: the assembled interior
+(meshes, instanced props and entities with their collision), doors, glass, and a baked streaming
+sector for a chosen Night City spot.
+
+```
+python -m fivem2open77 mlo <fivem map/MLO> --out <dir> [--place x,y,z[,yaw]] [--name id]
+        [--display-name "Shown name"] [--door-map doors.json] [--quiet-interiors off|bottom|all]
+        [--exclude name ...] [--static-doors] [--solid-doors] [--open-gates] [--cell N]
+        [--game <Cyberpunk dir>] [--wolvenkit <cli>] [--keep-work] [-v]
+python -m fivem2open77 mlo-inspect <map>       what the converter sees and would build
+python -m fivem2open77 mlo-bake ...            bake a converted map at an anchor (sector package)
+python -m fivem2open77 mlo-install ...         unpack a map's packages into a game folder (test boots)
+python -m fivem2open77 mlo-baker ...           the map baker on a server host
+python -m fivem2open77 mlo-bundle ...          deploy bundles for server_deploy.sh
+python -m fivem2open77 mlo-roads ...           Night City's road lanes for the map manager
+```
+
+* **Doors** are detected from the map's own objects and can be steered with `--door-map`
+  (`hinged|sliding|rolling|open|solid|remove` per object, `open|door-hinged|door-double|...` per
+  doorway), so a shop front can keep its roller shutter while an apartment door swings.
+* **Quiet interiors (`--quiet-interiors`)** is ambient-noise suppression: the converter maps each
+  interior's floor levels from its geometry and drops interior ambient-area volumes over them, so
+  Night City's street ambience is muted **inside** while it stays audible outside. `off` (default),
+  `bottom` quiets the lower floor of every MLO (the basement is silent, the street floor keeps the
+  city sounds), `all` quiets every floor. In the Studio this is the map's *quiet interiors* option,
+  so it can be set on any MLO; the baked sector records the quiet areas (`quietAreas` in
+  `baked.json`).
+* **Baking** (`--place x,y,z[,yaw]`, or the Studio's spot picker) turns the converted map into a
+  streaming sector package at that anchor; `mlo-install` unpacks a build's packages straight into a
+  game folder for a direct test boot. The Studio's Build QA checks the result (roof seams, sight
+  cones, door devices, package sizes) before you install it.
+* The **map manager** (`f2o77_maps`, deployed with `mlo-bundle`) is the server-side resource that
+  places, bakes and moves maps on a live server and runs their doors and devices.
+
+## World editing
+
+A map placed in Night City usually collides with what the game already has there. The Studio's
+**World** page (and the `world_*` agent tools) edit the game's own sectors at the spot: find every
+object around the anchor, then delete, move, replace or add — each delete takes the object's
+collision with it, `dry_run` shows the plan first, and every action is undoable and grouped. The
+edit is built into a small ArchiveXL package (`build_world_edit`, which refuses if a sector no
+longer matches this game build) and either installed in the local game for a test boot
+(`install_world_edit_in_game`) or deployed to a server with the hub (`deploy_world_edit`: *stage*,
+*restart*, *files*).
+
 ## fivem2open77 Studio (Windows app)
 
 `fivem2open77-studio-<version>-setup.exe` installs per user (no admin) to
@@ -195,6 +244,11 @@ WinForms + WebView2 app that needs no runtime install).
   renders it and keeps it extracted while you work.
 * **3D**: the car exactly as the conversion assembles it (three.js), part by part; colour by part to
   check doors, hood, trunk, wheels; click a part to see its GTA bones.
+* **Maps**: a FiveM map or MLO becomes a Night City place — convert it, walk the result in 3D
+  (floors, doors, glass), set options like *quiet interiors*, pick the Night City spot, bake,
+  QA-check and install it in your game or on a server.
+* **World**: see what Night City itself has at the spot and clean it up — delete or move the game
+  objects that clash with the map, then ship that as a world edit.
 * **Parts / Lights / Handling / Sound**: editors for the profile, with live previews (handling
   numbers recomputed as you drag, the chime playable in the app).
 * **Build**: WolvenKit build as a job with a live log and progress, then automatic checks of the
@@ -235,3 +289,9 @@ restart [s] | cancel` (ACL `command.carhub`) for operators. A rebuild whose pack
 * High LOD only; distant LODs/proxy are not generated (the car hides past its streaming distance).
 * GTA shared textures (`vehshare` etc.) are not in the resource and fall back to flat colours.
 * Extras and liveries are dropped; license plates are not added.
+* World edits are checked against the game build they were made on; after a game update that moves
+  sectors, rebuild the edit (the build refuses mismatched sectors instead of corrupting them).
+
+## License
+
+[GNU General Public License v3.0](LICENSE).
