@@ -338,7 +338,14 @@ def api_profile_schema(h, q):
 @route("GET", r"/api/projects/([a-f0-9]{12})/ncwe_assets")
 def api_ncwe_assets(h, q, pid):
     p = h.studio.projects.get(pid).need("map")
-    h.json({"assets": ncweassets.list_imports(p)})
+    h.json({"assets": ncweassets.list_imports(p), "collisions": ncweassets.collisions(p),
+            "build_stale": h.studio.map_stale(p)})
+
+
+@route("GET", r"/api/projects/([a-f0-9]{12})/ncwe_assets/([^/]+)")
+def api_ncwe_asset_contents(h, q, pid, name):
+    p = h.studio.projects.get(pid).need("map")
+    h.json({"contents": ncweassets.contents(p, name)})
 
 
 @route("POST", r"/api/projects/([a-f0-9]{12})/ncwe_assets")
@@ -352,6 +359,16 @@ def api_ncwe_asset_add(h, q, pid):
 def api_ncwe_asset_remove(h, q, pid, name):
     p = h.studio.projects.get(pid).need("map")
     h.json({"removed": ncweassets.remove_import(p, name)})
+
+
+@route("POST", r"/api/projects/([a-f0-9]{12})/ncwe_import")
+def api_ncwe_import(h, q, pid):
+    b = h.body_json()
+    job = h.studio.ncwe_import(pid, name=str(b.get("name") or "").strip() or None,
+                               position=b.get("position"), yaw=float(b.get("yaw") or 0.0),
+                               place=None if b.get("place") is None else bool(b.get("place")),
+                               height=b.get("height"), analyze=bool(b.get("analyze")))
+    h.json(job.summary())
 
 
 # ---------------------------------------------------------------- uploads / projects
@@ -624,7 +641,11 @@ def api_build(h, q, pid):
 
 @route("GET", r"/api/projects/([a-f0-9]{12})/builds")
 def api_builds(h, q, pid):
-    h.json(list(reversed(h.studio.projects.get(pid).data.get("builds", []))))
+    p = h.studio.projects.get(pid)
+    out = list(reversed(p.data.get("builds", [])))
+    if out:                       # the last build goes stale when the NCWE imports change after it
+        out[0] = {**out[0], "stale": h.studio.map_stale(p)}
+    h.json(out)
 
 
 @route("GET", r"/api/projects/([a-f0-9]{12})/builds/(\d+)")
@@ -652,6 +673,17 @@ def api_deploy(h, q, pid):
                           build=b.get("build"), include_hub=bool(b.get("include_hub")),
                           keep_placement=b.get("keep_placement", True) is not False, restart=b.get("restart", True) is not False,
                           baker=b.get("baker", True) is not False)
+    h.json(job.summary())
+
+
+@route("POST", r"/api/projects/([a-f0-9]{12})/rebuild_deploy")
+def api_rebuild_deploy(h, q, pid):
+    b = h.body_json()
+    job = h.studio.map_rebuild_deploy(pid, str(b.get("server") or "").strip() or None,
+                                      names=b.get("names") or None,
+                                      keep_placement=b.get("keep_placement", True) is not False,
+                                      restart=b.get("restart", True) is not False,
+                                      baker=b.get("baker", True) is not False)
     h.json(job.summary())
 
 

@@ -83,6 +83,7 @@ class MapOps:
                 "defaults": maps_mod.DEFAULTS, "look": look.cached(norm) if norm else None,
                 "look_key": look.key(norm) if norm else None, "jobs": running,
                 "builds": list(reversed(p.data.get("builds", []))), "deployments": p.data.get("deployments", [])[-20:],
+                "build_stale": self.map_stale(p),
                 "game": self.map_game_status(pid)}
 
     def map_set_options(self, pid, options: dict, patch=True) -> dict:
@@ -154,8 +155,9 @@ class MapOps:
             job.set_progress(0.03, "reading the FiveM map")
             version = f"1.0.{n}"
             t0 = time.time()
+            from . import ncweassets
             info = {"n": n, "time": time.time(), "ok": False, "kind": "map", "version": version,
-                    "place": opts.get("place")}
+                    "place": opts.get("place"), "imports": ncweassets.fingerprint(p)}
             try:
                 from . import ncweassets
                 prepared, asset_warnings = ncweassets.prepare(p.path("assets", "ncwe"),
@@ -235,6 +237,108 @@ class MapOps:
         if not b:
             raise ProjectError("no successful build: build the map first")
         return b
+
+    def map_stale(self, p) -> dict | None:
+        """{reason, target} when the last build no longer matches the project's NCWE imports; target
+        is where the map was last deployed (for a one-click rebuild and deploy), else None."""
+        from . import ncweassets
+        reason = ncweassets.build_stale(p, p.latest_build(ok_only=False))
+        if not reason:
+            return None
+        dep = (p.data.get("deployments") or [None])[-1]
+        target = None
+        if dep:
+            try:
+                label = self._server(dep["server"])["label"]
+            except Exception:  # noqa: BLE001 - the server may have been removed since
+                label = dep["server"]
+            target = {"server": dep["server"], "label": label, "names": dep.get("names")}
+        return {"reason": reason, "target": target}
+
+    def map_rebuild_deploy(self, pid, sid=None, *, names=None, keep_placement=True, restart=True, baker=True):
+        """One click: rebuild the map (picking up the current NCWE imports) and deploy that fresh
+        build where the map already lives — the last deployment's server and folders when none is
+        named."""
+        p = self._map(pid)
+        if not sid:
+            deps = p.data.get("deployments") or []
+            if not deps:
+                raise ProjectError("this map is not on a server yet: deploy it once first, or name a server")
+            sid = deps[-1]["server"]
+            names = names or deps[-1].get("names")
+        server = self._server(sid)                 # fail early on a bad id
+
+        def run(job):
+            job.log(f"rebuild and deploy to {server['label']}")
+            bj = self.map_build(pid)
+            job.on_cancel.append(bj.cancel)
+            job.set_progress(0.02, "building")
+            self.jobs.wait(bj)
+            job.check()
+            if bj.state != "done":
+                raise RuntimeError(f"the build did not finish ({bj.state}): {bj.error or 'see the build log'}")
+            b = bj.result or {}
+            job.log(f"build #{b.get('n')} {b.get('version')} done; deploying")
+            job.set_progress(0.6, "deploying")
+            dj = self.map_deploy(pid, sid, names=names, build=b.get("n"), keep_placement=keep_placement,
+                                 restart=restart, baker=baker)
+            job.on_cancel.append(dj.cancel)
+            self.jobs.wait(dj)
+            job.check()
+            if dj.state != "done":
+                raise RuntimeError(f"the deploy did not finish ({dj.state}): {dj.error or 'see the deploy log'}")
+            return {"build": {"n": b.get("n"), "version": b.get("version")},
+                    "deployed": {"server": sid, "label": server["label"],
+                                 "names": (dj.result or {}).get("names")}}
+
+        return self.jobs.submit("rebuild-deploy", f"Rebuild and deploy {p.data['name']}", run, project=p.id)
+
+    # ------------------------------------------------------------------ NCWE (the world editor)
+    def ncwe_import(self, pid, *, name=None, position=None, yaw=0.0, place=None, height=None, analyze=False):
+        """The converted map into the NCWE world editor: exported as a glb (Y up, metres) and
+        imported into NCWE's custom mesh library, then placed in the NCWE world at the map's Night
+        City spot when one is set (or at an explicit position). Needs the user's NCWE editor: its
+        MCP executable in Settings > Agents, open and signed in."""
+        from types import SimpleNamespace
+
+        from ..mlo import preview as mp
+        from .agent import ncwe
+        p = self._map(pid)
+        if position is None:
+            spot = (p.map_options() or {}).get("place") or {}
+            if spot.get("x") is not None and spot.get("y") is not None:
+                position = [spot["x"], spot["y"]] + ([spot["z"]] if spot.get("z") is not None else [])
+                yaw = float(spot.get("yaw") or yaw or 0.0)
+        if place is None:
+            place = position is not None
+        if place and position is None:
+            raise ProjectError("nowhere to place it in NCWE: set the map's spot in Options or pass a position "
+                               "[x, y, z] (or [x, y] to drop it on the surface below)")
+
+        def run(job):
+            job.set_progress(0.05, "planning the map")
+            _scene, model, _coords, _resource = maps_mod.MapLook(p).model(log=job.log, check=job.check)
+            glb = p.path("cache", "ncwe_import.glb")
+            os.makedirs(os.path.dirname(glb), exist_ok=True)
+            job.set_progress(0.3, "exporting the glb")
+            exported = mp.export_map_glb(model, glb)
+            job.check()
+            job.set_progress(0.5, "importing into NCWE")
+            session = SimpleNamespace(stopping=False)
+            job.on_cancel.append(lambda: setattr(session, "stopping", True))
+            r = ncwe.import_model_glb(SimpleNamespace(studio=self, session=session), glb,
+                                     name=name or model.display_name or model.name,
+                                     position=position, yaw=yaw, place=place, height=height,
+                                     analyze_only=analyze)
+            job.set_progress(1.0, "done")
+            note = ("analyzed only: nothing was imported" if analyze else
+                    (f"placed in NCWE at {position} (yaw {yaw:g})" if place else
+                     "imported into NCWE's custom mesh library (not placed)"))
+            return {"map": model.name, "name": name or model.display_name or model.name, "glb": glb,
+                    "glb_summary": exported, "position": position, "asset": r.get("asset"),
+                    "placed": r.get("placed") or [], "note": note}
+
+        return self.jobs.submit("ncwe-import", f"Import {p.data['name']} into NCWE", run, project=p.id)
 
     # ------------------------------------------------------------------ the local game (test boots)
     def map_game_status(self, pid) -> dict:

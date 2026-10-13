@@ -63,7 +63,12 @@ How a map conversion works: the FiveM resource's .ymap/.ytyp/.ydr/.ybn files are
 one part placed once per instance, big standalone objects their own parts, small objects and terrain are baked
 into chunk parts on a grid of cells. Collision is rebuilt from the FiveM collision as boxes; doors and gates
 become Door devices that open by themselves; windows without collision get glass slabs. GTA V's own props
-(vanilla archetypes the resource only places) are not in the resource and are left out. Everything sits
+(vanilla archetypes the resource only places) are not in the resource and are left out. Props, lights and
+meshes the user exported from the NCWE world editor ship with the map: ncwe_assets_import takes an export
+(a .zip/.7z/.rar ArchiveXL mod or a folder of game archives), ncwe_assets_list shows the imports and
+ncwe_assets_verify says what will be packed and warns about archive name collisions before building.
+When get_map reports the last build is stale (imports changed since it), rebuild before deploying —
+deploy_map with rebuild true does both in one call. Everything sits
 relative to an anchor (the FiveM spawn point on the ground). A build is baked at a Night City spot (x east, y
 north, z up, metres; yaw degrees counter-clockwise from above) into a small streaming-sector package; the map's
 meshes are separate packages. The map manager f2o77_maps goes with every map onto the server: players with the

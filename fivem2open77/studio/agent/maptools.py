@@ -8,8 +8,11 @@ from __future__ import annotations
 import base64
 import json
 import os
+import shutil
+import tempfile
 import time
 
+from .. import ncweassets
 from ..maplink import LinkError
 from ..maps import MapOptionsError
 from .tools import Tool, ToolError, _obj, text
@@ -134,6 +137,7 @@ def t_get_map(ctx, args):
                  "option_errors": st["option_errors"], "look": _compact_look(st["look"]) or "not looked at yet: look_at_map",
                  "builds": [{k: b.get(k) for k in ("n", "ok", "version", "baked", "coverage", "qa", "error", "seconds")}
                             for b in st["builds"][:5]],
+                 "build_stale": st.get("build_stale") or "the last build matches the project's NCWE imports",
                  "deployments": st["deployments"][-5:], "local_game": st["game"]})
 
 
@@ -223,9 +227,14 @@ def t_deploy_map(ctx, args):
     sid = args.get("server")
     if not sid:
         raise ToolError("server is required (list_servers)")
-    job = ctx.studio.deploy(p.id, sid, names=args.get("names"), build=args.get("build"),
-                            keep_placement=args.get("keep_placement", True) is not False,
-                            restart=args.get("restart", True) is not False, baker=args.get("baker", True) is not False)
+    kw = dict(names=args.get("names"), keep_placement=args.get("keep_placement", True) is not False,
+              restart=args.get("restart", True) is not False, baker=args.get("baker", True) is not False)
+    if args.get("rebuild"):
+        job = ctx.studio.map_rebuild_deploy(p.id, sid, **kw)   # build first: ships changed NCWE imports
+        ctx.session.attach_job(job)
+        out = ctx.wait_job(job, 5400) or {}
+        return text({"build": out.get("build"), "deployed": out.get("deployed")})
+    job = ctx.studio.deploy(p.id, sid, build=args.get("build"), **kw)
     ctx.session.attach_job(job)
     res = ctx.wait_job(job, 3600)
     return text({"servers": [{"name": x["name"], "exit": x["code"], "result": x["result"],
@@ -343,6 +352,76 @@ def t_agent_api(ctx, args):
 PLACE_PROPS = {"server": SERVER, "name": FOLDER, "map": MAPN}
 
 
+# ------------------------------------------------------------------ NCWE asset imports
+def t_ncwe_assets_list(ctx, args):
+    p = _map_project(ctx)
+    items = ncweassets.list_imports(p)
+    return text({"imports": items, "total_bytes": sum(i["bytes"] for i in items),
+                 "collisions": ncweassets.collisions(p),
+                 "note": "imports that carry game archives are repacked into preload packages and ship with the map at "
+                         "build; collisions are archive name clashes to fix before building, "
+                         "ncwe_assets_verify says what will be packed and rechecks them"})
+
+
+def t_ncwe_assets_import(ctx, args):
+    p = _map_project(ctx)
+    src = os.path.expanduser(str(args.get("path") or "").strip())
+    if not src or not os.path.exists(src):
+        raise ToolError(f"no such file or folder: {src or '(path)'}")
+    name = str(args.get("name") or "").strip()
+    try:
+        if os.path.isdir(src):
+            top = ncweassets.safe_relpath(name or os.path.basename(src.rstrip("\\/")))
+            for dp, _, fns in os.walk(src):
+                for fn in sorted(fns):
+                    full = os.path.join(dp, fn)
+                    rel = os.path.relpath(full, src).replace("\\", "/")
+                    with open(full, "rb") as f:
+                        ncweassets.add_import(p, f"{top}/{rel}", f, os.path.getsize(full))
+            info = ncweassets.describe(p.path("assets", "ncwe"), top)
+        else:
+            with open(src, "rb") as f:
+                info = ncweassets.add_import(p, name or os.path.basename(src), f, os.path.getsize(src))
+    except ncweassets.AssetError as e:
+        raise ToolError(str(e)) from None
+    ctx.log(f"NCWE asset imported: {info['name']}")
+    return text({"imported": info, "collisions": ncweassets.collisions(p),
+                 "note": "ships with the map at build when it carries game archives; ncwe_assets_verify checks it"})
+
+
+def t_ncwe_assets_verify(ctx, args):
+    p = _map_project(ctx)
+    staging = tempfile.mkdtemp(prefix="f2o77-ncwe-verify-")
+    try:
+        packages, warnings = ncweassets.prepare(p.path("assets", "ncwe"), staging, log=lambda m: None)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return text({"packages": [{"source": q["source"], "archives": q["archives"]} for q in packages],
+                 "preload_packages": len(packages), "warnings": warnings,
+                 "collisions": ncweassets.collisions(p),
+                 "note": "Open77 allows 8 preload packages per resource (the map's own included); the writer enforces "
+                         "the total at build; collisions and warnings are archive name clashes to fix before building"})
+
+
+def t_ncwe_import(ctx, args):
+    p = _map_project(ctx)
+    pos = args.get("position")
+    if pos is not None:
+        if not isinstance(pos, list) or len(pos) not in (2, 3):
+            raise ToolError("position is [x, y] (drop on the surface below) or [x, y, z] metres")
+        pos = [float(v) for v in pos]
+    job = ctx.studio.ncwe_import(p.id, name=str(args.get("name") or "").strip() or None,
+                                 position=pos, yaw=float(args.get("yaw") or 0.0),
+                                 place=None if args.get("place") is None else bool(args.get("place")),
+                                 height=args.get("height"), analyze=bool(args.get("analyze_only")))
+    ctx.session.attach_job(job)
+    r = ctx.wait_job(job, 1800)
+    return text({"map": r.get("map"), "name": r.get("name"), "asset": r.get("asset"),
+                 "placed": r.get("placed"), "position": r.get("position"), "note": r.get("note"),
+                 "follow_up": "place or move it with ncwe_place_objects / ncwe_transform_objects; "
+                              "ncwe_custom_meshes tweaks its materials"})
+
+
 def registry() -> dict:
     tools = [
         # ------------------------------------------------------------ studio
@@ -389,10 +468,32 @@ def registry() -> dict:
              _obj({"build": {"type": "integer"}, "uninstall": {"type": "boolean"}}), "change", t_game),
         Tool("deploy_map", "Install the latest (or given) map build on a server with the map manager and the map baker. "
              "keep_placement (default true): a map already there is rebuilt at the spot it was moved to. restart (default "
-             "true): restart when nobody is online. baker (default true): install/update the map baker.",
+             "true): restart when nobody is online. baker (default true): install/update the map baker. rebuild (default "
+             "false): build the map first (so changed NCWE imports ship) and deploy that fresh build; the build argument is "
+             "then ignored.",
              _obj({"server": {"type": "string"}, "names": {"type": "array", "items": {"type": "string"}},
                    "build": {"type": "integer"}, "keep_placement": {"type": "boolean"}, "restart": {"type": "boolean"},
-                   "baker": {"type": "boolean"}}, ["server"]), "deploy", t_deploy_map),
+                   "baker": {"type": "boolean"}, "rebuild": {"type": "boolean"}}, ["server"]), "deploy", t_deploy_map),
+        Tool("ncwe_assets_list", "NCWE asset imports in this map project (props, lights and meshes exported from the NCWE "
+             "world editor and shipped with the map): what is imported, the archives it ships and any archive name "
+             "collisions to fix before building.",
+             _obj(), "read", t_ncwe_assets_list),
+        Tool("ncwe_assets_import", "Import an NCWE export into the map project from this PC: a .zip/.7z/.rar ArchiveXL mod, "
+             "a game archive, or a folder of them (stored under the project's assets/ncwe/; name defaults to the file's or "
+             "folder's own). Imports carrying game archives are repacked and shipped with the map at build.",
+             _obj({"path": {"type": "string"}, "name": {"type": "string"}}, ["path"]), "change", t_ncwe_assets_import),
+        Tool("ncwe_assets_verify", "Dry-run the build's asset packaging without building: which imports become preload "
+             "packages (and which game archives they carry), what is skipped and why, any archive name collisions to fix "
+             "before building, and how many of Open77's 8 preload packages the map would use.", _obj(), "read", t_ncwe_assets_verify),
+        Tool("ncwe_import_map", "Import this converted map/MLO into the user's NCWE world editor: the map is exported as "
+             "a glb and imported into NCWE's custom mesh library (import_model), then placed in the NCWE world at the "
+             "map's Night City spot when one is set (or at position [x, y, z]; [x, y] drops it on the surface below). "
+             "Needs the user's NCWE editor open and signed in (Settings > Agents > NCWE MCP executable). analyze_only "
+             "reports what would be imported without importing. Returns NCWE's mesh asset and the placed object ids.",
+             _obj({"name": {"type": "string"},
+                   "position": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 3},
+                   "yaw": {"type": "number"}, "place": {"type": "boolean"}, "height": {"type": "number"},
+                   "analyze_only": {"type": "boolean"}}), "deploy", t_ncwe_import),
         # ------------------------------------------------------------ live (the map manager on a server)
         Tool("live_maps", "The maps on a server as its map manager has them: where each stands (running), the new spot "
              "(pending), the previous spot, presets, a move in progress (apply.state), the baker and a scheduled restart.",
@@ -436,4 +537,5 @@ STUDIO_TOOLS = ("list_projects", "open_project", "import_resource", "enable_agen
 LIVE_TOOLS = ("live_maps", "live_map", "list_players", "ground_height", "set_map_spot", "map_preset", "apply_map_move",
               "cancel_map_move", "wait_map_move", "send_player_to_map")
 MAP_TOOLS = ("get_map", "look_at_map", "render_map", "set_map_options", "build_map", "map_build_report",
-             "install_map_in_game", "deploy_map")
+             "install_map_in_game", "deploy_map", "ncwe_assets_list", "ncwe_assets_import", "ncwe_assets_verify",
+             "ncwe_import_map")

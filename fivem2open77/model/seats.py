@@ -3,7 +3,9 @@
 * Posture.  Cyberpunk picks the sitting animation set from the vehicle data package's
   ``seatingTemplateOverride``: ``sport2_vehicle`` (the Porsche donor, Shion, Type-66),
   ``sport1_vehicle`` (hypercars: Caliburn, Outlaw, Turbo-R -- lower and reclined),
-  ``standard2_vehicle`` (ordinary cars) and so on.  A GTA "LOW" layout (supercars) gets sport1.
+  ``standard2_vehicle`` (ordinary cars) and so on.  The donor's posture is kept unless the head
+  cannot fit under a closed roof even with the seat lowered; then sport1 (the hypercars' lower,
+  reclined one) is used.
 * Head room.  When a closed roof sits over the seat and the posture's head height would poke
   through it, the seat is lowered (at most MAX_LOWER in a low car, MAX_LOWER_UPRIGHT in others,
   never closer than SEAT_FLOOR to the road).
@@ -43,6 +45,8 @@ EXIT_CLEARANCE = 0.70    # m from the widest body beside a seat to where the pla
                          # out: what Cyberpunk's own cars leave (1.65 m from the centre, 0.95-1.0 m wide)
 EXIT_WINDOW = 0.80       # m along the car, either side of a seat, whose width counts: a standing player
                          # (~0.4 m radius) and the collision hull's slices both reach that far
+EXIT_MARGIN = 0.20       # m of clear air beside the body that a standing spot must keep to count as
+                         # outside it (the donor's 1 m out on a 0.95-1.0 m half-width leaves that)
 UNMOUNT_DEFAULT = (1.65, 5.0, 2.5)   # unmountOffsetPosition of every Cyberpunk car (the donors included)
 MIN_CLEARANCE = 0.50     # m outside the body below which the default distance is not trusted: the
                          # BMW i8 (1.11 m out, 0.54 m left) gets out, the Biome (1.26 m, 0.39 m) does not
@@ -159,9 +163,9 @@ def fit_seats(vehicle, conf, donor_template="sport2", occupant_seats=None) -> Se
     """Choose the posture, lower seats that would put the head through the roof, and place the
     standing spot each seat's exit is checked at.  Moves vehicle.bones[seat] / vehicle.seats.
 
-    Posture "auto" keeps the donor's unless a GTA *low* car (LAYOUT_LOW...) cannot fit the head under
-    its roof even with the seat lowered; then the hypercars' lower, reclined sport1 posture is used.
-    Other cars keep the upright posture and lower the seat a little more.  Only the seats the donor
+    Posture "auto" keeps the donor's; when the head does not fit under a closed roof even with the seat
+    lowered as far as these rules allow, the hypercars' lower, reclined sport1 posture is used instead.
+    An explicit template always wins.  Only the seats the donor
     can seat a player in (occupant_seats) decide: a GTA rear bench behind a two-seat donor is never
     sat on."""
     conf = conf or {}
@@ -195,11 +199,8 @@ def fit_seats(vehicle, conf, donor_template="sport2", occupant_seats=None) -> Se
     else:
         template, why = donor_template, "the donor's"
         if donor_template != "sport1" and worst_deficit(TEMPLATES[donor_template][1], MAX_LOWER) > 0.005:
-            if low:
-                template = "sport1"
-                why = f"the head does not fit under this low roof with the donor's posture ({layout})"
-            else:
-                why = "the donor's, seats lowered for head room"
+            template = "sport1"
+            why = f"the head does not fit under the roof with the donor's posture even lowered ({layout})"
     fit = SeatFit(template, why)
     head = TEMPLATES[template][1]
     max_lower = MAX_LOWER if (template == "sport1" or low) else MAX_LOWER_UPRIGHT
@@ -253,7 +254,7 @@ def fit_seats(vehicle, conf, donor_template="sport2", occupant_seats=None) -> Se
         side = SIDE_OF[name]
         hw = widths[name]
         default = np.array([pos[0] + side * 1.0, y, pos[2] - 0.5])
-        inside = default[0] * side < (exit_x if exit_x else hw + 0.2)
+        inside = default[0] * side < (exit_x if exit_x else hw + EXIT_MARGIN)
         buried = default[2] < g - 0.08
         if inside or buried:
             lateral = max(exit_x or (hw + EXIT_CLEARANCE), abs(default[0])) if inside else abs(default[0])

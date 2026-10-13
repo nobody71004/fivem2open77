@@ -13,12 +13,17 @@ exports from it.  Nothing here reads or writes NCWE's own project files or accou
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import shutil
+import struct
 import zipfile
 
+from ..cp77 import package as package_mod
 from ..gta.resource import _extract_archive
+from .qa import fnv1a64
 
 SEGMENT_RX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 MAX_IMPORT_BYTES = 2 * 1024 * 1024 * 1024
@@ -71,20 +76,21 @@ def describe(root: str, rel: str) -> dict:
                 if fn.endswith(ARCHIVE_SUFFIXES):
                     archives.append(fn)
         return {"name": rel, "kind": "folder", "bytes": bytes_, "files": files,
-                "archives": len(archives), "ready": bool(archives)}
+                "archives": len(archives), "archive_names": sorted(archives), "ready": bool(archives)}
     size = os.path.getsize(path)
     low = rel.lower()
     if low.endswith(".zip"):
         archives, entries = _zip_archives(path)
         if archives is not None:
             return {"name": rel, "kind": "NCWE export (zip)", "bytes": size, "files": entries,
-                    "archives": len(archives), "ready": bool(archives)}
+                    "archives": len(archives), "archive_names": sorted(archives), "ready": bool(archives)}
     if low.endswith((".7z", ".rar")):
         return {"name": rel, "kind": "NCWE export (archive)", "bytes": size, "files": None,
-                "archives": None, "ready": None}
+                "archives": None, "archive_names": None, "ready": None}
     if low.endswith(ARCHIVE_SUFFIXES):
-        return {"name": rel, "kind": "game archive", "bytes": size, "files": 1, "archives": 1, "ready": True}
-    return {"name": rel, "kind": "file", "bytes": size, "files": 1, "archives": 0, "ready": False}
+        return {"name": rel, "kind": "game archive", "bytes": size, "files": 1,
+                "archives": 1, "archive_names": [rel.split("/")[-1]], "ready": True}
+    return {"name": rel, "kind": "file", "bytes": size, "files": 1, "archives": 0, "archive_names": [], "ready": False}
 
 
 def list_imports(project) -> list:
@@ -135,6 +141,213 @@ def remove_import(project, name: str) -> str:
         raise AssetError(f"no import named '{rel}'")
     (shutil.rmtree if os.path.isdir(path) else os.remove)(path)
     return rel
+
+
+# ------------------------------------------------------------------ what an import holds
+def _res_kind(path: str) -> str:
+    low = str(path or "").lower().replace("\\", "/")
+    if low.endswith(".mesh"):
+        return "mesh"
+    if low.endswith((".ent", ".app")):
+        return "prop"
+    if low.endswith(".xbm"):
+        return "texture"
+    if low.endswith((".wem", ".opus", ".audio")):
+        return "sound"
+    return "other"
+
+
+_KIND_TOTAL = {"mesh": "meshes", "prop": "props", "texture": "textures", "sound": "sounds", "other": "other"}
+
+
+def _archive_info(fp) -> dict:
+    """{entries, hashes} from a Cyberpunk archive's index; only the index region is read (cf. qa.archive_hashes)."""
+    magic, _ver, index_pos, _size = struct.unpack_from("<4sIQI", fp.read(20))
+    if magic != b"RDAR":
+        raise ValueError("not a Cyberpunk archive (no RDAR header)")
+    fp.seek(index_pos)
+    _off, size, crc = struct.unpack_from("<IIQ", fp.read(16))
+    table = fp.read(size - 8)
+    if package_mod._crc64_xz(table) != crc:
+        raise ValueError("archive index checksum mismatch")
+    n = struct.unpack_from("<I", table, 0)[0]
+    return {"entries": n,
+            "hashes": {struct.unpack_from("<Q", table, 12 + i * 56)[0] for i in range(n)}}
+
+
+def _xl_resources(data: bytes) -> dict:
+    """archive name -> [resource path] from an ArchiveXL descriptor (best effort)."""
+    try:
+        doc = json.loads(data.decode("utf-8-sig"))
+    except (ValueError, UnicodeError):
+        return {}
+    out = {}
+    if isinstance(doc, dict):
+        for k, v in doc.items():
+            if isinstance(v, list):
+                paths = v
+            elif isinstance(v, dict):
+                paths = v.get("resources") or v.get("entries") or []
+            else:
+                paths = []
+            key = str(k).replace("\\", "/").split("/")[-1].lower()
+            out[key] = [str(x) for x in paths if isinstance(x, str)]
+    return out
+
+
+MAX_CONTENT_ITEMS = 300
+
+
+def _breakdown(entries) -> tuple:
+    """[(relative path, open())] -> (game archives with entry counts and .xl resources, other files)."""
+    xl, archs, files = {}, [], []
+    for rel, opener in entries:
+        rel = rel.replace("\\", "/")
+        low = rel.lower()
+        if low.endswith(".archive.xl"):
+            with opener() as f:
+                for a, paths in _xl_resources(f.read(1 << 20)).items():
+                    xl.setdefault(a, []).extend(paths)
+        elif low.endswith(ARCHIVE_SUFFIXES):
+            info = {"name": rel.split("/")[-1], "path": rel, "entries": None, "resources": [], "error": None}
+            try:
+                with opener() as f:
+                    idx = _archive_info(f)
+                info["entries"] = idx["entries"]
+                info["_hashes"] = idx["hashes"]
+            except (OSError, ValueError, EOFError, struct.error) as e:
+                info["error"] = str(e)
+            archs.append(info)
+        else:
+            files.append({"path": rel, "kind": _res_kind(rel)})
+    for a in archs:
+        hashes = a.pop("_hashes", None)
+        paths = xl.pop(a["name"].lower(), [])
+        a["resources"] = [{"path": p, "kind": _res_kind(p),
+                           "present": (fnv1a64(p.lower()) in hashes or fnv1a64(p) in hashes) if hashes is not None else None}
+                          for p in paths[:MAX_CONTENT_ITEMS]]
+    for key in sorted(xl):                    # a descriptor naming an archive the import does not carry
+        archs.append({"name": key, "path": None, "entries": None,
+                      "error": "listed by an .archive.xl but not in this import",
+                      "resources": [{"path": p, "kind": _res_kind(p), "present": None}
+                                    for p in xl[key][:MAX_CONTENT_ITEMS]]})
+    return archs[:MAX_CONTENT_ITEMS], files[:MAX_CONTENT_ITEMS]
+
+
+def contents(project, name: str) -> dict:
+    """What one import holds: game archives (names, entry counts, the resources its .archive.xl lists)
+    and its other files.  Archive indices hash their entry names, so mesh/prop names come from the
+    mod's own .archive.xl descriptors (verified against the index when possible)."""
+    rel = safe_relpath(name)
+    root = _root(project)
+    path = os.path.join(root, *rel.split("/"))
+    if not os.path.exists(path):
+        raise AssetError(f"no import named '{rel}'")
+    notes = []
+    if os.path.isdir(path):
+        archs, files = _breakdown((r, lambda f=f: open(f, "rb")) for r, f in _iter_files(path))
+    elif rel.lower().endswith(".zip"):
+        with zipfile.ZipFile(path) as z:
+            members = [n for n in z.namelist()[:MAX_ZIP_ENTRIES] if not n.endswith("/")]
+            archs, files = _breakdown((n.replace("\\", "/"), lambda n=n: z.open(n)) for n in members)
+        if not _zip_archives(path)[0]:
+            notes.append("no game archives under archive/pc/mod/; skipped at build")
+    elif rel.lower().endswith((".7z", ".rar")):
+        tmp = _extract_archive(path)
+        try:
+            archs, files = _breakdown((r, lambda f=f: open(f, "rb")) for r, f in _iter_files(tmp))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+    else:
+        archs, files = _breakdown([(rel, lambda: open(path, "rb"))])
+        if not rel.lower().endswith(ARCHIVE_SUFFIXES):
+            notes.append("not an NCWE export or game archive; skipped at build")
+    totals = {}
+    for a in archs:
+        for r in a["resources"]:
+            totals[_KIND_TOTAL[r["kind"]]] = totals.get(_KIND_TOTAL[r["kind"]], 0) + 1
+        if not a["resources"]:
+            totals["entries"] = totals.get("entries", 0) + (a["entries"] or 0)
+    for f in files:
+        totals[_KIND_TOTAL[f["kind"]]] = totals.get(_KIND_TOTAL[f["kind"]], 0) + 1
+    return {"name": rel, "archives": archs, "files": files, "totals": totals, "notes": notes}
+
+
+def _raw_archive_names(src: str) -> list:
+    """Archive names one import would ship at build, duplicates preserved (mirrors prepare's layout rules)."""
+    low = src.replace("\\", "/").split("/")[-1].lower()
+    names = []
+    if os.path.isdir(src):
+        for rel, _ in _iter_files(src):
+            arc = _norm_entry(rel)
+            if arc and arc.endswith(ARCHIVE_SUFFIXES):
+                names.append(arc.split("/")[-1])
+    elif low.endswith(".zip"):
+        if _zip_archives(src)[0]:             # prepare skips zips with no archive/pc/mod game archives
+            with zipfile.ZipFile(src) as z:
+                for n in z.namelist()[:MAX_ZIP_ENTRIES]:
+                    if n.endswith("/"):
+                        continue
+                    arc = _norm_entry(n)
+                    if arc and arc.endswith(ARCHIVE_SUFFIXES):
+                        names.append(arc.split("/")[-1])
+    elif low.endswith(ARCHIVE_SUFFIXES):
+        names.append(low)
+    # .7z/.rar: names are known when prepare unpacks them (build / ncwe_assets_verify)
+    return names
+
+
+def collisions(project) -> list:
+    """Archive name clashes to fix before building: one name shipped by several imports (the game
+    loads only one of them) or a name starting with fivem2open77_map_ (map resources' own archives)."""
+    root = _root(project)
+    seen = {}
+    for name in sorted(os.listdir(root)):
+        rel = safe_relpath(name)
+        for arc in _raw_archive_names(os.path.join(root, *rel.split("/"))):
+            seen.setdefault(arc.lower(), []).append(rel)
+    out = []
+    for arc, srcs in sorted(seen.items()):
+        where = ", ".join(sorted(set(srcs)))
+        if len(srcs) > 1:
+            more = " (twice in the same import)" if len(set(srcs)) < len(srcs) else ""
+            out.append({"archive": arc, "imports": sorted(set(srcs)),
+                        "problem": f"{arc}: ships with {where}{more} — the game loads only one of them; "
+                                   "rename one before building"})
+        if arc.startswith("fivem2open77_map_"):
+            out.append({"archive": arc, "imports": sorted(set(srcs)),
+                        "problem": f"{arc}: names starting with fivem2open77_map_ belong to map resources; "
+                                   f"rename the archive in {where} before building"})
+    return out
+
+
+def fingerprint(project) -> str:
+    """Cheap stable fingerprint of the imports (names, sizes, mtimes): a build records it so the
+    Studio can say the build is stale when the imports change afterwards."""
+    root = _root(project)
+    h = hashlib.sha256()
+
+    def add(rel, st):
+        h.update(f"{rel}\0{st.st_size}\0{int(st.st_mtime_ns)}\n".encode("utf-8"))
+
+    for name in sorted(os.listdir(root)):
+        rel = safe_relpath(name)
+        path = os.path.join(root, *rel.split("/"))
+        if os.path.isdir(path):
+            for r, f in _iter_files(path):
+                add(rel + "/" + r, os.stat(f))
+        else:
+            add(rel, os.stat(path))
+    return h.hexdigest()[:16]
+
+
+def build_stale(project, build: dict) -> str | None:
+    """Why a build record no longer matches the project's imports (None: it still does)."""
+    if (build or {}).get("imports") == fingerprint(project):
+        return None
+    if (build or {}).get("imports") is None and not os.listdir(_root(project)):
+        return None          # a build from before import tracking, and nothing was ever imported
+    return "NCWE imports changed since this build"
 
 
 # ------------------------------------------------------------------ build-time packaging
@@ -225,4 +438,15 @@ def prepare(assets_dir: str, staging_dir: str, log=print) -> tuple:
             continue
         packages.append({"zip": out_zip, "source": name, "archives": archives})
         log(f"[ncwe assets] {name} -> {len(archives)} game archive(s)")
+    seen = {}
+    for pkg in packages:
+        for a in pkg["archives"]:
+            seen.setdefault(a.lower(), []).append(pkg["source"])
+    for a, srcs in sorted(seen.items()):
+        if len(srcs) > 1:
+            warnings.append(f"{a}: ships with {', '.join(srcs)} — the game loads only one of them; "
+                            "rename one before building")
+        if a.startswith("fivem2open77_map_"):
+            warnings.append(f"{a}: names starting with fivem2open77_map_ belong to map resources; "
+                            "rename the imported archive before building")
     return packages, warnings

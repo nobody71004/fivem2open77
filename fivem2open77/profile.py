@@ -31,13 +31,13 @@ the same result as the bare command line.  ``normalize`` fills defaults and chec
         "enabled": true,
         "sides": ["left", "right", "front", "back"],
         "colors": "gta",                  the 13 LS Customs colours, or a list of names / "#rrggbb"
-        "default": "on",                  colour the car spawns with: "on" = the kit's first colour,
-                                          "off" = kit fitted, lights off (switch in game with /neon)
+        "default": "off",                 colour the car spawns with: "off" = kit fitted, lights off
+                                          (switch in game with /neon), "on" = the kit's first colour,
         "brightness": 1.0,                0.2..4
         "height_offset": 0.0              metres: + raises the tubes, - lowers them (-0.1..0.1)
       },
       "seats": {                          how the player sits (see model/seats.py)
-        "template": "auto",               auto (the donor's; GTA LOW layouts too low for it: sport1) | sport1 | sport2 | standard2 | standard25 | standard3
+        "template": "auto",               auto (the donor's; sport1 when the head does not fit under the roof even with the seat lowered) | sport1 | sport2 | standard2 | standard25 | standard3
         "lower": 0.0                      extra metres to lower every seat (0..0.2)
       }
     }
@@ -66,7 +66,7 @@ DEFAULTS = {
     "sound": {"engine": "auto"},
     "paint": {"primary": "auto"},
     "chime": {"enabled": False, "file": None, "volume": 0.8, "range": 12.0},
-    "neon": {"enabled": True, "sides": ["left", "right", "front", "back"], "colors": "gta", "default": "on",
+    "neon": {"enabled": True, "sides": ["left", "right", "front", "back"], "colors": "gta", "default": "off",
              "brightness": 1.0, "height_offset": 0.0},
     "seats": {"template": "auto", "lower": 0.0},
     "notes": "",

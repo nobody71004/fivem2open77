@@ -31,6 +31,9 @@
 # Prints no secrets.
 set -euo pipefail
 MODE=${1:?mode}; BUNDLE=${2:?bundle}; shift 2
+# a Windows bundle path (C:\..., handed over by Git Bash) would make tar look for a remote host
+# named "C": convert it to a POSIX path where cygpath is around
+BUNDLE=$(cygpath -u "$BUNDLE" 2>/dev/null || echo "$BUNDLE")
 SERVERS_ROOT=${SERVERS_ROOT:-/opt}
 SYSTEMCTL=${SYSTEMCTL:-systemctl}
 RESTART=0; STAGE=0; ALLOW_UNSECURED=0; JSON=0; NAMES=()
@@ -316,8 +319,12 @@ check_config() {
 import os, re, shlex, subprocess, sys
 unit, d = sys.argv[1], sys.argv[2]
 sysctl = os.environ.get("SYSTEMCTL", "systemctl").split()
+def spawn(cmd, **kw):
+    # the unit's command is a Linux binary and SYSTEMCTL a systemctl.  When the test harness runs
+    # this script on Windows they are shell scripts only bash (Git Bash) can start
+    return subprocess.run((["bash"] + list(cmd)) if os.name == "nt" else cmd, **kw)
 def show(prop):
-    r = subprocess.run(sysctl + ["show", "-p", prop, "--value", unit], capture_output=True, text=True)
+    r = spawn(sysctl + ["show", "-p", prop, "--value", unit], capture_output=True, text=True)
     return r.stdout.strip() if r.returncode == 0 else ""
 env = dict(os.environ)
 for f in re.findall(r"(/[^\s()]+)", show("EnvironmentFiles")):
@@ -343,7 +350,10 @@ try:
 except ValueError:
     pass
 m = re.search(r"argv\[\]=([^;]+);", show("ExecStart"))
-argv = shlex.split(m.group(1)) if m else []
+cmd = m.group(1) if m else ""
+if os.name == "nt":
+    cmd = cmd.replace("\\", "/")     # shlex would read Windows path backslashes as escapes
+argv = shlex.split(cmd) if cmd else []
 wd = show("WorkingDirectory") or d
 if not argv or not any("Open77.Server" in a for a in argv):
     argv = ["./Open77.Server", "--config", "server.jsonc"]
@@ -352,7 +362,7 @@ argv = [a for a in argv if a not in ("--no-setup",)] + ["--no-setup", "--check-c
 if "--config" not in argv and not any(a.startswith("--config=") for a in argv):
     argv += ["--config", "server.jsonc"]
 try:
-    r = subprocess.run(argv, cwd=wd, env=env, capture_output=True, text=True, timeout=90)
+    r = spawn(argv, cwd=wd, env=env, capture_output=True, text=True, timeout=90)
 except (OSError, subprocess.TimeoutExpired) as e:
     print(f"check could not run: {e}")
     sys.exit(2)
@@ -461,7 +471,7 @@ inspect_one() {
     local rn; rn=$(basename "$r")
     local found; found=$(find "$dir/resources" -mindepth 1 -maxdepth 4 -type d -name "$rn" 2>/dev/null | head -1)
     local have=absent
-    [ -n "$found" ] && have="$(res_version "$found") at ${found#$dir/}"
+    [ -n "$found" ] && have="$(res_version "$found") at ${found#"$dir"/}"   # quoted: a Windows $dir holds backslashes, which would be glob escapes
     say "    $rn: bundle $(res_version "$WORK/$r") / server $have"
   done
 }
@@ -496,7 +506,7 @@ deploy_one() {
       local have want
       have=$(res_version "$found"); want=$(res_version "$WORK/$r")
       if [ "$(printf '%s\n%s\n' "$want" "$have" | sort -V | tail -1)" = "$have" ]; then
-        say "$name: ${cat%s} $rn $have already present at ${found#$dir/}"
+        say "$name: ${cat%s} $rn $have already present at ${found#"$dir"/}"
         continue
       fi
     fi
@@ -514,7 +524,7 @@ deploy_one() {
         || { say "$name: could not carry over $rn/data: stopped"; return 1; }
     fi
     { rm -rf "$target" && mv "$target.f2o77-new" "$target"; } || { say "$name: could not install $rn: stopped"; return 1; }
-    say "$name: installed $rn $(res_version "$target") at ${target#$dir/}"
+    say "$name: installed $rn $(res_version "$target") at ${target#"$dir"/}"
     local newpk; newpk=$(packages_sum "$target")
     if [ "$cat" != "loaders" ] && grep -q '^preload_mod' "$target/open77.lua" 2>/dev/null; then
       if [ -n "$oldpk" ] && [ "$oldpk" = "$newpk" ]; then

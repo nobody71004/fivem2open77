@@ -1,6 +1,7 @@
 """NCWE asset imports: storage under a map project, repacking into preload packages at build time,
 the writer hook that ships them, and the QA rule that imported packages keep their own names."""
 import io
+import json
 import os
 import struct
 import sys
@@ -190,3 +191,78 @@ def test_check_map_build_still_names_own_archives(tmp_path):
     by = {c["id"]: c for c in r["checks"]}
     assert not by["archive:wrongname.archive:name"]["ok"]
     assert not r["ok"]
+
+
+# --------------------------------------------------------------------------- what an import holds
+def test_contents_lists_archives_meshes_and_props(tmp_path):
+    p = _Project(tmp_path / "proj")
+    data = _zip_bytes({
+        "MyMod/archive/pc/mod/props.archive": _fake_archive(),
+        "MyMod/archive/pc/mod/props.archive.xl": json.dumps(
+            {"props.archive": ["base\\meshes\\tree.mesh", "base\\entities\\lamp.ent"]}).encode("utf-8"),
+        "MyMod/README.md": b"hi",
+    })
+    ncweassets.add_import(p, "mymod.zip", io.BytesIO(data), len(data))
+    c = ncweassets.contents(p, "mymod.zip")
+    assert [a["name"] for a in c["archives"]] == ["props.archive"]
+    a = c["archives"][0]
+    assert a["entries"] == 2 and a["error"] is None, a
+    assert [r["kind"] for r in a["resources"]] == ["mesh", "prop"], a
+    assert all(r["present"] is False for r in a["resources"]), a     # fake entries hash to 1000+i
+    assert [f["path"] for f in c["files"]] == ["MyMod/README.md"] and c["files"][0]["kind"] == "other", c
+    assert c["totals"]["meshes"] == 1 and c["totals"]["props"] == 1, c
+    assert ncweassets.list_imports(p)[0]["archive_names"] == ["props.archive"]
+
+
+def test_contents_folder_and_unreadable_index(tmp_path):
+    p = _Project(tmp_path / "proj")
+    small = _fake_archive()
+    ncweassets.add_import(p, "pack/archive/pc/mod/real.archive", io.BytesIO(small), len(small))
+    bad = b"NOPE" + b"\0" * 20
+    ncweassets.add_import(p, "pack/bad.archive", io.BytesIO(bad), len(bad))
+    ncweassets.add_import(p, "pack/notes.txt", io.BytesIO(b"hi"), 2)
+    c = ncweassets.contents(p, "pack")
+    archs = {a["name"]: a for a in c["archives"]}
+    assert archs["real.archive"]["entries"] == 2, archs
+    assert archs["bad.archive"]["entries"] is None and "RDAR" in archs["bad.archive"]["error"], archs
+    assert [f["path"] for f in c["files"]] == ["notes.txt"], c
+    assert c["totals"]["entries"] == 2 and c["totals"]["other"] == 1, c
+
+
+def test_collisions_warn_before_building(tmp_path):
+    p = _Project(tmp_path / "proj")
+    data = _zip_bytes({"MyMod/archive/pc/mod/props.archive": _fake_archive()})
+    ncweassets.add_import(p, "a.zip", io.BytesIO(data), len(data))
+    small = _fake_archive()
+    ncweassets.add_import(p, "pack/archive/pc/mod/props.archive", io.BytesIO(small), len(small))
+    other = _fake_archive()
+    ncweassets.add_import(p, "pack/fivem2open77_map_oops.archive", io.BytesIO(other), len(other))
+    problems = {c["archive"]: c["problem"] for c in ncweassets.collisions(p)}
+    assert "props.archive" in problems and "a.zip, pack" in problems["props.archive"], problems
+    assert "fivem2open77_map_oops.archive" in problems and "map resources" in problems["fivem2open77_map_oops.archive"], problems
+    # the same problems reach the build's packaging step as warnings
+    packages, warnings = ncweassets.prepare(str(p.path("assets", "ncwe")), str(tmp_path / "staging"), log=_quiet)
+    assert [pkg["source"] for pkg in packages] == ["a.zip", "pack"], packages
+    assert any("props.archive" in w and "rename one before building" in w for w in warnings), warnings
+    assert any("fivem2open77_map_oops.archive" in w and "rename" in w for w in warnings), warnings
+    # distinct archive names warn about nothing
+    p2 = _Project(tmp_path / "proj2")
+    only = _fake_archive()
+    ncweassets.add_import(p2, "pack/only.archive", io.BytesIO(only), len(only))
+    assert ncweassets.collisions(p2) == []
+
+
+def test_fingerprint_and_build_stale(tmp_path):
+    p = _Project(tmp_path / "proj")
+    base = ncweassets.fingerprint(p)
+    assert ncweassets.build_stale(p, {"imports": base}) is None       # empty, matches
+    assert ncweassets.build_stale(p, {}) is None                      # pre-tracking build, nothing imported
+    small = _fake_archive()
+    ncweassets.add_import(p, "pack/only.archive", io.BytesIO(small), len(small))
+    now = ncweassets.fingerprint(p)
+    assert now != base
+    assert ncweassets.build_stale(p, {"imports": base}) == "NCWE imports changed since this build"
+    assert ncweassets.build_stale(p, {"imports": now}) is None
+    assert ncweassets.build_stale(p, {}) == "NCWE imports changed since this build"   # old build, imports appeared
+    assert ncweassets.remove_import(p, "pack") == "pack"
+    assert ncweassets.fingerprint(p) == base                          # back to the same imports

@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import re
 import subprocess
 import threading
 import time
@@ -142,6 +143,80 @@ def call(ctx, name, args):
     if result.get("isError"):
         raise ToolError("NCWE: " + "\n".join(b["text"] for b in blocks if b["type"] == "text"))
     return blocks or [{"type": "text", "text": json.dumps(result)}]
+
+
+def _mesh_asset(blocks):
+    """The custom mesh NCWE assigned: the reply's mesh.asset (tolerant to the reply's shape)."""
+    for b in blocks:
+        if b.get("type") != "text":
+            continue
+        t = b.get("text") or ""
+        try:
+            data = json.loads(t)
+        except ValueError:
+            data = None
+        if isinstance(data, dict):
+            mesh = data.get("mesh")
+            if isinstance(mesh, dict) and mesh.get("asset"):
+                return str(mesh["asset"])
+            if data.get("asset"):
+                return str(data["asset"])
+        m = re.search(r'"([A-Za-z0-9_\\/.:-]+\.mesh)"', t)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _placed_ids(blocks):
+    for b in blocks:
+        if b.get("type") != "text":
+            continue
+        try:
+            data = json.loads(b.get("text") or "")
+        except ValueError:
+            continue
+        if isinstance(data, dict):
+            ids = data.get("ids") if isinstance(data.get("ids"), list) else data.get("id")
+            if ids is not None:
+                return ids if isinstance(ids, list) else [ids]
+    return []
+
+
+def import_model_glb(ctx, path, *, name=None, position=None, yaw=0.0, place=True, height=None,
+                     analyze_only=False):
+    """Import a model file into NCWE's custom mesh library and place it in the world.
+
+    Our map exports are glTF .glb (Y up, metres) — NCWE's import_model reads them straight.
+    Placement goes to Night City ``position`` ([x, y, z]; [x, y] drops it on the surface below) at
+    ``yaw`` degrees. Returns {asset, placed, import, place}: the mesh asset NCWE assigned, the new
+    object ids, and the raw replies.
+    """
+    if not os.path.isfile(path):
+        raise ToolError(f"no such file: {path}")
+    if place and position is None and not analyze_only:
+        raise ToolError("nowhere to place it: pass position [x, y, z] (or [x, y] to drop it on the surface below)")
+    args = {"path": os.path.abspath(path), "up_axis": "Y"}
+    if name:
+        args["name"] = name
+    if height:
+        args["height"] = float(height)
+    if analyze_only:
+        args["analyze_only"] = True
+    blocks = call(ctx, "import_model", args)
+    out = {"asset": _mesh_asset(blocks) if not analyze_only else None, "placed": [],
+           "import": blocks}
+    if analyze_only:
+        return out
+    if not out["asset"]:
+        raise ToolError("NCWE imported the model but named no mesh asset to place; see the import reply")
+    if place:
+        item = {"asset": out["asset"], "position": [float(v) for v in position],
+                "rotation": {"yaw": float(yaw or 0.0)}, "ground": "bottom", "collision": "box"}
+        if name:
+            item["name"] = name
+        out["place"] = call(ctx, "place_objects", {"items": [item]})
+        out["placed"] = _placed_ids(out["place"])
+    return out
 
 
 def registry():

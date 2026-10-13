@@ -130,6 +130,29 @@ export async function startMapBuild(ctx) {
   }
 }
 
+// one click: rebuild (picking up changed NCWE imports) and deploy that fresh build where the map lives
+export async function rebuildDeploy(ctx, target) {
+  try {
+    await api.post(`/projects/${ctx.pid}/rebuild_deploy`,
+      target ? { server: target.server, names: target.names } : {});
+    toast("Rebuilding and deploying");
+    location.hash = `#/map/${ctx.pid}/build`;
+  } catch (e) {
+    toast(e.errors && e.errors.length ? e.errors.join("; ") : e.message, "err");
+  }
+}
+
+export function staleBanner(ctx, stale) {
+  return h("div.banner", { style: { padding: "10px 12px", margin: "0 0 10px", display: "grid", gap: "6px" } },
+    h("b", "The last build is stale"),
+    h("div", stale.reason),
+    h("div.row",
+      h("button.btn.primary.small", { onclick: () => startMapBuild(ctx) }, "Rebuild"),
+      stale.target ? h("button.btn.small", { title: `Deploy the fresh build to ${stale.target.label}`,
+        onclick: () => rebuildDeploy(ctx, stale.target) }, "Rebuild and deploy")
+        : h("span.help", "deploy it to a server once to enable one-click rebuild and deploy")));
+}
+
 function fact(label, value) { return h("div.fact", h("span", label), h("b", value ?? "-")); }
 const fmtSpot = (a) => (a ? `${Number(a.x).toFixed(1)}, ${Number(a.y).toFixed(1)}, ${Number(a.z).toFixed(1)}  yaw ${Number(a.yaw || 0).toFixed(0)}°` : "-");
 
@@ -537,35 +560,110 @@ function assetsTab(root, ctx) {
     await load();
   }
 
+  const shown = new Map();            // expanded contents rows, by import name
+
+  function renderContents(c) {
+    const box = h("div", { style: { display: "grid", gap: "6px" } });
+    for (const a of c.archives) {
+      box.append(h("div",
+        h("b", a.name),
+        h("span.muted", a.entries == null ? "" : ` — ${a.entries} file${a.entries === 1 ? "" : "s"} inside`),
+        a.error ? h("span.warn", ` — ${a.error}`) : null));
+      if (a.resources.length) {
+        box.append(h("div.row", { style: { flexWrap: "wrap", gap: "6px", marginLeft: "14px" } },
+          ...a.resources.map((r) => h("span.chip", { title: r.path },
+            h("span", r.path.replace(/\\/g, "/").split("/").pop()),
+            h("span.n", r.kind + (r.present === false ? " · not in archive" : ""))))));
+      }
+    }
+    if (c.files.length) box.append(h("div.muted", "Other files: " + c.files.map((f) => f.path).join(", ")));
+    const singular = { meshes: "mesh", props: "prop", textures: "texture", sounds: "sound", other: "other", entries: "entry" };
+    const totals = Object.entries(c.totals).map(([k, v]) => `${v} ${v === 1 ? (singular[k] || k) : k}`).join(", ");
+    if (totals) box.append(h("div.help", totals));
+    for (const n of c.notes) box.append(h("div.help", n));
+    return box;
+  }
+
+  function toggleContents(a, row) {
+    const open = shown.get(a.name);
+    if (open) { open.remove(); shown.delete(a.name); return; }
+    const cell = h("td", { colSpan: 5 }, h("div", { style: { padding: "6px 8px 12px" } }, h("span.faint", "reading the import…")));
+    const detail = h("tr", cell);
+    shown.set(a.name, detail);
+    row.after(detail);
+    api.get(`/projects/${ctx.pid}/ncwe_assets/${encodeURIComponent(a.name)}`).then((r) => {
+      clear(cell.firstChild);
+      cell.firstChild.append(
+        h("div.help", "Names come from the mod's .archive.xl files (game archives index their contents by hash)."),
+        renderContents(r.contents));
+    }).catch((e) => { clear(cell.firstChild); cell.firstChild.append(h("span.err", e.message)); });
+  }
+
   async function load() {
     let r;
     try { r = await api.get(`/projects/${ctx.pid}/ncwe_assets`); } catch (e) { toast(e.message, "err"); return; }
     clear(list);
+    shown.clear();
     if (!r.assets.length) {
       list.append(h("div.empty", "Nothing imported yet. Drop an NCWE export above."));
       return;
     }
+    if (r.collisions && r.collisions.length) {
+      list.append(h("div.banner", { style: { padding: "10px 12px", marginBottom: "10px", display: "grid", gap: "4px" } },
+        h("b", "Archive name collisions — fix before building"),
+        ...r.collisions.map((c) => h("div", c.problem))));
+    }
+    if (r.build_stale) list.append(staleBanner(ctx, r.build_stale));
     const body = h("tbody");
     for (const a of r.assets) {
-      body.append(h("tr",
-        h("td", h("div.title", a.name)),
+      const tr = h("tr",
+        h("td", h("div.title", a.name),
+          a.archive_names && a.archive_names.length ? h("div.help", a.archive_names.join(", ")) : null),
         h("td.muted", a.kind),
         h("td.num", fmtBytes(a.bytes)),
         h("td", a.ready == null ? h("span.pill", "checked at build")
           : a.ready ? h("span.pill.ok", `${a.archives} archive${a.archives === 1 ? "" : "s"}`)
             : h("span.pill.err", "no game archives")),
-        h("td", { style: { textAlign: "right" } }, h("button.btn.ghost.small", { title: "Remove this import", onclick: async () => {
-          if (await confirmBox("Remove import", `Remove ${a.name} from this project? The next build will not ship it.`, "Remove", "danger")) {
-            try { await api.del(`/projects/${ctx.pid}/ncwe_assets/${encodeURIComponent(a.name)}`); await load(); } catch (e) { toast(e.message, "err"); }
-          }
-        } }, icon("trash")))));
+        h("td", { style: { textAlign: "right", whiteSpace: "nowrap" } },
+          h("button.btn.ghost.small", { title: "What this import contains (meshes, props, archives)",
+            onclick: () => toggleContents(a, tr) }, "Contents"),
+          h("button.btn.ghost.small", { title: "Remove this import", onclick: async () => {
+            if (await confirmBox("Remove import", `Remove ${a.name} from this project? The next build will not ship it.`, "Remove", "danger")) {
+              try { await api.del(`/projects/${ctx.pid}/ncwe_assets/${encodeURIComponent(a.name)}`); await load(); } catch (e) { toast(e.message, "err"); }
+            }
+          } }, icon("trash"))));
+      body.append(tr);
     }
     list.append(h("div.card.table-card", h("table.tbl.list",
       h("thead", h("tr", h("th", "Import"), h("th", "Kind"), h("th.num", "Size"), h("th", "Ships with builds"), h("th", ""))),
       body)));
   }
 
-  root.append(drop, progress, list);
+  // the other direction: this map into the user's NCWE editor
+  const outBox = h("div");
+  async function toNcwe() {
+    try {
+      const job = await api.post(`/projects/${ctx.pid}/ncwe_import`, {});
+      const log = h("div.log");
+      clear(outBox).append(h("div.card", h("div.row", h("b", "Importing into NCWE"), pill(job.state)), log));
+      const j = await waitJob(job.id, (jj) => clear(log).append(...logLines(jj.allLines)));
+      if (j.state === "done" && j.result) {
+        const r = j.result;
+        toast(r.note || "Imported into NCWE", "ok");
+        clear(log).append(h("div", r.note || ""),
+          r.asset ? h("div.kv", h("span", "mesh"), h("code", r.asset),
+            h("span", "placed"), h("span", `${(r.placed || []).length} object${(r.placed || []).length === 1 ? "" : "s"}`)) : null);
+      } else log.append(h("div.err", j.error || j.state));
+    } catch (e) { toast(e.message, "err"); }
+  }
+  const send = h("div.card", { style: { marginTop: "14px" } },
+    h("h3", "Send this map to NCWE"),
+    h("p.help", "Exports the map as a glb and imports it into your NCWE editor's custom mesh library (import_model), " +
+      "placed in the NCWE world at the map's Night City spot when one is set in Options. NCWE must be open and " +
+      "signed in (Settings > Agents > NCWE MCP executable)."),
+    h("div.row", h("button.btn", { onclick: toNcwe }, "Import to NCWE")),
+    outBox);
+  root.append(drop, progress, list, send);
   load();
 }
 
@@ -574,14 +672,19 @@ function buildTab(root, ctx) {
   const live = h("div");
   const hist = h("tbody");
   const detail = h("div");
+  const staleBox = h("div");
 
   async function history() {
     const builds = await api.get(`/projects/${ctx.pid}/builds`);
     clear(hist);
+    clear(staleBox);
+    if (builds[0] && builds[0].stale) staleBox.append(staleBanner(ctx, builds[0].stale));
     if (!builds.length) hist.append(h("tr", h("td", { colSpan: 8 }, h("span.faint", "no builds yet"))));
     for (const b of builds) {
       const size = (b.packages || []).reduce((a, p) => a + p.bytes, 0);
-      hist.append(h("tr", h("td", `#${b.n}`), h("td", fmtTime(b.time)), h("td", b.ok ? h("span.pill.ok", "ok") : h("span.pill.err", "failed")),
+      hist.append(h("tr", h("td", `#${b.n}`), h("td", fmtTime(b.time)),
+        h("td", h("div.row", { style: { gap: "6px" } }, b.ok ? h("span.pill.ok", "ok") : h("span.pill.err", "failed"),
+          b.stale ? h("span.pill.warn", { title: b.stale.reason }, "stale") : null)),
         h("td", b.qa ? (b.qa.ok ? h("span.ok", "passed") : h("span.err", `${b.qa.failed.length} failed`)) : "-"),
         h("td.muted", b.baked ? fmtSpot(b.baked.anchor) : (b.ok ? "not baked" : "")),
         h("td.num", size ? fmtBytes(size) : ""), h("td.num", b.seconds ? `${Math.round(b.seconds)}s` : ""),
@@ -652,7 +755,7 @@ function buildTab(root, ctx) {
     h("p.help", "WolvenKit writes the meshes, textures, collision and Door devices, then the map is baked at its spot ",
       opts.place ? h("b", fmtSpot(opts.place)) : h("b", "(none set: it is built but not baked)"),
       ". A big MLO takes a few minutes; the result is checked afterwards.")),
-    live, h("div.card", h("h3", "Builds"), h("table.tbl", h("thead", h("tr", h("th", ""), h("th", "when"), h("th", "build"), h("th", "checks"),
+    staleBox, live, h("div.card", h("h3", "Builds"), h("table.tbl", h("thead", h("tr", h("th", ""), h("th", "when"), h("th", "build"), h("th", "checks"),
       h("th", "baked at"), h("th.num", "size"), h("th.num", "time"), h("th", ""))), hist)), detail);
   history();
   if (running) attach(running);

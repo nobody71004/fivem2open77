@@ -344,6 +344,112 @@ def test_baker_toolkit_imports_and_emits_quiet_areas_without_source_tree(tmp_pat
     assert settings["Parameters"][0]["value"] == 1
 
 
+def test_map_writer_ships_ncwe_imports_within_the_package_budget(tmp_path):
+    """End to end through the map writer, offline (no game, no WolvenKit): NCWE imports repacked into
+    preload packages, the shipped manifest declaring each one, and Open77's 8-package budget enforced.
+    """
+    import io
+    import zipfile
+    from fivem2open77.mlo import build as build_mod
+    from fivem2open77.mlo import writer as writer_mod
+    from fivem2open77.studio import ncweassets, qa
+
+    def quiet(_msg):
+        pass
+
+    # ---- the NCWE imports a user drops in: a zip export, a folder, a loose archive
+    assets = tmp_path / "assets"
+    (assets / "pack" / "archive" / "pc" / "mod").mkdir(parents=True)
+    (assets / "pack" / "archive" / "pc" / "mod" / "extra.archive").write_bytes(_fake_archive())
+    (assets / "pack" / "notes.txt").write_text("kept, but not shipped")
+    (assets / "solo.archive").write_bytes(_fake_archive())
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("MyMod/archive/pc/mod/props.archive", _fake_archive())
+    (assets / "props.zip").write_bytes(buf.getvalue())
+    prepared, warnings = ncweassets.prepare(str(assets), str(tmp_path / "staging"), log=quiet)
+    assert [p["source"] for p in prepared] == ["pack", "props.zip", "solo.archive"], prepared
+    assert any(w.startswith("pack:") and "left out" in w for w in warnings), warnings
+
+    # ---- the map the writer ships: one part (no mesh of its own: the writer gives it a placeholder)
+    part = build_mod.MapPart(name="body_01", kind="object")
+    model = build_mod.MapModel(name="cookiemap", display_name="Cookie", anchor=(0, 0, 0), spawn=None,
+                               parts={"body_01": part},
+                               placements=[build_mod.Placement(part="body_01", position=(0, 0, 0), yaw=0)])
+
+    class _Wk:
+        """Just enough WolvenKit CLI offline: JSON->CR2W mirrored as stubs, pack -> a synthetic
+        archive the real normalize_archive accepts."""
+
+        def deserialize_tree(self, jdir, adir, work):
+            for dp, _, fns in os.walk(jdir):
+                for fn in fns:
+                    rel = os.path.relpath(os.path.join(dp, fn), jdir)
+                    dst = os.path.join(adir, rel[:-5] if rel.endswith(".json") else rel)
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    with open(dst, "wb") as f:
+                        f.write(b"CR2W" + rel.encode("utf-8"))
+
+        def import_glb(self, rdir, adir):
+            pass
+
+        def pack(self, src_root, pdir):
+            os.makedirs(pdir, exist_ok=True)
+            with open(os.path.join(pdir, os.path.basename(src_root) + ".archive"), "wb") as f:
+                f.write(_fake_archive())
+
+    class _Cache:
+        """The one donor mesh template the writer clones."""
+
+        def ensure_paths(self, paths):
+            pass
+
+        def load(self, path):
+            return {"Data": {"RootChunk": {"materialEntries": [], "localMaterialBuffer": {"materials": []},
+                                           "appearances": [{"Data": {"chunkMaterials": [], "name": ""}}]}}}
+
+    r = writer_mod.MapWriter(_Wk(), _Cache(), str(tmp_path / "out"), log=quiet, version="1.0.7").write(
+        model, extra_packages=prepared)
+
+    # ---- the shipped manifest: the map's package plus one preload package per import
+    res = tmp_path / "out" / "cookiemap"
+    man = qa.parse_manifest((res / "open77.lua").read_text(encoding="utf-8"))
+    assert man["resource"] == "cookiemap"
+    assert man["preload_mod"] == ["dist/cookiemap.zip", "dist/cookiemap_ncwe_pack.zip",
+                                  "dist/cookiemap_ncwe_props_zip.zip", "dist/cookiemap_ncwe_solo_archive.zip"], man
+    assert len(man["preload_mod"]) <= package.MAX_PACKAGES, man
+    assert all((res / rel).is_file() for rel in man["preload_mod"]), man
+    assert not man["client_scripts"] and any(d.split()[0] == "archivexl" for d in man["dependencies"]), man
+    assert r["layout"]["archives"] == ["fivem2open77_map_cookiemap.archive",
+                                       "extra.archive", "props.archive", "solo.archive"], r["layout"]
+    with zipfile.ZipFile(res / "dist" / "cookiemap_ncwe_props_zip.zip") as z:
+        assert z.namelist() == ["archive/pc/mod/props.archive"]
+
+    # ---- the build passes the same QA the Studio runs after every build
+    q = qa.check_map_build(str(tmp_path / "out"))
+    by = {c["id"]: c for c in q["checks"]}
+    assert by["archive:props.archive:imported"]["ok"] and by["archive:solo.archive:imported"]["ok"], by
+    assert by["archive:fivem2open77_map_cookiemap.archive:name"]["ok"], by
+    assert q["ok"], [c for c in q["checks"] if not c["ok"]]
+
+    # ---- the budget: 1 + 7 fits (8 is Open77's limit), 1 + 8 is refused with the overflow named
+    def extras(n):
+        return [{"zip": prepared[i % len(prepared)]["zip"], "source": f"import{i}", "archives": [f"import{i}.archive"]}
+                for i in range(n)]
+
+    r8 = writer_mod.MapWriter(_Wk(), _Cache(), str(tmp_path / "out8"), log=quiet).write(model,
+                                                                                        extra_packages=extras(7))
+    assert len(r8["layout"]["packages"]) == package.MAX_PACKAGES
+    try:
+        writer_mod.MapWriter(_Wk(), _Cache(), str(tmp_path / "out9"), log=quiet).write(model,
+                                                                                       extra_packages=extras(8))
+        raise AssertionError("the writer shipped one package over Open77's budget")
+    except RuntimeError as e:
+        msg = str(e)
+        assert "9 packages needed" in msg and f"Open77 allows {package.MAX_PACKAGES}" in msg \
+            and "NCWE asset import" in msg, msg
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

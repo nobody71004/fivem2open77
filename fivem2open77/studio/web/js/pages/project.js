@@ -87,7 +87,7 @@ const NEON_SIDES = [["left", "left sill"], ["right", "right sill"], ["front", "u
 
 function neonTab(root, ctx) {
   const d = ctx.inspect.neon || { palette: [], kit: null, enabled: false };
-  const conf = Object.assign({ enabled: true, sides: ["left", "right", "front", "back"], colors: "gta", default: "on",
+  const conf = Object.assign({ enabled: true, sides: ["left", "right", "front", "back"], colors: "gta", default: "off",
     brightness: 1, height_offset: 0 }, ctx.profile.neon || {});
   const kit = d.kit;
   const enabled = h("input", { type: "checkbox", checked: conf.enabled });
@@ -112,7 +112,7 @@ function neonTab(root, ctx) {
   const def = h("select", h("option", { value: "on" }, "on (the first colour)"),
     h("option", { value: "off" }, "off (kit fitted, lights off)"),
     (kit ? kit.colors : d.palette).map((c) => h("option", { value: c.key }, c.label)));
-  def.value = conf.default || "on";
+  def.value = conf.default || "off";
   const bright = h("input", { type: "range", min: 0.2, max: 4, step: 0.1, value: conf.brightness });
   const brightO = h("output", Number(conf.brightness).toFixed(1) + "x");
   bright.oninput = () => { brightO.textContent = Number(bright.value).toFixed(1) + "x"; };

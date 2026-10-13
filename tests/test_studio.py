@@ -328,6 +328,344 @@ def test_api_ncwe_assets_import_flow():
         shutil.rmtree(st.ws, ignore_errors=True)
 
 
+def test_api_ncwe_import_flow(monkeypatch):
+    """A converted map into NCWE: the job exports a real map glb and calls import_model +
+    place_objects with the map's Night City spot (the conversion and the NCWE stdio calls are the
+    two seams faked here; the calls themselves are covered for real in test_ncwe.py)."""
+    import numpy as np
+    from fivem2open77.mlo import build as build_mod
+    from fivem2open77.model.ir import SubMesh
+    from fivem2open77.studio import maps as maps_mod
+    from fivem2open77.studio.agent import ncwe
+    st = _Studio()
+    try:
+        pid = "b1c2d3e4f5a6"
+        d = os.path.join(st.ws, "projects", pid)
+        os.makedirs(d)
+        with open(os.path.join(d, "project.json"), "w", encoding="utf-8") as f:
+            json.dump({"id": pid, "kind": "map", "name": "cookiemap", "created": 1.0, "updated": 1.0,
+                       "source": {"file": "m", "original": "m", "hash": "x"},
+                       "builds": [], "build_counter": 0, "deployments": []}, f)
+        with open(os.path.join(d, "map.json"), "w", encoding="utf-8") as f:
+            json.dump({"name": "cookiemap", "display_name": "Cookie",
+                       "place": {"x": 10, "y": 20, "z": 30, "yaw": 90}}, f)
+        sm = SubMesh(material="m", positions=np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], np.float32),
+                     normals=np.tile([[0, 0, 1.0]], (3, 1)).astype(np.float32),
+                     tangents=np.tile([[1.0, 0, 0, 1.0]], (3, 1)).astype(np.float32),
+                     uv0=np.zeros((3, 2), np.float32), uv1=None, colors=None,
+                     indices=np.array([0, 1, 2], np.uint32), lod=1)
+        model = build_mod.MapModel(name="cookiemap", display_name="Cookie", anchor=(0, 0, 0), spawn=None,
+                                   parts={"body_01": build_mod.MapPart(name="body_01", kind="object", submeshes=[sm])},
+                                   placements=[build_mod.Placement(part="body_01", position=(0, 0, 0), yaw=0)])
+        monkeypatch.setattr(maps_mod.MapLook, "model",
+                            lambda self, opts=None, log=None, check=None: (None, model, None, "cookiemap"))
+        calls = []
+
+        def fake_call(ctx, name, args):
+            calls.append((name, args))
+            reply = {"mesh": {"asset": "base\\custom\\cookiemap.mesh"}} if name == "import_model" else {"ids": [42]}
+            return [{"type": "text", "text": json.dumps(reply)}]
+
+        monkeypatch.setattr(ncwe, "call", fake_call)
+
+        def run_import(body):
+            code, job = st.req("POST", f"/api/projects/{pid}/ncwe_import", body=body)
+            assert code == 200, job
+            for _ in range(200):
+                code, j = st.req("GET", f"/api/jobs/{job['id']}")
+                if j.get("state") in ("done", "failed", "cancelled"):
+                    return j
+                time.sleep(0.05)
+            raise AssertionError(f"the ncwe import job did not finish: {j}")
+
+        j = run_import({})
+        assert j["state"] == "done", j
+        r = j["result"]
+        assert r["asset"] == "base\\custom\\cookiemap.mesh" and r["placed"] == [42], r
+        assert r["position"] == [10, 20, 30], r
+        assert os.path.isfile(r["glb"]) and open(r["glb"], "rb").read(4) == b"glTF", r
+        assert [c[0] for c in calls] == ["import_model", "place_objects"], calls
+        assert calls[0][1]["name"] == "Cookie" and calls[0][1]["up_axis"] == "Y", calls
+        assert calls[1][1]["items"][0]["position"] == [10.0, 20.0, 30.0], calls
+        assert calls[1][1]["items"][0]["rotation"] == {"yaw": 90.0}, calls
+        # no spot and no position: into the custom mesh library only, with a clear note
+        with open(os.path.join(d, "map.json"), "w", encoding="utf-8") as f:
+            json.dump({"name": "cookiemap", "display_name": "Cookie"}, f)
+        j = run_import({})
+        assert j["state"] == "done", j
+        assert j["result"]["placed"] == [] and "not placed" in j["result"]["note"], j
+        assert [c[0] for c in calls] == ["import_model", "place_objects", "import_model"], calls
+    finally:
+        shutil.rmtree(st.ws, ignore_errors=True)
+
+
+def test_api_ncwe_assets_contents_and_collisions():
+    """The assets tab's data: what an import holds (archives, meshes, props) and name collisions."""
+    import io
+    import struct as _struct
+    import zipfile as _zip
+    from fivem2open77.cp77 import package as package_mod
+    st = _Studio()
+
+    def fake_archive(entries=2):
+        table = _struct.pack("<III", entries, 0, 0)
+        for i in range(entries):
+            table += _struct.pack("<Qq5I20s", 1000 + i, 123 + i, 0, 0, 0, 0, 0, b"\0" * 20)
+        index_pos = 44
+        head = _struct.pack("<4sIQIQIQ", b"RDAR", 12, index_pos, len(table) + 16, 0, 0, 0) + b"\0\0\0\0"
+        index = _struct.pack("<IIQ", 8, len(table) + 8, package_mod._crc64_xz(bytes(table))) + table
+        return head + index
+
+    def zipped(files):
+        buf = io.BytesIO()
+        with _zip.ZipFile(buf, "w") as z:
+            for arc, data in files.items():
+                z.writestr(arc, data)
+        return buf.getvalue()
+
+    try:
+        pid = "a1b2c3d4e5f6"
+        d = os.path.join(st.ws, "projects", pid)
+        os.makedirs(d)
+        with open(os.path.join(d, "project.json"), "w", encoding="utf-8") as f:
+            json.dump({"id": pid, "kind": "map", "name": "cookiemap", "created": 1.0, "updated": 1.0,
+                       "source": {"file": "m", "original": "m", "hash": "x"},
+                       "builds": [], "build_counter": 0, "deployments": []}, f)
+        up = {"Content-Type": "application/octet-stream"}
+        raw = zipped({
+            "MyMod/archive/pc/mod/props.archive": fake_archive(),
+            "MyMod/archive/pc/mod/props.archive.xl": json.dumps(
+                {"props.archive": ["base\\meshes\\tree.mesh", "base\\entities\\lamp.ent"]}),
+            "MyMod/README.md": "hi",
+        })
+        code, r = st.req("POST", f"/api/projects/{pid}/ncwe_assets?name=props.zip", raw=raw, headers=up)
+        assert code == 200 and r["asset"]["archive_names"] == ["props.archive"], r
+        code, r = st.req("POST", f"/api/projects/{pid}/ncwe_assets?name=other.zip",
+                         raw=zipped({"Other/archive/pc/mod/props.archive": fake_archive()}), headers=up)
+        assert code == 200, r
+        # the list the tab shows: archive names per import and the collision to fix before building
+        code, r = st.req("GET", f"/api/projects/{pid}/ncwe_assets")
+        assert code == 200, r
+        assert [a["name"] for a in r["assets"]] == ["other.zip", "props.zip"], r
+        assert r["assets"][1]["archive_names"] == ["props.archive"], r
+        assert len(r["collisions"]) == 1 and "props.archive" in r["collisions"][0]["problem"], r
+        assert "other.zip, props.zip" in r["collisions"][0]["problem"], r
+        # the contents view: entry counts and the meshes/props the .archive.xl lists
+        code, r = st.req("GET", f"/api/projects/{pid}/ncwe_assets/props.zip")
+        assert code == 200, r
+        c = r["contents"]
+        a = c["archives"][0]
+        assert a["name"] == "props.archive" and a["entries"] == 2, c
+        assert [x["kind"] for x in a["resources"]] == ["mesh", "prop"], c
+        assert [f["path"] for f in c["files"]] == ["MyMod/README.md"], c
+        assert c["totals"]["meshes"] == 1 and c["totals"]["props"] == 1, c
+        # an unreadable archive reports the problem instead of failing the view
+        code, r = st.req("POST", f"/api/projects/{pid}/ncwe_assets?name=bad.zip",
+                         raw=zipped({"x/archive/pc/mod/bad.archive": b"NOPE" + b"\0" * 20}), headers=up)
+        assert code == 200, r
+        code, r = st.req("GET", f"/api/projects/{pid}/ncwe_assets/bad.zip")
+        assert code == 200 and r["contents"]["archives"][0]["entries"] is None, r
+        assert "RDAR" in r["contents"]["archives"][0]["error"], r
+    finally:
+        shutil.rmtree(st.ws, ignore_errors=True)
+
+
+def test_map_stale_and_rebuild_deploy():
+    """The last build goes stale when imports change; rebuild-and-deploy chains build -> deploy."""
+    import io
+    from fivem2open77.studio import ncweassets
+    from fivem2open77.studio.projects import ProjectError
+    studio, ws, _ = _agent_studio()
+    try:
+        pid = "a1b2c3d4e5f6"
+        d = os.path.join(ws, "projects", pid)
+        os.makedirs(d)
+        with open(os.path.join(d, "project.json"), "w", encoding="utf-8") as f:
+            json.dump({"id": pid, "kind": "map", "name": "cookiemap", "created": 1.0, "updated": 1.0,
+                       "source": {"file": "m", "original": "m", "hash": "x"},
+                       "builds": [{"n": 1, "ok": True, "kind": "map", "version": "1.0.1", "imports": "bogus"}],
+                       "build_counter": 1,
+                       "deployments": [{"time": 1.0, "server": "local", "names": ["cookiemap"], "build": 1, "kind": "map"}]}, f)
+        p = studio.projects.get(pid)
+        ncweassets.add_import(p, "props.zip", io.BytesIO(b"x" * 10), 10)     # imports changed after build #1
+        st = studio.map_stale(p)
+        assert st["reason"] == "NCWE imports changed since this build", st
+        assert st["target"]["server"] == "local" and st["target"]["names"] == ["cookiemap"], st
+        # the one-click flow: rebuild, then deploy that fresh build to where the map lives
+        calls, studio._server = {}, lambda sid: {"id": sid, "label": "Local server", "names": ["cookiemap"]}
+
+        def fake_build(pid_):
+            calls["build"] = pid_
+            return studio.jobs.submit("build", "build", lambda job: {"n": 7, "ok": True, "version": "1.0.7"}, project=pid_)
+
+        def fake_deploy(pid_, sid, **kw):
+            calls["deploy"] = (pid_, sid, kw)
+            return studio.jobs.submit("deploy", "deploy", lambda job: {"names": ["cookiemap"]}, project=pid_)
+
+        studio.map_build, studio.map_deploy = fake_build, fake_deploy
+        job = studio.map_rebuild_deploy(pid)
+        studio.jobs.wait(job, timeout=30)
+        assert job.state == "done", job.error
+        assert job.result["build"]["n"] == 7, job.result
+        assert job.result["deployed"] == {"server": "local", "label": "Local server", "names": ["cookiemap"]}, job.result
+        assert calls["deploy"][1] == "local" and calls["deploy"][2]["build"] == 7, calls
+        assert calls["deploy"][2]["names"] == ["cookiemap"], calls          # the last deployment's folders
+        # a failed build stops the flow before anything is deployed
+        def failing_build(pid_):
+            def run(job):
+                raise RuntimeError("boom")
+            return studio.jobs.submit("build", "build", run, project=pid_)
+
+        studio.map_build = failing_build
+        calls.clear()
+        job = studio.map_rebuild_deploy(pid)
+        studio.jobs.wait(job, timeout=30)
+        assert job.state == "failed" and "the build did not finish" in job.error, (job.state, job.error)
+        assert "deploy" not in calls, calls
+        # the agent's deploy_map rebuild flag runs the same one-click flow
+        from types import SimpleNamespace
+        from fivem2open77.studio.agent import maptools
+        from fivem2open77.studio.agent.tools import Context
+        studio.map_build = fake_build
+        calls.clear()
+        ctx = Context(studio, SimpleNamespace(project=pid, note=lambda m: None, attach_job=lambda j: None,
+                                              stopping=False))
+        out = json.loads(maptools.t_deploy_map(ctx, {"server": "local", "rebuild": True})[0]["text"])
+        assert out["build"]["n"] == 7 and out["deployed"]["names"] == ["cookiemap"], out
+        assert calls["deploy"][2]["build"] == 7, calls
+        # a map that lives nowhere has no one-click target
+        p.data["deployments"] = []
+        p.save()
+        try:
+            studio.map_rebuild_deploy(pid)
+            raise AssertionError("accepted a map that is not on a server")
+        except ProjectError as e:
+            assert "not on a server yet" in str(e), e
+    finally:
+        shutil.rmtree(ws, ignore_errors=True)
+
+
+def test_api_stale_and_rebuild_deploy():
+    """What the tabs read: the last build is marked stale, and the one-click endpoint chains the flow."""
+    from fivem2open77.studio.mapops import MapOps
+    st = _Studio()
+    try:
+        pid = "a1b2c3d4e5f6"
+        d = os.path.join(st.ws, "projects", pid)
+        os.makedirs(d)
+        with open(os.path.join(d, "project.json"), "w", encoding="utf-8") as f:
+            json.dump({"id": pid, "kind": "map", "name": "cookiemap", "created": 1.0, "updated": 1.0,
+                       "source": {"file": "m", "original": "m", "hash": "x"},
+                       "builds": [{"n": 1, "ok": True, "kind": "map", "version": "1.0.1"}],
+                       "build_counter": 1, "deployments": []}, f)
+        # nothing was imported after the build: not stale
+        code, r = st.req("GET", f"/api/projects/{pid}/builds")
+        assert code == 200 and r[0]["stale"] is None, r
+        code, r = st.req("GET", f"/api/projects/{pid}/ncwe_assets")
+        assert r["build_stale"] is None, r
+        # an import appears: the last build is marked stale (no server has it yet)
+        code, r = st.req("POST", f"/api/projects/{pid}/ncwe_assets?name=props.zip",
+                         raw=b"x" * 10, headers={"Content-Type": "application/octet-stream"})
+        assert code == 200, r
+        code, r = st.req("GET", f"/api/projects/{pid}/builds")
+        assert r[0]["stale"]["reason"] == "NCWE imports changed since this build", r
+        assert r[0]["stale"]["target"] is None, r
+        code, r = st.req("GET", f"/api/projects/{pid}/ncwe_assets")
+        assert r["build_stale"]["reason"] == "NCWE imports changed since this build", r
+        # the one-click endpoint reaches the flow with the body's target
+        got = {}
+
+        def fake(self, pid_, sid=None, **kw):
+            got.update(pid=pid_, sid=sid, **kw)
+            return self.jobs.submit("rebuild-deploy", "Rebuild and deploy", lambda job: {"ok": True}, project=pid_)
+
+        MapOps.map_rebuild_deploy, was = fake, MapOps.map_rebuild_deploy
+        try:
+            code, r = st.req("POST", f"/api/projects/{pid}/rebuild_deploy",
+                             body={"server": "local", "names": ["cookiemap"]})
+            assert code == 200 and r["kind"] == "rebuild-deploy", r
+            assert got == {"pid": pid, "sid": "local", "names": ["cookiemap"],
+                           "keep_placement": True, "restart": True, "baker": True}, got
+        finally:
+            MapOps.map_rebuild_deploy = was
+    finally:
+        shutil.rmtree(st.ws, ignore_errors=True)
+
+
+def test_agent_ncwe_assets_tools():
+    """ncwe_assets_*: import an NCWE export on a map project, list it, dry-run the packaging."""
+    import io
+    import zipfile as _zip
+    from types import SimpleNamespace
+    from fivem2open77.studio.agent.tools import Context, ToolError, registry
+    studio, ws, _ = _agent_studio()
+
+    def project(pid, kind):
+        d = os.path.join(ws, "projects", pid)
+        os.makedirs(d)
+        with open(os.path.join(d, "project.json"), "w", encoding="utf-8") as f:
+            json.dump({"id": pid, "kind": kind, "name": pid, "created": 1.0, "updated": 1.0,
+                       "source": {"file": "m", "original": "m", "hash": "x"},
+                       "builds": [], "build_counter": 0, "deployments": []}, f)
+        return Context(studio, SimpleNamespace(project=pid, note=lambda m: None))
+
+    try:
+        ctx = project("a1b2c3d4e5f6", "map")
+        tools = registry()
+        # a zip export carrying one game archive, imported under its own name
+        buf = io.BytesIO()
+        with _zip.ZipFile(buf, "w") as z:
+            z.writestr("MyMod/archive/pc/mod/myprops.archive", b"RDAR")
+        src = os.path.join(ws, "props.zip")
+        with open(src, "wb") as f:
+            f.write(buf.getvalue())
+        out = json.loads(tools["ncwe_assets_import"].fn(ctx, {"path": src})[0]["text"])
+        assert out["imported"]["name"] == "props.zip" and out["imported"]["archives"] == 1, out
+        # a folder keeps its name: the game archive and the side file both go in
+        fold = os.path.join(ws, "drop")
+        os.makedirs(os.path.join(fold, "archive", "pc", "mod"))
+        with open(os.path.join(fold, "archive", "pc", "mod", "extra.archive"), "wb") as f:
+            f.write(b"RDAR2")
+        with open(os.path.join(fold, "readme.txt"), "w", encoding="utf-8") as f:
+            f.write("notes")
+        out = json.loads(tools["ncwe_assets_import"].fn(ctx, {"path": fold})[0]["text"])
+        assert out["imported"]["name"] == "drop" and out["imported"]["archives"] == 1, out
+        # list shows both
+        out = json.loads(tools["ncwe_assets_list"].fn(ctx, {})[0]["text"])
+        assert sorted(i["name"] for i in out["imports"]) == ["drop", "props.zip"], out
+        # verify dry-runs the build's packaging: two preload packages, the txt left out with a note
+        out = json.loads(tools["ncwe_assets_verify"].fn(ctx, {})[0]["text"])
+        assert out["preload_packages"] == 2, out
+        assert {q["source"] for q in out["packages"]} == {"drop", "props.zip"}, out
+        assert any("drop" in w and "left out" in w for w in out["warnings"]), out
+        # a colliding archive name is called out before building
+        buf = io.BytesIO()
+        with _zip.ZipFile(buf, "w") as z:
+            z.writestr("OtherMod/archive/pc/mod/myprops.archive", b"RDAR")
+        dup = os.path.join(ws, "dup.zip")
+        with open(dup, "wb") as f:
+            f.write(buf.getvalue())
+        out = json.loads(tools["ncwe_assets_import"].fn(ctx, {"path": dup})[0]["text"])
+        assert any("myprops.archive" in c["problem"] for c in out["collisions"]), out
+        out = json.loads(tools["ncwe_assets_verify"].fn(ctx, {})[0]["text"])
+        assert any("myprops.archive" in w and "rename one before building" in w for w in out["warnings"]), out
+        # a path that is not there is refused with a clear error
+        try:
+            tools["ncwe_assets_import"].fn(ctx, {"path": os.path.join(ws, "missing.zip")})
+            raise AssertionError("missing path accepted")
+        except ToolError as e:
+            assert "no such file" in str(e), e
+        # a car project cannot take asset imports
+        cctx = project("b1b2c3d4e5f6", "car")
+        try:
+            tools["ncwe_assets_list"].fn(cctx, {})
+            raise AssertionError("car project accepted asset imports")
+        except ToolError as e:
+            assert "open_project" in str(e), e
+    finally:
+        shutil.rmtree(ws, ignore_errors=True)
+
+
 # ----------------------------------------------------------------------------- agent loop
 def _agent_studio():
     from fivem2open77.studio.app import Studio
