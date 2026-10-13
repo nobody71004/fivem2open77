@@ -127,6 +127,12 @@ def bake(res_dir: str, anchor: dict, wk, log=print, keep_work=False, out_dir: st
     res_dir = os.path.abspath(res_dir)
     layout = load_layout(res_dir)
     name = layout["name"]
+    # the sector package is one more preload package on top of the map's own (and its NCWE imports):
+    # a map already at Open77's limit cannot take it, so refuse before anything is written
+    if len(layout.get("packages", [])) + 1 > package.MAX_PACKAGES:
+        raise RuntimeError(
+            f"{name} has {len(layout.get('packages', []))} preload packages; moving it adds a sector package "
+            f"and Open77 allows {package.MAX_PACKAGES}: remove an NCWE import and rebuild the map before moving it")
     anchor = normalize_anchor(anchor)
     bake_id = bake_id or new_bake_id(name)
     target = os.path.abspath(out_dir) if out_dir else res_dir

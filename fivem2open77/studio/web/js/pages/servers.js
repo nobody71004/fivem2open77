@@ -14,6 +14,7 @@ export function serversPage(root) {
   async function load() {
     const st = await refreshState();
     clear(list);
+    checkBtn.disabled = !st.settings.servers.length;
     if (!st.settings.servers.length) list.append(h("div.card.empty", "No servers yet. Add the Open77 server you play on (it needs SSH access)."));
     for (const s of st.settings.servers) list.append(card(s));
   }
@@ -148,6 +149,69 @@ export function serversPage(root) {
     }
   }
 
+  // the fleet: every server folder's Open77 version against the newest release staged on its host
+  const fleetResult = h("div");
+  const checkBtn = h("button.btn.small", { onclick: () => checkVersions() }, "Check versions");
+  const upgradeBtn = h("button.btn.small.cyan", { disabled: true, onclick: () => fleetUpgrade() }, "Upgrade fleet...");
+  const fleetCard = h("div.card", { style: { marginBottom: "16px" } },
+    h("div.row", h("h3", { style: { margin: 0 } }, "Open77 versions"), h("div.grow"), checkBtn, upgradeBtn),
+    h("div.help", "Each folder runs the Open77 build in its package manifest. The target is the newest release staged on the host (the upgrade tool installs from there). Folders with players online are left for an empty server."),
+    fleetResult);
+  let lastFleet = null;
+
+  function behindFolders(rows) {
+    return rows.flatMap((x) => (x.error || !x.target || x.blocked ? [] : x.folders
+      .filter((f) => f.drift === "behind" && !f.online).map((f) => ({ server: x, folder: f }))));
+  }
+
+  function fleetTable(rows) {
+    lastFleet = rows;
+    const behind = behindFolders(rows).length;
+    upgradeBtn.disabled = behind === 0;
+    upgradeBtn.title = behind ? `${behind} folder(s) to upgrade` : "Nothing behind the target";
+    return h("div.col", rows.map((x) => {
+      if (x.error) return h("div.row", h("b", x.label), h("span.err", x.error));
+      return h("div", { style: { marginTop: "10px" } },
+        h("div.row", h("b", x.label), h("code.muted", x.host), h("div.grow"),
+          h("span.muted", x.target ? `target ${x.target}` : "no release staged on the host")),
+        x.blocked ? h("div.help", `Not upgraded by the Studio: ${x.blocked}`) : null,
+        ...x.folders.map((f) => h("div.row", h("span", f.name), h("code.muted", f.version || "no version"),
+          h("span.pill" + ({ current: ".ok", behind: ".warn", unknown: ".err" }[f.drift] || ""),
+            f.drift === "behind" ? "behind target" : f.drift),
+          f.online ? h("span.pill.warn", `${f.online} player(s) online`) : null)));
+    }));
+  }
+
+  // one fleet job, streamed into the card; resolves to the finished job or null
+  async function fleetRun(action, body = {}) {
+    const log = h("div.log", { style: { maxHeight: "220px" } });
+    clear(fleetResult).append(log);
+    try {
+      const job = await api.post(`/fleet/${action}`, body);
+      const j = await waitJob(job.id, (jj) => { clear(log).append(...logLines(jj.allLines)); });
+      if (j.state !== "done") { log.append(h("div.e", j.error || j.state)); return null; }
+      return j;
+    } catch (e) { log.append(h("div.e", e.message)); return null; }
+  }
+
+  async function checkVersions() {
+    const j = await fleetRun("status");
+    if (j) clear(fleetResult).append(fleetTable(j.result));
+  }
+
+  async function fleetUpgrade() {
+    const todo = behindFolders(lastFleet || []);
+    if (!todo.length) return;
+    const list = todo.map((t) => `${t.server.label}: ${t.folder.name} to ${t.server.target}`).join("; ");
+    const ok = await confirmBox("Upgrade the fleet", `Upgrade ${todo.length} server folder(s)? ${list}. Each is backed up first and rolled back by the upgrade tool if it does not come up cleanly. Folders with players online are left alone.`, "Upgrade", "danger");
+    if (!ok) return;
+    const j = await fleetRun("upgrade", { confirm: true });
+    if (!j) return;
+    const n = (j.result.upgraded || []).reduce((a, x) => a + x.names.length, 0);
+    toast(`${n} server folder(s) upgraded`, "ok");
+    checkVersions();
+  }
+
   const importInput = h("input", { type: "file", accept: ".json,application/json", class: "hidden", onchange: async () => {
     const f = importInput.files[0];
     importInput.value = "";
@@ -163,7 +227,7 @@ export function serversPage(root) {
     h("button.btn", { onclick: () => importInput.click() }, "Import..."), importInput,
     h("button.btn.primary", { onclick: () => edit(null) }, "Add server")),
     h("p.muted", "The Studio installs cars and maps over SSH with the same steps as the command line: backup, resources.load, a config check, then a restart now, through the car hub, or when nobody is online. Maps bring the map manager and its baker; the manager's agent API (loopback only) is reached through the same SSH connection."),
-    list, out);
+    fleetCard, list, out);
   load().catch((e) => toast(e.message, "err"));
   return {};
 }

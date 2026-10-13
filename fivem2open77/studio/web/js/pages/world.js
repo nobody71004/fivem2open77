@@ -7,6 +7,7 @@
 import { api, waitJob } from "../api.js";
 import { store, refreshState } from "../store.js";
 import { h, clear, put, toast, modal, confirmBox, prompt, fmtAgo, fmtBytes, pill, logLines, icon, setCrumbs } from "../ui.js";
+import { assetsTab } from "./map.js";
 
 const KINDS = [
   ["mesh", "Meshes"], ["instanced", "Instanced"], ["terrain", "Terrain"], ["collision", "Collision"], ["entity", "Entities"],
@@ -181,14 +182,23 @@ function worldEditor(root, pid) {
         h("button.btn.ghost.small", { disabled: !st.can_undo, title: "Undo (Ctrl+Z)", onclick: () => undo(false) }, "Undo"),
         h("button.btn.ghost.small", { disabled: !st.can_redo, title: "Redo (Ctrl+Y)", onclick: () => undo(true) }, "Redo"),
         h("span.sep"),
+        h("button.btn.ghost.small", { title: "Props made in NCWE that ship with this edit", onclick: assetsPanel }, "NCWE assets"),
         h("button.btn.ghost.small", { onclick: rename }, "Rename"),
         h("button.btn.ghost.small", { onclick: remove }, icon("trash")),
         h("span.sep"),
+        st.build_stale ? h("span.pill.warn", { title: st.build_stale.reason }, "imports changed") : null,
         lb ? (lb.ok ? h("span.pill.ok", `build ${lb.n}`) : h("span.pill.err", `build ${lb.n} failed`)) : h("span.pill", "not built"),
         h("button.btn.small", { disabled: !lb || !lb.ok || !game.game, title: game.files && game.files.length ? "Remove it from your game" : "Write it in your game's archive/pc/mod for a test boot",
           onclick: () => gameInstall(!!(game.files && game.files.length)) }, icon("game"), game.files && game.files.length ? "In my game ✓" : "Test in my game"),
         h("button.btn.small", { disabled: !lb || !lb.ok, onclick: deploy }, icon("deploy"), "Install on a server…"),
         h("button.btn.primary.small", { disabled: !(st.edits || []).length, onclick: build }, icon("build"), "Build")));
+  }
+
+  // the NCWE imports this edit ships with (the same tab as a map's)
+  function assetsPanel() {
+    const body = h("div.col");
+    modal("NCWE assets", body, [{ label: "Done", value: null }]).then(() => reload());
+    assetsTab(body, { pid, kind: "world" });
   }
 
   async function rename() {

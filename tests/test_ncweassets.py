@@ -12,10 +12,15 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from fivem2open77.cp77 import package as package_mod  # noqa: E402
+from fivem2open77.mlo import bake as bake_mod  # noqa: E402
+from fivem2open77.mlo import build as build_mod  # noqa: E402
 from fivem2open77.mlo import resource as resource_mod  # noqa: E402
+from fivem2open77.mlo import world as mlo_world  # noqa: E402
 from fivem2open77.mlo import writer as writer_mod  # noqa: E402
 from fivem2open77.studio import ncweassets, qa  # noqa: E402
 from fivem2open77.studio.ncweassets import AssetError  # noqa: E402
+from fivem2open77.world import edits as world_edits  # noqa: E402
+from fivem2open77.world import package as world_package  # noqa: E402
 
 
 # --------------------------------------------------------------------------- helpers
@@ -257,6 +262,7 @@ def test_fingerprint_and_build_stale(tmp_path):
     base = ncweassets.fingerprint(p)
     assert ncweassets.build_stale(p, {"imports": base}) is None       # empty, matches
     assert ncweassets.build_stale(p, {}) is None                      # pre-tracking build, nothing imported
+    assert ncweassets.build_stale(p, None) is None                    # no build yet: nothing is stale
     small = _fake_archive()
     ncweassets.add_import(p, "pack/only.archive", io.BytesIO(small), len(small))
     now = ncweassets.fingerprint(p)
@@ -266,3 +272,134 @@ def test_fingerprint_and_build_stale(tmp_path):
     assert ncweassets.build_stale(p, {}) == "NCWE imports changed since this build"   # old build, imports appeared
     assert ncweassets.remove_import(p, "pack") == "pack"
     assert ncweassets.fingerprint(p) == base                          # back to the same imports
+
+
+# --------------------------------------------------------------------------- world edits
+_WORLD_EDIT = {"op": "delete", "sector": "base\\worlds\\03_nightcity\\_compiled\\default\\x.streamingsector",
+               "index": 3, "type": "worldStaticMeshNode", "expectedNodes": 9}
+
+
+def _import_zip(tmp_path, name, archive="props.archive"):
+    z = tmp_path / name
+    z.write_bytes(_zip_bytes({f"archive/pc/mod/{archive}": _fake_archive()}))
+    return {"zip": str(z), "source": name, "archives": [archive]}
+
+
+def test_world_package_without_imports_keeps_its_own_preload(tmp_path):
+    out = tmp_path / "out"
+    r = world_package.build("cookies_edit", "Cookies edit", [_WORLD_EDIT], str(out), log=_quiet)
+    lua = (out / "cookies_edit" / "open77.lua").read_text(encoding="utf-8")
+    assert 'preload_mod "dist/cookies_edit.zip"\n\nserver_script' in lua
+    assert r["ncwe"] == []
+
+
+def test_world_package_ships_ncwe_imports(tmp_path):
+    imp = _import_zip(tmp_path, "My Mod.zip")
+    out = tmp_path / "out"
+    r = world_package.build("cookies_edit", "Cookies edit", [_WORLD_EDIT], str(out), log=_quiet,
+                            extra_packages=[imp])
+    res = out / "cookies_edit"
+    lua = (res / "open77.lua").read_text(encoding="utf-8")
+    assert 'preload_mod "dist/cookies_edit.zip"\npreload_mod "dist/cookies_edit_ncwe_1_my_mod.zip"\n' in lua
+    assert lua.index("cookies_edit_ncwe_1_my_mod") < lua.index("server_script")
+    shipped = res / "dist" / "cookies_edit_ncwe_1_my_mod.zip"
+    assert shipped.read_bytes() == (tmp_path / "My Mod.zip").read_bytes()
+    assert r["ncwe"] == [{"file": "dist/cookies_edit_ncwe_1_my_mod.zip", "bytes": shipped.stat().st_size,
+                           "source": "My Mod.zip", "archives": ["props.archive"]}]
+    meta = json.loads((res / "edits.json").read_text(encoding="utf-8"))
+    assert meta["ncwe"] == r["ncwe"]
+    # the bundle ships every dist file, so the deploy carries the imports too
+    names = sorted(os.listdir(res / "dist"))
+    assert names == ["cookies_edit.zip", "cookies_edit_ncwe_1_my_mod.zip"]
+
+
+def test_world_package_preload_limit(tmp_path):
+    seven = [_import_zip(tmp_path, f"m{i}.zip", f"a{i}.archive") for i in range(7)]
+    world_package.build("cookies_edit", "Cookies edit", [_WORLD_EDIT], str(tmp_path / "ok"), log=_quiet,
+                        extra_packages=seven)            # 1 + 7 = 8 packages: the most Open77 loads
+    eight = seven + [_import_zip(tmp_path, "m8.zip", "a8.archive")]
+    with pytest.raises(world_edits.EditError, match="over Open77's 8"):
+        world_package.build("cookies_edit", "Cookies edit", [_WORLD_EDIT], str(tmp_path / "over"), log=_quiet,
+                            extra_packages=eight)
+
+
+# --------------------------------------------------------------------------- the server's re-bake
+class _BakeWk:
+    """Just enough WolvenKit CLI for bake(): JSON -> CR2W stubs, pack -> a valid archive."""
+
+    def import_glb(self, rdir, adir):
+        pass
+
+    def deserialize_tree(self, jdir, adir, work):
+        for dp, _, fns in os.walk(jdir):
+            for fn in fns:
+                rel = os.path.relpath(os.path.join(dp, fn), jdir)
+                dst = os.path.join(adir, rel[:-5] if rel.endswith(".json") else rel)
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                with open(dst, "wb") as f:
+                    f.write(b"CR2W" + rel.encode("utf-8"))
+
+    def pack(self, src_root, pdir):
+        os.makedirs(pdir, exist_ok=True)
+        with open(os.path.join(pdir, os.path.basename(src_root) + ".archive"), "wb") as f:
+            f.write(_fake_archive())
+
+
+class _Cache:
+    def ensure_paths(self, paths):
+        pass
+
+    def load(self, path):
+        return {"Data": {"RootChunk": {"materialEntries": [], "localMaterialBuffer": {"materials": []},
+                                       "appearances": [{"Data": {"chunkMaterials": [], "name": ""}}]}}}
+
+
+def _built_map(tmp_path, monkeypatch, imports):
+    """A map built the way the Studio builds it: NCWE imports and one quiet interior."""
+    from fivem2open77.mlo import ambience
+    box = [-5.0, -5.0, 0.0, 5.0, 5.0, 3.0]
+    monkeypatch.setattr(ambience, "floor_volumes", lambda model, mode="bottom", **kw: [] if mode == "off" else [box])
+    part = build_mod.MapPart(name="body_01", kind="object")
+    model = build_mod.MapModel(name="cookiemap", display_name="Cookie", anchor=(0, 0, 0), spawn=None,
+                               parts={"body_01": part},
+                               placements=[build_mod.Placement(part="body_01", position=(0, 0, 0), yaw=0)])
+    out = tmp_path / "out"
+    writer_mod.MapWriter(_BakeWk(), _Cache(), str(out), log=_quiet).write(
+        model, extra_packages=imports, quiet_interiors="bottom")
+    return str(out / "cookiemap")
+
+
+def _preload(res):
+    with open(os.path.join(res, "open77.lua"), encoding="utf-8") as f:
+        return [line.split('"')[1] for line in f.read().splitlines() if line.startswith("preload_mod")]
+
+
+def test_moved_map_keeps_ncwe_imports_and_quiet_areas(tmp_path, monkeypatch):
+    res = _built_map(tmp_path, monkeypatch, [_import_zip(tmp_path, "My Mod.zip")])
+    built = json.loads(open(os.path.join(res, "layout.json"), encoding="utf-8").read())
+    assert built["ambience"] and len(built["packages"]) == 2, built
+    bake_mod.bake(res, {"x": 10.0, "y": 20.0, "z": 0.0, "yaw": 90.0}, _BakeWk(), log=_quiet, bake_id="move-1")
+    # the map's own package, its NCWE import(s), then the sector package the move added
+    assert _preload(res) == ["dist/" + p for p in built["packages"] + ["cookiemap_sector.zip"]], _preload(res)
+    for rel in _preload(res):
+        assert os.path.isfile(os.path.join(res, rel)), rel
+    after = json.loads(open(os.path.join(res, "layout.json"), encoding="utf-8").read())
+    assert after["ambience"] == built["ambience"] and after["packages"] == built["packages"]
+    doc, _ = mlo_world.sector_doc(after, bake_mod.normalize_anchor({"x": 10.0, "y": 20.0, "z": 0.0, "yaw": 90.0}))
+    areas = [n for n in doc["Data"]["RootChunk"]["nodes"] if n["Data"]["$type"] == "worldAmbientAreaNode"]
+    assert len(areas) == len(after["ambience"]) == 1, areas
+    # and a second move (the deploy's in-place rebuild) keeps them too
+    bake_mod.bake(res, {"x": 30.0, "y": 5.0, "z": 0.0, "yaw": 0.0}, _BakeWk(), log=_quiet, bake_id="move-2")
+    assert _preload(res) == ["dist/" + p for p in built["packages"] + ["cookiemap_sector.zip"]], _preload(res)
+
+
+def test_move_refused_when_the_sector_package_would_pass_the_limit(tmp_path, monkeypatch):
+    seven = [_import_zip(tmp_path, f"m{i}.zip", f"a{i}.archive") for i in range(7)]
+    res = _built_map(tmp_path, monkeypatch, seven)
+    before = _preload(res)
+    assert len(before) == 8                                  # the most Open77 loads
+    with pytest.raises(RuntimeError, match="Open77 allows 8"):
+        bake_mod.bake(res, {"x": 1.0, "y": 2.0, "z": 0.0, "yaw": 0.0}, _BakeWk(), log=_quiet)
+    assert _preload(res) == before                           # nothing was written
+    assert not os.path.exists(os.path.join(res, "dist", "cookiemap_sector.zip"))
+    assert not os.path.exists(os.path.join(res, "baked.json"))

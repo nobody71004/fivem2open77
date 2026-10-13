@@ -24,6 +24,7 @@ from ..world import ops as O
 from ..world import package as P
 from ..world.index import WorldIndex
 from . import deploy as deploy_mod
+from . import ncweassets
 from .projects import ProjectError
 
 NAME_RX = P.NAME_RX
@@ -146,7 +147,13 @@ class WorldOps:
                 "edits": edits, "actions": O.describe(edits), "summary": summ, "problem": problem,
                 "can_undo": bool(w.get("undo")), "can_redo": bool(w.get("redo")), "jobs": running,
                 "builds": list(reversed(p.data.get("builds", []))), "deployments": p.data.get("deployments", [])[-20:],
-                "game": self.world_game_status(pid), "index": self.world_index_status()}
+                "game": self.world_game_status(pid), "index": self.world_index_status(),
+                "build_stale": self.world_stale(p)}
+
+    def world_stale(self, p) -> dict | None:
+        """{reason} when the last build no longer matches the project's NCWE imports, else None."""
+        reason = ncweassets.build_stale(p, p.latest_build(ok_only=False))
+        return {"reason": reason} if reason else None
 
     def world_set(self, pid, name=None, display=None, center=None) -> dict:
         p = self._world(pid)
@@ -336,7 +343,8 @@ class WorldOps:
             job.meta["build"] = n
             t0 = time.time()
             version = f"1.0.{n}"
-            info = {"n": n, "time": t0, "ok": False, "kind": "world", "version": version, "name": w["name"]}
+            info = {"n": n, "time": t0, "ok": False, "kind": "world", "version": version, "name": w["name"],
+                    "imports": ncweassets.fingerprint(p)}
             try:
                 wk = None
                 if needs_wk:
@@ -348,10 +356,15 @@ class WorldOps:
                 job.set_progress(0.1, "checking the sectors against this game")
                 checks = self._world_check(edits, job.log)
                 checks.update(self._pairing_check(edits, job.log))
+                prepared, asset_warnings = ncweassets.prepare(p.path("assets", "ncwe"), os.path.join(bdir, "_ncwe"),
+                                                              log=job.log)
+                for msg in asset_warnings:
+                    job.log("NCWE assets: " + msg)
                 job.set_progress(0.3, "writing the package")
-                r = P.build(w["name"], w.get("display") or w["name"], edits, out, wk=wk, log=job.log, version=version)
+                r = P.build(w["name"], w.get("display") or w["name"], edits, out, wk=wk, log=job.log, version=version,
+                            extra_packages=prepared)
                 info.update(ok=True, summary=r["summary"], bytes=r["bytes"], sha256=r["sha256"], checks=checks,
-                            resource=w["name"])
+                            resource=w["name"], ncwe=r["ncwe"])
                 with open(os.path.join(bdir, "edits.xl"), "w", encoding="utf-8") as f:
                     f.write(r["xl"])
                 return info
@@ -359,6 +372,7 @@ class WorldOps:
                 info["error"] = str(e) or e.__class__.__name__
                 raise
             finally:
+                shutil.rmtree(os.path.join(bdir, "_ncwe"), ignore_errors=True)
                 info["seconds"] = round(time.time() - t0, 1)
                 p.add_build(info)
 
@@ -560,26 +574,32 @@ class WorldOps:
             os.makedirs(mod, exist_ok=True)
             stem = P.archive_name(p.world()["name"])
             removed, written = [], []
+            # the NCWE archives the last install wrote are ours too (their names are the editor's)
+            prev = [str(a) for a in ((p.data.get("game") or {}).get("archives") or [])]
             for f in os.listdir(mod):
-                if f.startswith(stem + "."):
+                if f.startswith(stem + ".") or f in prev:
                     os.remove(os.path.join(mod, f))
                     removed.append(f)
             if not uninstall:
-                with zipfile.ZipFile(os.path.join(res, "dist", os.path.basename(res) + ".zip")) as z:
-                    for n in z.namelist():
-                        base = n.split("/")[-1]
-                        if not n.startswith("archive/pc/mod/") or not base.startswith(stem + "."):
-                            continue
-                        with z.open(n) as src, open(os.path.join(mod, base), "wb") as dst:
-                            shutil.copyfileobj(src, dst)
-                        written.append(base)
+                own = os.path.join(res, "dist", os.path.basename(res) + ".zip")
+                sources = [(own, True)] + [(os.path.join(res, *n["file"].split("/")), False) for n in (b.get("ncwe") or [])]
+                for zpath, is_own in sources:
+                    with zipfile.ZipFile(zpath) as z:
+                        for n in z.namelist():
+                            base = n.split("/")[-1]
+                            if not n.startswith("archive/pc/mod/") or (is_own and not base.startswith(stem + ".")):
+                                continue
+                            with z.open(n) as src, open(os.path.join(mod, base), "wb") as dst:
+                                shutil.copyfileobj(src, dst)
+                            written.append(base)
             for f in written:
                 job.log(f"written {f}")
             for f in removed:
                 if f not in written:
                     job.log(f"removed {f}")
             with p.lock:
-                p.data["game"] = None if uninstall else {"build": b["n"], "time": time.time(), "dir": tb.game_dir}
+                p.data["game"] = None if uninstall else {"build": b["n"], "time": time.time(), "dir": tb.game_dir,
+                                                         "archives": written}
                 p.save()
             return {"written": written, "removed": [f for f in removed if f not in written], "modDir": mod}
 

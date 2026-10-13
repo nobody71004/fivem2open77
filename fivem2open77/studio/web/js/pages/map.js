@@ -514,7 +514,8 @@ function optionsTab(root, ctx) {
 }
 
 // ------------------------------------------------------------------ NCWE asset imports
-function assetsTab(root, ctx) {
+export function assetsTab(root, ctx) {
+  const world = ctx.kind === "world";
   const list = h("div"), progress = h("div");
   const fileInput = h("input", { type: "file", multiple: true, class: "hidden",
     onchange: () => { add(picked(fileInput)); fileInput.value = ""; } });
@@ -524,7 +525,9 @@ function assetsTab(root, ctx) {
   const drop = h("div.dropzone",
     h("div.big", icon("upload")),
     h("div", h("b", "Drop NCWE exports here"), " — an exported mod (.zip, .7z, .rar), a folder, or game archives (", h("code", ".archive"), ")"),
-    h("div.help", { style: { marginTop: "6px" } }, "Imports ship with the map's next build as extra preload packages, so the props, lights and meshes you make in NCWE load wherever this map is installed. Open77 loads 8 packages per resource (the map's own included)."),
+    h("div.help", { style: { marginTop: "6px" } }, world
+      ? "Imports ship with the world edit's next build as extra preload packages, so the props and meshes you place from NCWE load wherever this edit is installed. Open77 loads 8 packages per resource (the edit's own included)."
+      : "Imports ship with the map's next build as extra preload packages, so the props, lights and meshes you make in NCWE load wherever this map is installed. Open77 loads 8 packages per resource (the map's own included)."),
     h("div.row", { style: { marginTop: "12px", justifyContent: "center" } },
       h("button.btn", { onclick: () => fileInput.click() }, "Choose files"),
       h("button.btn", { onclick: () => dirInput.click() }, "Choose a folder")),
@@ -613,7 +616,11 @@ function assetsTab(root, ctx) {
         h("b", "Archive name collisions — fix before building"),
         ...r.collisions.map((c) => h("div", c.problem))));
     }
-    if (r.build_stale) list.append(staleBanner(ctx, r.build_stale));
+    if (r.build_stale) list.append(world
+      ? h("div.banner", { style: { padding: "10px 12px", marginBottom: "10px", display: "grid", gap: "6px" } },
+        h("b", "The last build is stale"), h("div", r.build_stale.reason),
+        h("div.help", "Build the world edit again to ship the current imports."))
+      : staleBanner(ctx, r.build_stale));
     const body = h("tbody");
     for (const a of r.assets) {
       const tr = h("tr",
@@ -663,7 +670,7 @@ function assetsTab(root, ctx) {
       "signed in (Settings > Agents > NCWE MCP executable)."),
     h("div.row", h("button.btn", { onclick: toNcwe }, "Import to NCWE")),
     outBox);
-  root.append(drop, progress, list, send);
+  root.append(drop, progress, list, ...(world ? [] : [send]));
   load();
 }
 

@@ -16,6 +16,7 @@ from ..cp77.donor import DONORS, DonorCache
 from ..cp77.tweak import handling_profile
 from ..pipeline import Converter, VERSION
 from . import deploy as deploy_mod
+from . import fleet as fleet_mod
 from . import qa as qa_mod
 from .analysis import Analyzer
 from .jobs import EventBus, JobManager
@@ -392,6 +393,67 @@ class Studio(MapOps, WorldOps):
         else:
             raise ValueError("unknown server action")
         return self.jobs.submit(f"server-{action}", title, fn, meta={"server": sid})
+
+    def fleet_job(self, action, confirm=False):
+        """Open77 versions across every server (status), or the upgrade of the folders that are behind."""
+        servers = self.settings.get()["servers"]
+        if not servers:
+            raise ValueError("no servers yet")
+        if action == "status":
+            fn = lambda job: self._fleet_status(servers, job.log)   # noqa: E731
+            title = "Open77 versions across the servers"
+        elif action == "upgrade":
+            if not confirm:
+                raise ValueError("the fleet upgrade needs confirm")
+            fn = lambda job: self._fleet_upgrade(servers, job.log)   # noqa: E731
+            title = "Upgrade the servers to the newest staged Open77"
+        else:
+            raise ValueError("unknown fleet action")
+        return self.jobs.submit(f"fleet-{action}", title, fn, meta={"fleet": action})
+
+    def _fleet_status(self, servers, log) -> list:
+        out = []
+        for s in servers:
+            try:
+                rel = deploy_mod.releases(s, self.secrets)
+                target = fleet_mod.newest(rel)
+                rows = deploy_mod.status(s, self.secrets, log=log)
+                out.append({"id": s["id"], "label": s["label"], "host": s["host"], "staged": rel,
+                            **fleet_mod.describe(s, rows, target)})
+                log(f"{s['label']}: target {target or 'none staged'}")
+            except deploy_mod.DeployError as e:
+                out.append({"id": s["id"], "label": s["label"], "host": s["host"], "error": str(e)})
+                log(f"{s['label']}: {e}")
+        return out
+
+    def _fleet_upgrade(self, servers, log) -> dict:
+        done, skipped, errors = [], [], []
+        for s in servers:
+            try:
+                target = fleet_mod.newest(deploy_mod.releases(s, self.secrets))
+                if not target:
+                    skipped.append({"server": s["id"], "reason": "no release staged on the host"})
+                    log(f"{s['label']}: no release staged on the host; nothing to do")
+                    continue
+                rows = deploy_mod.status(s, self.secrets, log=log)
+                names, why = fleet_mod.plan(s, rows, target)
+                for x in why:
+                    skipped.append({"server": s["id"], "name": x["name"], "reason": x["reason"]})
+                    log(f"{s['label']} {x['name']}: left alone ({x['reason']})")
+                if not names:
+                    continue
+                log(f"{s['label']}: upgrading {', '.join(names)} to {target}")
+                code = deploy_mod.upgrade(s, self.secrets, target, names, log=log)
+                if code != 0:
+                    errors.append(f"{s['label']}: vps_upgrade.sh exited {code}")
+                else:
+                    done.append({"server": s["id"], "target": target, "names": names})
+            except deploy_mod.DeployError as e:
+                errors.append(f"{s['label']}: {e}")
+                log(f"{s['label']}: {e}")
+        if errors:
+            raise RuntimeError("; ".join(errors))
+        return {"upgraded": done, "skipped": skipped}
 
     def server_logs(self, sid, name, lines=200) -> str:
         return deploy_mod.logs(self._server(sid), self.secrets, name, lines)

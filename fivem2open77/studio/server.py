@@ -334,30 +334,38 @@ def api_profile_schema(h, q):
             "donors": sorted(DONORS)})
 
 
-# ---------------------------------------------------------------- NCWE asset imports (map projects)
+# ---------------------------------------------------------------- NCWE asset imports (map and world projects)
+def _asset_project(h, pid):
+    p = h.studio.projects.get(pid)
+    if p.kind not in ("map", "world"):
+        raise ProjectError(f"this is a {p.kind} project; NCWE assets work on map and world projects")
+    return p
+
+
 @route("GET", r"/api/projects/([a-f0-9]{12})/ncwe_assets")
 def api_ncwe_assets(h, q, pid):
-    p = h.studio.projects.get(pid).need("map")
+    p = _asset_project(h, pid)
+    stale = h.studio.map_stale(p) if p.kind == "map" else h.studio.world_stale(p)
     h.json({"assets": ncweassets.list_imports(p), "collisions": ncweassets.collisions(p),
-            "build_stale": h.studio.map_stale(p)})
+            "build_stale": stale})
 
 
 @route("GET", r"/api/projects/([a-f0-9]{12})/ncwe_assets/([^/]+)")
 def api_ncwe_asset_contents(h, q, pid, name):
-    p = h.studio.projects.get(pid).need("map")
+    p = _asset_project(h, pid)
     h.json({"contents": ncweassets.contents(p, name)})
 
 
 @route("POST", r"/api/projects/([a-f0-9]{12})/ncwe_assets")
 def api_ncwe_asset_add(h, q, pid):
-    p = h.studio.projects.get(pid).need("map")
+    p = _asset_project(h, pid)
     stream, n = h.raw_body()
     h.json({"asset": ncweassets.add_import(p, q.get("name", ""), stream, n)})
 
 
 @route("DELETE", r"/api/projects/([a-f0-9]{12})/ncwe_assets/([^/]+)")
 def api_ncwe_asset_remove(h, q, pid, name):
-    p = h.studio.projects.get(pid).need("map")
+    p = _asset_project(h, pid)
     h.json({"removed": ncweassets.remove_import(p, name)})
 
 
@@ -770,6 +778,16 @@ def api_server_action(h, q, sid, action):
     job = h.studio.server_job(sid, action, names=b.get("names") or None, mode=b.get("mode", "stage"),
                               force=bool(b.get("force")), enable=b.get("enable", True) is not False,
                               restart=bool(b.get("restart")))
+    h.json(job.summary())
+
+
+# ---------------------------------------------------------------- fleet: versions and the one-click upgrade
+@route("POST", r"/api/fleet/(status|upgrade)")
+def api_fleet(h, q, action):
+    b = h.body_json() or {}
+    if action == "upgrade" and b.get("confirm") is not True:
+        raise HttpError(400, "the fleet upgrade needs confirm: true")
+    job = h.studio.fleet_job(action, confirm=b.get("confirm") is True)
     h.json(job.summary())
 
 

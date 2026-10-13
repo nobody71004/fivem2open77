@@ -100,8 +100,12 @@ exports("edits", function() return SUMMARY end)
 '''
 
 
-def build(name: str, display: str, edits, out_dir: str, wk=None, log=print, version: str = VERSION) -> dict:
-    """Write the resource <out_dir>/<name>; returns {path, zip, xl, summary, sha256, bytes}."""
+def build(name: str, display: str, edits, out_dir: str, wk=None, log=print, version: str = VERSION,
+          extra_packages=()) -> dict:
+    """Write the resource <out_dir>/<name>; returns {path, zip, xl, summary, sha256, bytes, ncwe}.
+
+    extra_packages: NCWE asset imports ([{zip, source, archives}], studio/ncweassets.prepare).  Each
+    is copied into dist/ and preloaded by its own preload_mod line, so the editor's props ship with the edit."""
     if not NAME_RX.match(name or ""):
         raise E.EditError(f"resource name {name!r}: lower case letters, digits and _ (3-48), starting with a letter")
     edits = E.normalize_all(edits)
@@ -109,6 +113,10 @@ def build(name: str, display: str, edits, out_dir: str, wk=None, log=print, vers
     summ = E.summary(edits)
     if not p["sectors"] and not p["adds"]:
         raise E.EditError("nothing to build: no edits yet")
+    extra = list(extra_packages or ())
+    if 1 + len(extra) > cpkg.MAX_PACKAGES:
+        raise E.EditError(f"{len(extra)} NCWE asset package(s) and the edit's own package are over Open77's "
+                          f"{cpkg.MAX_PACKAGES} preload packages per resource; remove some imports")
     res = os.path.join(os.path.abspath(out_dir), name)
     work = tempfile.mkdtemp(prefix=f"f2o77-world-{name}-")
     aname = archive_name(name)
@@ -151,8 +159,22 @@ def build(name: str, display: str, edits, out_dir: str, wk=None, log=print, vers
         os.makedirs(os.path.join(res, "server"))
         zpath = os.path.join(res, "dist", f"{name}.zip")
         zsize = cpkg.write_zip(zpath, files)
+        ncwe = []
+        for i, ex in enumerate(extra, 1):
+            stem = os.path.splitext(str(ex.get("source") or "import"))[0]
+            slug = re.sub(r"[^a-z0-9]+", "_", stem.lower()).strip("_")[:24] or "import"
+            zname = f"{name}_ncwe_{i}_{slug}.zip"
+            dst = os.path.join(res, "dist", zname)
+            shutil.copyfile(ex["zip"], dst)
+            nsize = os.path.getsize(dst)
+            if nsize > cpkg.MAX_PACKAGE:
+                raise E.EditError(f"{ex.get('source')}: {nsize / 1048576:.1f} MiB is over Open77's 64 MiB preload limit")
+            ncwe.append({"file": f"dist/{zname}", "bytes": nsize, "source": ex.get("source"),
+                         "archives": list(ex.get("archives") or [])})
+            log(f"[{name}] NCWE asset {ex.get('source')} -> {zname} ({nsize / 1048576:.1f} MiB)")
     finally:
         shutil.rmtree(work, ignore_errors=True)
+    preloads = "".join(f'preload_mod "{n["file"]}"\n' for n in ncwe)
     with open(os.path.join(res, "open77.lua"), "w", encoding="utf-8", newline="\n") as f:
         f.write(f'''-- {display}: world edit made with fivem2open77.  The edit is the ArchiveXL package below
 -- (inert data: an .xl that patches Night City's own sectors{', and the sector of the objects added' if p["adds"] else ''}).
@@ -162,14 +184,14 @@ auto_start true
 
 dependency "archivexl >=1.27.1"
 preload_mod "dist/{name}.zip"
-
+{preloads}
 server_script "server/main.lua"
 ''')
     with open(os.path.join(res, "server", "main.lua"), "w", encoding="utf-8", newline="\n") as f:
         f.write(_main_lua(name, display, summ))
     sha = hashlib.sha256(open(zpath, "rb").read()).hexdigest()
     info = {"name": name, "display": display, "version": version, "summary": summ, "edits": edits,
-            "package": {"file": f"dist/{name}.zip", "bytes": zsize, "sha256": sha},
+            "package": {"file": f"dist/{name}.zip", "bytes": zsize, "sha256": sha}, "ncwe": ncwe,
             "builtAt": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
     with open(os.path.join(res, "edits.json"), "w", encoding="utf-8") as f:
         json.dump(info, f, indent=1)
@@ -181,7 +203,7 @@ server_script "server/main.lua"
                 "get the change at their next launch after a server restart.\n")
     log(f"[{name}] world edit built: {summ['deleted']} removed, {summ['elementsDeleted']} parts removed, "
         f"{summ['changed']} changed, {summ['added']} added ({zsize} bytes)")
-    return {"path": res, "zip": zpath, "xl": text, "summary": summ, "sha256": sha, "bytes": zsize}
+    return {"path": res, "zip": zpath, "xl": text, "summary": summ, "sha256": sha, "bytes": zsize, "ncwe": ncwe}
 
 
 def bundle(res_dirs, out_path: str) -> dict:

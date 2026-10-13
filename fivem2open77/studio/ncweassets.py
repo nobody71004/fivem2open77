@@ -343,6 +343,8 @@ def fingerprint(project) -> str:
 
 def build_stale(project, build: dict) -> str | None:
     """Why a build record no longer matches the project's imports (None: it still does)."""
+    if build is None:
+        return None          # nothing built yet: nothing to be stale
     if (build or {}).get("imports") == fingerprint(project):
         return None
     if (build or {}).get("imports") is None and not os.listdir(_root(project)):

@@ -24,6 +24,7 @@ import tarfile
 import time
 import uuid
 
+from . import fleet
 from .paths import deploy_script, hub_dir, remote_script
 
 REMOTE_DIR = "/tmp/f2o77-studio"
@@ -417,6 +418,58 @@ def status(server: dict, secrets, names=None, log=None) -> list:
     if not result:
         raise DeployError("no status from the server: " + out[-500:])
     return result
+
+
+# the release versions staged on the host, read without changing anything (no script upload)
+RELEASES_PY = (
+    "import json, os\n"
+    f"R = {fleet.RELEASE_ROOT!r}\n"
+    "out = []\n"
+    "for n in sorted(os.listdir(R)) if os.path.isdir(R) else []:\n"
+    "    p = os.path.join(R, n, 'package-manifest.json')\n"
+    "    if n == 'tools' or not os.path.isfile(p):\n"
+    "        continue\n"
+    "    try:\n"
+    "        out.append(json.load(open(p, encoding='utf-8'))['version'])\n"
+    "    except (OSError, ValueError, KeyError):\n"
+    "        pass\n"
+    "print(json.dumps(out))\n"
+)
+
+
+def releases(server: dict, secrets) -> list:
+    """The release versions staged on the server's host (read-only)."""
+    with Remote(server, secrets) as r:
+        _, out = r.run(f"python3 -c {shlex.quote(RELEASES_PY)}", timeout=120, check=False)
+    got = fleet.parse_releases(out)
+    if got is None:
+        raise DeployError("could not read the staged releases: " + out[-300:])
+    return got
+
+
+def upgrade(server: dict, secrets, target: str, names, log=print) -> int:
+    """vps_upgrade.sh TARGET NAMES on the server's host: the release must already be staged there.
+    Returns the script's exit code (it rolls a server back by itself when it comes up worse)."""
+    if not fleet.VERSION_RX.match(target or ""):
+        raise DeployError(f"not a version: {target!r}")
+    names = _names(server, names)
+    blocked = fleet.server_blockers(server)
+    if blocked:
+        raise DeployError(f"{server['label']}: {blocked}")
+    rdir = f"{REMOTE_DIR}-{uuid.uuid4().hex[:8]}"
+    with Remote(server, secrets, log=log) as r:
+        r.mkdir_private(rdir)
+        try:
+            src = remote_script("vps_upgrade.sh")
+            if not os.path.isfile(src):
+                raise DeployError("vps_upgrade.sh is missing from the app")
+            r.put(src, posixpath.join(rdir, "vps_upgrade.sh"))
+            cmd = (f"cd {shlex.quote(rdir)} && bash vps_upgrade.sh {shlex.quote(target)} "
+                   + " ".join(shlex.quote(n) for n in names))
+            code, _ = r.run(cmd, timeout=7200, on_line=log, check=False)
+        finally:
+            r.run(f"rm -rf {shlex.quote(rdir)}", check=False)
+    return code
 
 
 def logs(server: dict, secrets, name: str, lines=200) -> str:
