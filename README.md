@@ -128,22 +128,37 @@ bones when it has them, otherwise measured from the car's own underside (a heigh
 body surface). A tube is shortened where a skirt, bumper or wheel arch comes lower, never goes
 closer than 35 mm to the road, never floats more than 0.5 m up, and is left out (with a note) where
 it cannot be mounted. The Studio's **Neon** tab shows the kit from below and from the sides in any
-colour before you build.
+colour before you build, and the road it lights at night.
 
 ```json
 "neon": {"enabled": true, "sides": ["left", "right", "front", "back"], "colors": "gta",
-         "default": "off", "brightness": 1.0, "height_offset": 0.0}
+         "default": "on", "brightness": 1.0, "spread": 2.0, "tubes": false, "height_offset": 0.0}
 ```
 
 `colors` is `"gta"` (the 13 LS Customs colours: White, Blue, Electric Blue, Mint Green, Lime
 Green, Yellow, Golden Shower, Orange, Red, Pony Pink, Hot Pink, Purple, Blacklight) or a list of
 those names, `"#rrggbb"` and `{"name": "Toxic", "color": "#88ff00"}`. `default` is the colour the
-car spawns with (`off`: kit fitted, lights off).
+car spawns with: `on` (the default) lights the kit in its first colour, White for the GTA palette;
+`off` fits the kit with the lights off.
 
 In game every colour is an appearance of the car (`<car>_neon_<colour>`), so the server switches it
 with `Open77.vehicles.setAppearance` and every player sees the same kit: `/neon` lists the colours,
-`/neon hot pink`, `/neon next`, `/neon off` (driver only; needs the car hub 1.1+). A tube is an
-emissive mesh; the glow on the road comes from point lights under the car.
+`/neon hot pink`, `/neon next`, `/neon off` (driver only; needs the car hub 1.1+; hub 1.1.2+
+tells a driver about it when they get in). Like GTA V's neon the kit is light only: the tubes place
+the lights but are not drawn (`"tubes": true` fits them as glowing strips). The glow on the road comes
+from soft lights standing in for the light a real kit throws: it bounces between road and floor
+and leaves from under the sills, so the road around the car is washed in colour, brightest at the
+sills and fading over a metre or two, with no hard line along the car and no mirrored streak on a
+wet road. One light every 60 cm along each tube, just inside the sill's edge and 40 cm up, aimed
+at the road; linear falloff like the game's headlights, no specular like the game's fake bounce
+lights, and the world light channel only like the game's own (Tyger Claws) underglow, so they
+light the road, kerbs and walls but never the car or its cabin. They are the car's own lights,
+lit with its headlights: in Cyberpunk a vehicle lights its lights (every light in every car is off
+until the car turns it on), and the headlight mode is the light state Open77 keeps in step for every
+player. The car hub (1.1.3+) switches the headlights on when the driver picks a colour and when a
+driver gets into a car whose neon is on. `brightness` (0.2-4) scales them,
+`spread` (0.5-5 m, default 2) is how far the glow reaches; blue and purple get more light than
+white so every colour reads.
 
 ## Seats, getting out and ground clearance
 
@@ -153,10 +168,13 @@ emissive mesh; the glow on the road comes from point lights under the car.
   the head would come through a closed roof the seat is lowered (up to 10 cm, never closer than 12 cm
   to the road), and when that is not enough the car gets `sport1`. Anything still missing shows on
   the Studio's **Seats** card.
-* **Getting out.** The game lets a player out only where a standing spot beside the seat is free
-  (the donor's: 1 m to the side, 0.5 m down). On a wide or low car that spot is inside the body or
-  under the road, so the exit is refused and the player slides across the seats instead. Each seat's
-  spot is moved to just outside the body, at road level.
+* **Getting out.** The game lets a player out only where there is room to stand beside the car, at
+  the vehicle record's `unmountOffsetPosition` (x: metres from the centre line; 1.65 on every
+  Cyberpunk car, about 0.7 m outside its body). When neither side has room it slides the player to
+  the other seat to try there, and back, in a loop. A car whose body beside the seats is wider than
+  usual (the Biome's wheel fairings are 1.26 m out) gets its own distance: its width there plus the
+  same 0.7 m. Each seat's standing spot moves out with it, and up to the road where it would be
+  under it. The car hub also watches for the loop and takes a stuck player out of the car.
 * **Ground clearance.** The collision hull keeps at least 15 cm off the road (Cyberpunk's own cars
   keep about 23 cm), so a low body doesn't catch speed bumps, kerbs and road clutter; the visible
   bodywork still sits where GTA put it.

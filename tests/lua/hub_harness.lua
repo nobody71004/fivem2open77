@@ -38,6 +38,24 @@ local function install_env()
                 v.appearance = name
                 return true
             end,
+            getLights = function(id)
+                local v = W.vehicles[id]
+                if not v then return nil, "vehicle_not_found" end
+                return v.lights or "off"
+            end,
+            setLights = function(id, mode)
+                local v = W.vehicles[id]
+                if not v then return false, "vehicle_not_found" end
+                v.lights = mode
+                W.lightCalls = W.lightCalls or {}
+                W.lightCalls[#W.lightCalls + 1] = { vehicle = id, mode = mode }
+                return true
+            end,
+            forcePlayerOutOfVehicle = function(id, vid)
+                W.forced = W.forced or {}
+                W.forced[#W.forced + 1] = { player = id, vehicle = vid }
+                return true
+            end,
         },
         runtime = {
             restartStatus = function()
@@ -99,8 +117,8 @@ W.files["config.json"] = { empty_grace_seconds = 60 }
 W.players[1] = true
 boot()
 check(W.restart == nil, "no restart with nothing pending")
-check(W.files["status.json"] and W.files["status.json"].hub == "1.1.1", "status written")
-check(W.logs[1]:find("car hub 1.1.1 ready"), "ready line")
+check(W.files["status.json"] and W.files["status.json"].hub == "1.1.3", "status written")
+check(W.logs[1]:find("car hub 1.1.3 ready"), "ready line")
 
 -- 1a: nothing changes: nothing is written (a write into the resource folder stalls the server tick)
 local before = W.writes["status.json"]
@@ -234,8 +252,21 @@ W.seats[9] = { playerId = 9, vehicleId = 43, seat = "seat_front_left" }
 local function last(id) for i = #W.chat, 1, -1 do if W.chat[i].to == id then return W.chat[i].text end end end
 W.commands["neon"](7, { n = 0 })
 check(last(7):find("White, Hot Pink, Blue") and last(7):find("Now: off"), "/neon lists the kit")
+check(W.vehicles[42].lights == nil, "listing the kit leaves the lights alone")
 W.commands["neon"](7, { "hot", "pink", n = 2 })
 check(W.vehicles[42].appearance == "biome_neon_hot_pink" and last(7):find("Neon: Hot Pink"), "/neon hot pink")
+-- the kit shines with the car's lights: on with the colour, and sent again once the new
+-- appearance is in place so the car lights the new colour's lights
+check(W.vehicles[42].lights == "on" and #W.lightCalls == 1, "a colour switches the car's lights on")
+tick(1) tick(1)          -- the hub's thread waits, then sends the mode again
+check(#W.lightCalls == 2 and W.lightCalls[2].mode == "on", "the light mode is applied again after the switch")
+W.vehicles[42].lights = "high"
+W.commands["neon"](7, { "blue", n = 1 })
+tick(1) tick(1)
+check(W.vehicles[42].lights == "high" and W.lightCalls[#W.lightCalls].mode == "high", "high beams are kept")
+W.vehicles[42].lights = "on"
+W.commands["neon"](7, { "hot", "pink", n = 2 })
+tick(1) tick(1)
 W.commands["neon"](7, { "next", n = 1 })
 check(W.vehicles[42].appearance == "biome_neon_blue", "/neon next")
 W.commands["neon"](7, { "next", n = 1 })
@@ -248,11 +279,70 @@ W.commands["neon"](8, { "white", n = 1 })
 check(W.vehicles[42].appearance == "biome_neon_blue" and last(8):find("Only the driver"), "passengers cannot switch")
 W.commands["neon"](7, { "teal", n = 1 })
 check(last(7):find("No colour called 'teal'"), "unknown colour")
+tick(1) tick(1)                                            -- the earlier switches' light sends
+local calls = #W.lightCalls
 W.commands["neon"](7, { "off", n = 1 })
+tick(1) tick(1)
 check(W.vehicles[42].appearance == "biome" and last(7):find("Neon off"), "/neon off")
+check(#W.lightCalls == calls and W.vehicles[42].lights == "on", "/neon off leaves the lights as they are")
 W.commands["neon"](9, { "white", n = 1 })
 check(last(9):find("no neon kit"), "a car without a kit")
 W.commands["neon"](10, { "white", n = 1 })
 check(last(10):find("Get in a car"), "not in a car")
+
+-- 13: in the car: a driver is told about the neon kit once; the seat-switch loop of a refused exit
+-- gets the player taken out of the car; ordinary seat changes and other cars are left alone
+local function enter(id, vid, seat) fire("onPlayerEnteredVehicle", id, vid, seat) end
+local function told(id, pat) local n = 0 for _, m in ipairs(W.chat) do if m.to == id and m.text:find(pat) then n = n + 1 end end return n end
+W.vehicles[42].appearance = "biome"
+W.vehicles[42].lights = "off"
+enter(7, 42, "seat_front_left")
+check(told(7, "Biome has a neon kit: /neon") == 1, "the driver hears about /neon")
+check(W.vehicles[42].lights == "off", "neon off: the lights are the driver's business")
+W.vehicles[44] = { id = 44, record = "Vehicle.biome", appearance = "biome_neon_white", lights = "off" }
+enter(14, 44, "seat_front_right")
+check(W.vehicles[44].lights == "off", "a passenger does not switch the lights")
+enter(14, 44, "seat_front_left")
+check(W.vehicles[44].lights == "on", "driving off in a car whose neon is on switches its lights on")
+enter(7, 42, "seat_front_left")
+check(told(7, "has a neon kit") == 1, "only once per car")
+enter(8, 42, "seat_front_right")
+check(told(8, "has a neon kit") == 0, "passengers are not told")
+enter(9, 43, "seat_front_left")
+check(told(9, "has a neon kit") == 0, "a converted car without a kit says nothing")
+enter(11, 99, "seat_front_left")                           -- not a converted car at all
+check(told(11, "neon") == 0 and W.forced == nil, "other cars are left alone")
+W.forced = nil
+-- the loop: driver -> passenger -> driver -> passenger, ~2.4 s apart
+W.mono = W.mono + 30
+enter(12, 42, "seat_front_left")
+W.mono = W.mono + 12                                       -- drives for a while, then tries to get out
+enter(12, 42, "seat_front_right")
+check(W.forced == nil, "one seat change is a person")
+W.mono = W.mono + 2.4
+enter(12, 42, "seat_front_left")
+check(W.forced == nil, "a change and a change back is still a person")
+W.mono = W.mono + 2.4
+enter(12, 42, "seat_front_right")
+check(W.forced and #W.forced == 1 and W.forced[1].player == 12 and W.forced[1].vehicle == 42, "the loop is broken")
+check(told(12, "taken out of the car") == 1, "and the player is told why")
+W.mono = W.mono + 2.4
+enter(12, 42, "seat_front_left")
+W.mono = W.mono + 2.4
+enter(12, 42, "seat_front_right")
+W.mono = W.mono + 2.4
+enter(12, 42, "seat_front_left")
+check(#W.forced == 1, "not again within 30 s")
+-- two seat changes far apart are not a loop
+W.forced = nil
+enter(13, 42, "seat_front_left")
+W.mono = W.mono + 20
+enter(13, 42, "seat_front_right")
+W.mono = W.mono + 20
+enter(13, 42, "seat_front_left")
+check(W.forced == nil, "slow seat changes are a person")
+fire("onPlayerDisconnected", 7, "quit")
+enter(7, 42, "seat_front_left")
+check(told(7, "has a neon kit") == 2, "told again after reconnecting")
 
 io.stdout:write("hub harness: ok\n")

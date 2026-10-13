@@ -65,6 +65,14 @@ def _car(floor=-0.20, skirt=None, body_frame=(0.0, 0.0, 0.44), top=0.9):
     return v
 
 
+def _rotate(q, v):
+    """Rotate v by the quaternion (x, y, z, w)."""
+    x, y, z, w = q
+    u = np.array([x, y, z])
+    v = np.asarray(v, np.float64)
+    return v + 2 * np.cross(u, np.cross(u, v) + w * v)
+
+
 def _check_mounted(v, kit):
     tris = neon.body_triangles(v)
     under = neon.Underside(tris)
@@ -91,7 +99,7 @@ def test_neon_measured_on_a_plain_underside():
     left = next(t for t in kit.tubes if t.side == "left")
     assert left.start[0] < -0.6, "side tubes run along the sills"
     assert abs(left.start[0] - left.end[0]) < 1e-9 and left.start[1] > left.end[1], "straight, front to back"
-    assert len(kit.lights) >= 6 and kit.default == "off" and len(kit.colors) == 13
+    assert len(kit.lights) == 12 and kit.default == "white" and len(kit.colors) == 13
 
 
 def test_neon_follows_gta_bones_and_skirts():
@@ -179,13 +187,38 @@ def test_app_and_ent_get_one_appearance_per_colour():
     red = apps[1]["Data"]["components"]
     tube = next(c for c in red if c["name"]["$value"] == "neon_01")
     assert tube["mesh"]["DepotPath"]["$value"] == r"x\neon_red.mesh"
-    lights = [c for c in red if c["$type"] == "gameLightComponent"]
+    lights = [c for c in red if c["name"]["$value"].startswith("neon_light")]
     assert len(lights) == len(kit.lights)
-    for c in lights:
-        assert c["turnOnByDefault"] == 1 and c["type"] == "LT_Point"
+    for c, light in zip(lights, kit.lights):
+        # one of the car's own lights, lit with its headlights: in a vehicle only the vehicle lights
+        # a light (every light in every Cyberpunk car is off by default), and the headlight mode is
+        # what Open77 keeps in step for every player; high beams leave it alone
+        assert c["$type"] == "vehicleLightComponent" and c["lightType"] == app_mod.NEON_LIGHT_TYPE == "Head"
+        assert c["turnOnByDefault"] == 0 and c["isEnabled"] == 1 and c["onStrength"] == 1 and c["emissiveOnly"] == 0
+        assert (c["highBeamPitchAngle"], c["highBeamRadiusMultiplier"], c["highBeamConeMultiplier"]) == (0, 1, 1)
+        assert c["isDestructible"] == 0 and c["colliderName"]["$value"] == "None"
+        # a soft spot aimed at the road: the headlights' linear falloff, no specular (no mirrored
+        # streaks on wet roads), the world light channel only (never the car or its cabin)
+        assert c["type"] == "LT_Spot" and c["spotCapsule"] == 0
+        assert c["unit"] == "LU_Lumen" and c["attenuation"] == "LA_Linear" and c["EV"] == 0
+        assert c["radius"] == pytest.approx(kit.spread) and (c["innerAngle"], c["outerAngle"]) == (neon.CONE_INNER, neon.CONE_OUTER)
+        assert c["outerAngle"] < 180, "nothing above the light is lit"
+        assert c["sceneSpecularScale"] == 0 and c["sceneDiffuse"] == 1
+        assert c["lightChannel"] == "LC_ChannelWorld", "lights the road, never the car itself"
+        assert c["enableLocalShadows"] == 0 and c["intensity"] == neon.light_lumen(kit, light, (255, 1, 1))
         assert (c["color"]["Red"], c["color"]["Green"], c["color"]["Blue"]) == (255, 1, 1)
-        for k in app_mod._VEHICLE_ONLY:
-            assert k not in c, f"{k} is not a gameLightComponent property"
+        # in body_01's frame (Root minus the frame offset); +Y (where it shines) turned onto the
+        # light's direction -- down, out from under the car -- and +X along the tube
+        pos = c["localTransform"]["Position"]
+        xyz = np.array([pos[k]["Bits"] / 131072.0 if isinstance(pos[k], dict) else pos[k] for k in ("x", "y", "z")])
+        assert np.allclose(xyz + np.array([0, 0, 0.44]), light.position, atol=2e-4)
+        o = c["localTransform"]["Orientation"]
+        q = (o["i"], o["j"], o["k"], o["r"])
+        assert np.allclose(_rotate(q, (0.0, 1.0, 0.0)), light.direction, atol=1e-6)
+        assert np.allclose(_rotate(q, (1.0, 0.0, 0.0)), light.along, atol=1e-6)
+    blue = next(c for c in apps[2]["Data"]["components"] if c["name"]["$value"].startswith("neon_light"))
+    white = next(c for c in apps[3]["Data"]["components"] if c["name"]["$value"].startswith("neon_light"))
+    assert blue["intensity"] > 1.5 * white["intensity"], "dark colours get more light to read on the road"
     vc = next(c for c in red if c["$type"] == "entVisualControllerComponent")
     assert any(d["componentName"]["$value"] == "neon_01" for d in vc["appearanceDependency"])
 
@@ -198,6 +231,40 @@ def test_app_and_ent_get_one_appearance_per_colour():
         pytest.skip("build_ent needs a fuller donor entity")
     pairs = [(a["name"]["$value"], a["appearanceName"]["$value"]) for a in e["Data"]["RootChunk"]["appearances"]]
     assert pairs[0] == ("boxcar", "default") and ("boxcar_neon_blue", "neon_blue") in pairs
+
+
+def test_neon_is_light_only_by_default():
+    """Like GTA V's neon, the kit is light only: no tube meshes in any appearance (the glowing bars
+    under the car were in the way), the road still glows in every colour; neon.tubes brings the
+    bars back."""
+    v = _car()
+    conf = normalize({"neon": {"colors": ["red", "blue"]}})["neon"]
+    assert conf["tubes"] is False
+    kit = neon.fit_kit(v, {}, conf)                    # what the converter runs
+    assert v.neon is kit and kit.visible_tubes is False and kit.summary()["tubes_visible"] is False
+    assert "neon_01" not in v.parts
+    doc = app_mod.build_app(v, _donor_app(), {"body_01": r"x\body_01.mesh"}, neon_meshes={})
+    apps = doc["Data"]["RootChunk"]["appearances"]
+    assert [a["Data"]["name"]["$value"] for a in apps] == ["default", "neon_red", "neon_blue"]
+    for a in apps[1:]:
+        comps = a["Data"]["components"]
+        assert not any(c["name"]["$value"] == "neon_01" or c["$type"] == "entMeshComponent"
+                       and "neon" in str(c.get("mesh")) for c in comps), "no glowing bars"
+        assert len([c for c in comps if c["name"]["$value"].startswith("neon_light")]) == len(kit.lights)
+        vc = next(c for c in comps if c["$type"] == "entVisualControllerComponent")
+        assert not any(d["componentName"]["$value"] == "neon_01" for d in vc["appearanceDependency"])
+    # the Studio still shows where the light comes from, and the lit road
+    from fivem2open77 import render
+    assert not len(render.neon_triangles(v, (255, 1, 1))[0])
+    marks, cols = render.light_markers(v, (255, 1, 1))
+    assert len(marks) == 8 * len(kit.lights) and np.allclose(cols, (1.0, 1 / 255, 1 / 255))
+    # back on: the profile switch, validated
+    on = normalize({"neon": {"tubes": True}})["neon"]
+    v2 = _car()
+    assert neon.fit_kit(v2, {}, on).visible_tubes is True and v2.parts["neon_01"].kind == "neon"
+    with pytest.raises(ProfileError) as e:
+        normalize({"neon": {"tubes": "yes"}})
+    assert "neon.tubes" in str(e.value)
 
 
 def test_car_resource_announces_its_kit_to_the_hub(tmp_path):
@@ -370,11 +437,16 @@ def test_seats_keep_the_donor_posture_when_the_head_fits():
     assert abs(ex[0] + 1.4) < 1e-6 and abs(ex[2] - (0.12 - 0.5)) < 1e-6
 
 
+def _low(v):
+    v.gta_layout = "LAYOUT_LOW"
+    return v
+
+
 def test_low_roof_gets_hypercar_posture_and_a_lower_seat():
     # roof inside at ~0.78 over a seat at 0.0: sport2 (0.90 head) cannot fit even 10 cm lower
-    v = _seated(_car(top=0.3), {"seat_front_left": (-0.4, 0.0, 0.0)}, roof_z=0.80)
+    v = _low(_seated(_car(top=0.3), {"seat_front_left": (-0.4, 0.0, 0.0)}, roof_z=0.80))
     fit = seats.fit_seats(v, {}, "sport2")
-    assert fit.template == "sport1"
+    assert fit.template == "sport1" and "LAYOUT_LOW" in fit.template_reason
     s = fit.seats["seat_front_left"]
     assert s["lowered"] > 0 and v.bones["seat_front_left"]["t"][2] < 0
     assert s["headroom"] >= seats.TEMPLATES["sport1"][1] - 0.02
@@ -383,14 +455,186 @@ def test_low_roof_gets_hypercar_posture_and_a_lower_seat():
     assert seats.fit_seats(v2, {"template": "standard2"}, "sport2").template == "standard2"
 
 
+def test_upright_cars_keep_their_posture_and_rear_benches_do_not_count():
+    """A saloon or SUV keeps the donor's upright posture: the seat goes down further instead of the
+    driver lying back like in a hypercar.  A GTA rear bench behind a two-seat donor never decides."""
+    v = _seated(_car(top=0.3), {"seat_front_left": (-0.4, 0.0, 0.0)}, roof_z=0.80)   # LAYOUT_STANDARD
+    fit = seats.fit_seats(v, {}, "sport2")
+    assert fit.template == "sport2" and "lowered" in fit.template_reason
+    assert seats.MAX_LOWER < fit.seats["seat_front_left"]["lowered"] <= seats.MAX_LOWER_UPRIGHT + 1e-9
+    # front seats fit; the rear bench sits under a lower roof line (a 1+2 rear bench in a coupe)
+    v = _low(_seated(_car(top=0.3), {"seat_front_left": (-0.4, 0.4, 0.12), "seat_front_right": (0.4, 0.4, 0.12),
+                                     "seat_back_left": (-0.4, -0.6, 0.12)}, roof_z=1.10))
+    p, i = _box(-0.8, 0.8, -1.2, -0.3, 0.80, 0.83)           # the roof drops over the back seat
+    p = p - np.array([0.0, 0.0, 0.44], np.float32)
+    v.parts["body_01"].submeshes[-1].positions = np.concatenate([v.parts["body_01"].submeshes[-1].positions[:0], p])
+    v.parts["body_01"].submeshes[-1].indices = i
+    both = seats.fit_seats(v, {}, "sport2", ("seat_front_left", "seat_front_right"))
+    assert both.template == "sport2", both.template_reason
+    assert not [w for w in both.warnings if "seat_back_left" in w]
+
+
 def test_exit_spot_moves_out_of_a_wide_body_and_up_to_the_road():
     # a centre driving seat in a 1.9 m car, low enough that 0.5 m down is under the road
     v = _seated(_car(top=0.3), {"seat_front_left": (0.0, 0.0, -0.05)})
     s = seats.fit_seats(v, {}, "sport2").seats["seat_front_left"]
     ex = s["exit"]
-    assert ex[0] <= -(0.95 + seats.EXIT_MARGIN) + 1e-6, "outside the body"
+    assert ex[0] <= -(0.95 + seats.EXIT_CLEARANCE) + 1e-6, "outside the body"
     assert abs(ex[2] - (-0.35 - 0.02)) < 1e-6, "at road level"
     assert "out of the body" in s["exit_moved"] and "up to the road" in s["exit_moved"]
+
+
+def _with_fairings(v, half=1.26):
+    """Wheel fairings out to `half` m over both axles, like the Biome's."""
+    for y0, y1 in ((0.75, 1.6), (-1.8, -0.9)):
+        for x0, x1 in ((-half, -0.95), (0.95, half)):
+            p, i = _box(x0, x1, y0, y1, -0.1, 0.2)
+            p = p - np.array([0.0, 0.0, 0.44], np.float32)
+            n = np.zeros_like(p)
+            n[:, 2] = 1
+            v.parts["body_01"].submeshes.append(SubMesh(material="m", positions=p, normals=n,
+                                                        tangents=np.zeros((len(p), 4), np.float32),
+                                                        uv0=np.zeros((len(p), 2), np.float32), uv1=None,
+                                                        colors=None, indices=i, lod=1))
+    return v
+
+
+def test_a_wide_car_gets_room_to_get_out():
+    """The Biome loop: the game slid the player from seat to seat because 1.65 m from the centre
+    is inside its 1.26 m wheel fairings.  The record gets its own unmountOffsetPosition."""
+    from fivem2open77.cp77.donor import DONORS
+    from fivem2open77.cp77.tweak import build_tweak
+    v = _seated(_with_fairings(_car(top=0.3)), {"seat_front_left": (0.0, 0.36, -0.15),
+                                                "seat_front_right": (0.42, -0.38, -0.17)})
+    fit = seats.fit_seats(v, {}, "sport2")
+    assert fit.unmount == (2.0, 5.0, 2.5), fit.unmount
+    assert abs(fit.exit_needed - (1.26 + seats.EXIT_CLEARANCE)) < 1e-3
+    assert fit.seats["seat_front_left"]["exit"][0] == -2.0 and fit.seats["seat_front_right"]["exit"][0] == 2.0
+    assert fit.notes and "2.00 m from the centre line" in fit.notes[0]
+    assert fit.summary()["exit_distance"] == 2.0
+    text, _ = build_tweak(v, DONORS["porsche_911"], record="Vehicle.widecar", ent_path=r"x\widecar.ent",
+                          appearance="widecar", name_key="k", seating=fit)
+    assert "unmountOffsetPosition: { x: 2.0, y: 5.0, z: 2.5 }" in text
+    # an ordinary 1.9 m car keeps the donor's distance and the record does not mention it
+    plain = seats.fit_seats(_seated(_car(top=0.3), {"seat_front_left": (-0.4, 0.0, 0.12),
+                                                    "seat_front_right": (0.4, 0.0, 0.12)}), {}, "sport2")
+    assert plain.unmount is None and plain.summary()["exit_distance"] == 1.65
+    text2, _ = build_tweak(_car(), DONORS["porsche_911"], record="Vehicle.boxcar", ent_path=r"x\boxcar.ent",
+                           appearance="boxcar", name_key="k", seating=plain)
+    assert "unmountOffsetPosition" not in text2
+
+
+def test_neon_starts_lit_by_default():
+    conf = normalize({})["neon"]
+    assert conf["default"] == "on"
+    kit = neon.plan_neon(_car(), {}, conf)
+    assert kit.default == kit.colors[0][0] == "white"
+    assert normalize({"neon": {"default": "off"}})["neon"]["default"] == "off"
+    custom = normalize({"neon": {"colors": ["#ff0000"], "default": "on"}})["neon"]
+    assert neon.plan_neon(_car(), {}, custom).default == custom_key(custom)
+
+
+def custom_key(conf):
+    return neon.resolve_colors(conf["colors"])[0][0]
+
+
+def _old_kit_glow(kit, x, y):
+    """The first kits' light: one or two point lights per tube just under it, inverse square."""
+    z = neon.road_height(kit, y)
+    e = np.zeros(np.shape(x))
+    for t in kit.tubes:
+        k = 2 if t.length > 1.1 else 1
+        for i in range(k):
+            p = t.start + (t.end - t.start) * (i + 0.5) / k - np.array([0, 0, kit.tube_radius + 0.004])
+            dx, dy, dz = x - p[0], y - p[1], z - p[2]
+            r2 = dx * dx + dy * dy + dz * dz
+            e += 160.0 / (4 * np.pi) * np.clip(-dz / np.sqrt(r2), 0, 1) / r2 * np.clip(1 - (r2 / 2.4 ** 2) ** 2, 0, 1) ** 2
+    return e
+
+
+def test_neon_lights_a_pool_on_the_road_around_the_car():
+    """The road around the car is washed in colour -- brightest at the sills, fading smoothly a
+    metre or two out -- not a hard bright line along each sill (the capsule kit) or a hot spot
+    under each light and next to nothing outside the car (the first kits)."""
+    v = _car()
+    kit = neon.plan_neon(v, {}, normalize({})["neon"])
+    for t in kit.tubes:
+        mine = [l for l in kit.lights if l.side == t.side]
+        assert len(mine) == int(np.ceil(t.length / neon.LIGHT_SPACING - 1e-9)), t.side
+        assert sum(l.intensity for l in mine) == pytest.approx(neon.LIGHT_FLUX * t.length, rel=1e-3)
+        out = np.array([*neon.OUTWARD[t.side], 0.0])
+        for l in mine:
+            road = float(neon.road_height(kit, l.position[1]))
+            assert l.height == pytest.approx(l.position[2] - road)
+            assert l.height == pytest.approx(neon.LIGHT_HEIGHT), "high: a wide, soft pool"
+            # moved out from the tube to just inside the sill's edge where the tube is further in
+            # (the box's sides are at +-0.95, its ends at +-2.2), never outside the car
+            shift = float((l.position[:2] - t.start[:2]) @ out[:2])
+            edge = 0.95 if t.side in ("left", "right") else 2.2
+            tube = float(t.start[:2] @ out[:2])
+            assert 0 <= shift <= neon.EDGE_MAX_SHIFT + 1e-9
+            assert abs(float(l.position[:2] @ out[:2]) - max(tube, edge - neon.EDGE_INSET)) < 0.035, (t.side, l.position)
+            tilt = np.degrees(np.arccos(-l.direction[2]))
+            assert abs(tilt - neon.TILT) < 1e-6 and l.direction @ out > 0, "at the road, out from under the car"
+            assert l.radius == kit.spread == 2.0
+    # across the road from the left sill outwards (the car's side is at x = -0.95)
+    xs = np.array([-0.95 - d for d in (0.0, 0.25, 0.5, 1.0, 1.5, 3.0)])
+    ys = np.zeros_like(xs)
+    new = neon.ground_glow(kit, xs, ys)
+    old = _old_kit_glow(kit, xs, ys)
+    # lux, about: the donor's headlights put ~7 on the road 2 m ahead and ~2 at 5 m
+    assert 20 < new[0] < 60 and new[2] > 12 and new[3] > 6 and new[4] > 1.5, new
+    assert new[1] > 0.75 * new[0] and new[3] > 0.2 * new[0], "a soft pool, not a line along the sill"
+    assert (new[2:5] > 2 * old[2:5]).all(), (new, old)
+    assert new[5] == 0, "nothing beyond the reach"
+    assert all(np.diff(new) <= 1e-9), "brightest at the car, fading outwards"
+    # and even along the car: no beads between the lights, just the fade towards the tube's ends
+    along = neon.ground_glow(kit, np.full(25, -1.2), np.linspace(-0.6, 0.6, 25))
+    d, top = np.diff(along), int(np.argmax(along))
+    assert (d[:top] >= -1e-9).all() and (d[top:] <= 1e-9).all() and along.min() > 0.8 * along.max(), along
+    # the reach and the brightness are the profile's
+    wide = neon.plan_neon(_car(), {}, normalize({"neon": {"spread": 3.5, "brightness": 2}})["neon"])
+    far = neon.ground_glow(wide, np.array([-0.95 - 2.8]), np.array([0.0]))[0]
+    assert far > 0 and wide.lights[0].radius == 3.5 and wide.summary()["spread"] == 3.5
+    assert neon.ground_glow(wide, xs[:1], ys[:1])[0] > 1.9 * new[0]
+
+
+def test_neon_colour_gain_and_a_low_car():
+    assert neon.glow_gain((222, 222, 255)) == 1.0 and neon.glow_gain((94, 255, 1)) == 1.0
+    assert 1.8 < neon.glow_gain((2, 21, 255)) <= neon.GAIN_MAX and neon.glow_gain((255, 1, 1)) > 1.0
+    # a car whose floor is 9 cm off the road: the tubes squeeze in under it, the lights stay up in
+    # the body (they never light it), well clear of the road even if the car sags in the game
+    v = _car(floor=-0.26)
+    kit = neon.plan_neon(v, {}, normalize({})["neon"])
+    assert kit is not None
+    for l in kit.lights:
+        tube = next(t for t in kit.tubes if t.side == l.side)
+        assert l.position[2] >= tube.start[2] + neon.LIGHT_OVER_TUBE - 1e-9
+        assert l.height == pytest.approx(neon.LIGHT_HEIGHT)
+    # a tall car: the lights stay over the tubes
+    tall = _car(floor=0.05)
+    kit = neon.plan_neon(tall, {}, normalize({})["neon"])
+    for l in kit.lights:
+        tube = next(t for t in kit.tubes if t.side == l.side)
+        assert l.position[2] == pytest.approx(tube.start[2] + neon.LIGHT_OVER_TUBE)
+    with pytest.raises(ProfileError) as e:
+        normalize({"neon": {"spread": 9}})
+    assert "neon.spread" in str(e.value)
+    assert normalize({})["neon"]["spread"] == 2.0
+
+
+def test_neon_preview_shows_the_lit_road():
+    from fivem2open77 import render
+    v = _car()
+    kit = neon.plan_neon(v, {}, normalize({})["neon"])
+    neon.add_neon_part(v, kit)
+    v.neon = kit
+    tris, cols = render.glow_triangles(v, (2, 21, 255))
+    assert len(tris) and (cols[:, 2] > cols[:, 0] + 0.3).any(), "the road is blue near the car"
+    assert np.allclose(cols.min(0), render.ROAD, atol=0.02), "and dark far away"
+    top, corner = render.glow_views(v, (2, 21, 255), size=(240, 150))
+    assert top.shape == (150, 240, 3) and corner.shape == (150, 240, 3)
+    assert (top[..., 2].astype(int) - top[..., 0]).max() > 80
 
 
 def test_collision_hull_stays_off_the_road():
@@ -408,7 +652,7 @@ def test_seating_profile_and_tweak_package():
     from fivem2open77.cp77.tweak import build_tweak
     with pytest.raises(ProfileError):
         normalize({"seats": {"template": "bus"}})
-    v = _seated(_car(top=0.3), {"seat_front_left": (-0.4, 0.0, 0.0)}, roof_z=0.80)
+    v = _low(_seated(_car(top=0.3), {"seat_front_left": (-0.4, 0.0, 0.0)}, roof_z=0.80))
     fit = seats.fit_seats(v, {}, "sport2")
     text, _ = build_tweak(v, DONORS["porsche_911"], record="Vehicle.boxcar", ent_path=r"x\boxcar.ent",
                           appearance="boxcar", name_key="k", seating=fit)

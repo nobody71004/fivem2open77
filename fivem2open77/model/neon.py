@@ -3,13 +3,19 @@
 A kit is up to four LED tubes under the car -- left and right along the sills between the wheels,
 front and back across the bumpers -- plus the lights that throw their colour on the road.  In GTA V
 the tubes hang from the model's ``neon_l/neon_r/neon_f/neon_b`` bones; a model without them gets
-the same layout measured from its own underside.
+the same layout measured from its own underside.  Like GTA V's neon the kit is light only: the
+tubes place the lights and are not drawn, unless the profile asks for them (``neon.tubes``), then
+they are glowing meshes too.
 
 Mounting: the tube runs just under the body.  The underside is measured from the car's surfaces
 (a height map of the lowest body surface over the ground plan), the tube sits ``gap`` below it,
 never closer than ``min_clearance`` to the road, and is shortened where it would cut into a skirt
 or a wheel.  Everything is in Cyberpunk Root space (X right, Y forward, Z up, wheel centres at
 Z = 0, the road at -wheel radius).
+
+The glow on the road: see ``plan_lights`` -- soft lights under the sills that wash the road around
+the car in the kit's colour, the way the light of a real LED kit scatters on the road
+(``ground_glow`` models them for previews and tests).
 
 In the game every colour is its own appearance of the car (``<car>_neon_<colour>``), so a server
 switches colours with ``Open77.vehicles.setAppearance`` and every player sees the same kit.
@@ -67,8 +73,16 @@ class NeonTube:
 
 @dataclass
 class NeonLight:
+    """One of the soft lights that wash the road around the car in the kit's colour: a spot at
+    `position` shining towards `direction` (see plan_lights)."""
     side: str
     position: np.ndarray     # Root space
+    direction: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0, -1.0]))
+    along: np.ndarray = field(default_factory=lambda: np.array([0.0, 1.0, 0.0]))   # the tube's direction
+    intensity: float = 0.0   # lumen at brightness 1, before the colour's gain
+    radius: float = 2.0      # m: how far the light reaches
+    source_radius: float = 0.2
+    height: float = 0.0      # m above the road
 
 
 @dataclass
@@ -79,6 +93,9 @@ class NeonKit:
     default: str             # a colour key, or "off"
     brightness: float = 1.0
     tube_radius: float = TUBE_RADIUS
+    spread: float = 2.0      # m: how far from the car the glow reaches
+    visible_tubes: bool = False   # fit the LED tubes as glowing meshes (GTA's neon is light only)
+    road: dict = field(default_factory=dict)   # axle data: the road height under the car (_ground)
     warnings: list = field(default_factory=list)
 
     def color(self, key):
@@ -88,13 +105,17 @@ class NeonKit:
         return None
 
     def summary(self):
+        hs = [l.height for l in self.lights]
         return {
             "tubes": {t.side: {"length": round(t.length, 3), "center": [round(float(x), 3) for x in t.center],
                                "clearance": round(t.clearance, 3), "source": t.source} for t in self.tubes},
             "lights": len(self.lights),
+            "light_height": [round(min(hs), 3), round(max(hs), 3)] if hs else None,
             "colors": [c[0] for c in self.colors],
             "default": self.default,
             "brightness": self.brightness,
+            "spread": self.spread,
+            "tubes_visible": self.visible_tubes,
         }
 
 
@@ -408,23 +429,176 @@ def plan_neon(vehicle, neon_bones: dict, conf: dict) -> NeonKit | None:
         vehicle.warnings.extend(warnings or ["neon: no tube fits under this car"])
         return None
 
-    lights = []
-    for t in tubes:
-        k = 2 if t.length > 1.1 else 1
-        for i in range(k):
-            f = (i + 0.5) / k
-            p = t.start + (t.end - t.start) * f
-            lights.append(NeonLight(t.side, p - np.array([0, 0, radius + 0.004])))
+    spread = float(conf.get("spread") or SPREAD)
+    lights = plan_lights(tubes, under, ax, spread)
 
     colors = resolve_colors(conf.get("colors", "gta"))
     default = color_key(conf.get("default") or "off")
+    if default == "on":                 # the kit lit in its first colour (White for the GTA palette)
+        default = colors[0][0]
     if default != "off" and not any(c[0] == default for c in colors):
         warnings.append(f"neon: default colour '{conf.get('default')}' is not in the kit; the car starts without neon")
         default = "off"
     kit = NeonKit(tubes=tubes, lights=lights, colors=colors, default=default,
-                  brightness=float(conf.get("brightness", 1.0)), tube_radius=radius, warnings=warnings)
+                  brightness=float(conf.get("brightness", 1.0)), tube_radius=radius, spread=spread, road=ax,
+                  visible_tubes=bool(conf.get("tubes", False)), warnings=warnings)
     vehicle.warnings.extend(warnings)
     return kit
+
+
+def fit_kit(vehicle, neon_bones: dict, conf: dict) -> NeonKit | None:
+    """Plan the kit and fit it: vehicle.neon = the kit; its tubes become a glowing mesh part only
+    when the profile wants them drawn (neon.tubes) -- otherwise the kit is light only, like GTA V's."""
+    kit = plan_neon(vehicle, neon_bones, conf)
+    if kit is not None:
+        if kit.visible_tubes and add_neon_part(vehicle, kit) is None:
+            kit.visible_tubes = False
+        vehicle.neon = kit
+    return kit
+
+
+# ----------------------------------------------------------------------------- the glow on the road
+# A real LED kit lights the road the way any light under a car does: the strips sit a hand's width
+# off the road, their light bounces between the road and the floor pan and leaves from under the
+# sills, so the road around the car is washed in colour -- brightest at the sills, fading smoothly
+# a metre or two out -- and dry asphalt scatters it, nothing mirrors it.
+#
+# What does NOT look like that (both tried):
+#   * a light close to the road (one or two points just under each tube; then one capsule per
+#     tube like the game's own Tyger Claws underglow): light that low meets the road edge-on, so it
+#     draws a hard bright band along each sill and leaves the road outside dark;
+#   * a shiny light: on Cyberpunk's wet, glossy roads a tube-shaped light also shows up as a
+#     mirrored streak -- a line.
+# So the kit uses, per tube, a row of soft lights standing in for that bounced, scattered light:
+#   * every LIGHT_SPACING metres along the tube, moved out to just inside the sill's edge (where
+#     the light leaves from under the car) and LIGHT_HEIGHT up -- inside the body, which they never
+#     light: they are on the world light channel only, like the game's underglow (road, kerbs and
+#     walls, not the car or its cabin).  A source that high lights a wide, smooth pool instead of
+#     a line, and suspension sag cannot sink it into the road;
+#   * spots aimed at the road, TILT degrees out from under the car, cone a little short of a half
+#     sphere (nothing above them is lit, and a wall beside the car only near the ground);
+#   * the falloff of the game's headlights (linear over `spread` metres) and no specular at all,
+#     the way the game's own fake bounce lights are set up: a soft glow, no streaks on wet roads.
+# `brightness` scales them, `spread` is how far the glow reaches.
+LIGHT_SPACING = 0.6        # m between the lights along a tube
+LIGHT_FLUX = 400.0         # lumen per metre of tube at brightness 1
+LIGHT_HEIGHT = 0.40        # m above the road ...
+LIGHT_OVER_TUBE = 0.10     # ... and at least this far above the tube
+EDGE_INSET = 0.12          # m in from the sill's edge
+EDGE_MAX_SHIFT = 0.6       # m: never moved further than this out from the tube
+EDGE_BODY = 0.50           # m: body this low over the road counts as the sill
+SPREAD = 2.0               # m: the lights' reach (profile neon.spread)
+TILT = 10.0                # degrees out from straight down
+CONE_INNER = 140.0         # degrees, full cone: full strength inside
+CONE_OUTER = 168.0         # nothing outside: the light stays 6 degrees under the horizon
+SOURCE_RADIUS = 0.2        # m: a soft source
+LIGHT_CHANNEL = "LC_ChannelWorld"
+OUTWARD = {"left": (-1.0, 0.0), "right": (1.0, 0.0), "front": (0.0, 1.0), "back": (0.0, -1.0)}
+# dark colours get more light so every colour reads on the road: the eye and the game's tone
+# mapping see a watt of blue as far dimmer than a watt of white (relative luminance 0.08 vs 1)
+GAIN_REF = 0.30
+GAIN_MAX = 2.5
+
+
+def _shine(side):
+    """Unit vector a light under `side`'s tube points along: down, tilted out from under the car."""
+    ox, oy = OUTWARD[side]
+    t = math.radians(TILT)
+    return np.array([ox * math.sin(t), oy * math.sin(t), -math.cos(t)])
+
+
+def _sill(under, ax, p, side):
+    """How far out from `p` (Root space) towards `side` the low body reaches: the last spot of
+    body no higher than EDGE_BODY over the road before it ends (a gap of more than 5 cm)."""
+    if under is None:
+        return 0.0
+    ox, oy = OUTWARD[side]
+    g = _ground(ax, float(p[1]))
+    last, gap, step = 0.0, 0.0, 0.01
+    s = 0.0
+    while s <= EDGE_MAX_SHIFT + EDGE_INSET + 1e-9:
+        h = under.at(float(p[0]) + ox * s, float(p[1]) + oy * s, reach=0)
+        if h is not None and h - g <= EDGE_BODY:
+            last, gap = s, 0.0
+        else:
+            gap += step
+            if gap > 0.05:
+                break
+        s += step
+    return last
+
+
+def plan_lights(tubes, under, ax, spread=SPREAD) -> list:
+    lights = []
+    for t in tubes:
+        n = max(1, int(math.ceil(t.length / LIGHT_SPACING - 1e-9)))
+        flux = LIGHT_FLUX * t.length / n
+        along = (t.end - t.start) / max(t.length, 1e-6)
+        ox, oy = OUTWARD[t.side]
+        for i in range(n):
+            p = t.start + (t.end - t.start) * ((i + 0.5) / n)
+            out = min(EDGE_MAX_SHIFT, max(0.0, _sill(under, ax, p, t.side) - EDGE_INSET))
+            g = _ground(ax, float(p[1]))
+            z = max(g + LIGHT_HEIGHT, float(p[2]) + LIGHT_OVER_TUBE)
+            lights.append(NeonLight(t.side, np.array([float(p[0]) + ox * out, float(p[1]) + oy * out, z]),
+                                    direction=_shine(t.side), along=np.asarray(along, np.float64),
+                                    intensity=round(flux, 1), radius=float(spread),
+                                    source_radius=SOURCE_RADIUS, height=float(z - g)))
+    return lights
+
+
+def _linear(c):
+    c = float(c) / 255.0
+    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+
+def glow_gain(rgb) -> float:
+    lum = 0.2126 * _linear(rgb[0]) + 0.7152 * _linear(rgb[1]) + 0.0722 * _linear(rgb[2])
+    return float(min(GAIN_MAX, max(1.0, math.sqrt(GAIN_REF / max(lum, 1e-4)))))
+
+
+def light_lumen(kit, light, rgb) -> float:
+    """What a light component gets: its share of the tube, the profile's brightness, the colour's
+    gain."""
+    return round(light.intensity * kit.brightness * glow_gain(rgb), 1)
+
+
+def road_height(kit, y):
+    """Road height (Root space) under y, which may be an array."""
+    y = np.asarray(y, np.float64)
+    ax = kit.road
+    if not ax:
+        return np.full(y.shape, -0.35)
+    if abs(ax["yf"] - ax["yb"]) < 1e-6:
+        return np.full(y.shape, -ax["rf"])
+    t = np.clip((ax["yf"] - y) / (ax["yf"] - ax["yb"]), 0.0, 1.0)
+    return -(ax["rf"] + (ax["rb"] - ax["rf"]) * t)
+
+
+def _smoothstep(e0, e1, x):
+    t = np.clip((x - e0) / (e1 - e0), 0.0, 1.0)
+    return t * t * (3 - 2 * t)
+
+
+def ground_glow(kit, x, y, rgb=(255, 255, 255)):
+    """Light the kit throws on the road at Root-space (x, y) (arrays), in the game's terms for these
+    lights (spots, linear falloff): E = I/4pi * (1 - r/R) * cos(incidence) * cone(angle).  Lux,
+    about: the donor's headlights (300 lm, the same falloff) put ~7 on the road 2 m ahead of the
+    car and ~2 at 5 m."""
+    x = np.asarray(x, np.float64)
+    y = np.asarray(y, np.float64)
+    z = road_height(kit, y)
+    e = np.zeros(x.shape)
+    c_out, c_in = math.cos(math.radians(CONE_OUTER / 2)), math.cos(math.radians(CONE_INNER / 2))
+    for l in kit.lights:
+        dx, dy, dz = x - l.position[0], y - l.position[1], z - l.position[2]
+        r = np.maximum(np.sqrt(dx * dx + dy * dy + dz * dz), 1e-6)
+        cos_inc = np.clip(-dz / r, 0.0, 1.0)                       # the road faces up
+        d = l.direction
+        cone = _smoothstep(c_out, c_in, (dx * d[0] + dy * d[1] + dz * d[2]) / r)
+        fall = np.clip(1.0 - r / l.radius, 0.0, 1.0)
+        e += light_lumen(kit, l, rgb) / (4 * math.pi) * fall * cos_inc * cone
+    return e
 
 
 # ----------------------------------------------------------------------------- geometry

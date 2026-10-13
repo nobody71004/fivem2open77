@@ -44,6 +44,70 @@ def neon_triangles(v, rgb):
     return tris, np.tile(c[None, :], (len(tris), 1))
 
 
+def light_markers(v, rgb, size=0.035):
+    """Where a light-only kit's light comes from (its tubes are not drawn in game): a small diamond
+    on each tube line at each light's place along it, in one colour (rgb 0..255)."""
+    kit = getattr(v, "neon", None)
+    if kit is None or not kit.lights:
+        return np.zeros((0, 3, 3)), np.zeros((0, 3))
+    r = float(size)
+    xp, yp, xn, yn = np.array([r, 0, 0]), np.array([0, r, 0]), np.array([-r, 0, 0]), np.array([0, -r, 0])
+    zp, zn = np.array([0, 0, r]), np.array([0, 0, -r])
+    faces = [(xp, yp, zp), (yp, xn, zp), (xn, yn, zp), (yn, xp, zp),          # outward, counter-clockwise
+             (yp, xp, zn), (xn, yp, zn), (yn, xn, zn), (xp, yn, zn)]
+    tris = []
+    for l in kit.lights:
+        t = next((t for t in kit.tubes if t.side == l.side), None)
+        if t is None:
+            continue
+        d = t.end - t.start
+        f = float(np.clip(((l.position - t.start)[:2] @ d[:2]) / max(float(d[:2] @ d[:2]), 1e-9), 0.0, 1.0))
+        c = t.start + d * f
+        tris += [np.stack([c + a, c + b, c + e]) for a, b, e in faces]
+    if not tris:
+        return np.zeros((0, 3, 3)), np.zeros((0, 3))
+    col = np.asarray(rgb, np.float64)[:3] / 255.0
+    return np.asarray(tris, np.float64), np.tile(col[None, :], (len(tris), 1))
+
+
+ROAD = 0.035        # asphalt at night
+GLOW_REF = 6.0      # ground_glow value drawn at 63 % of the colour: the donor's headlights ~2 m ahead
+
+
+def glow_triangles(v, rgb, cell=0.05, margin=2.2):
+    """The road around the car as coloured triangles, lit at night by its neon kit in `rgb`
+    (0..255) with the light model of model/neon.ground_glow, tone-mapped.  An approximation of
+    the game: its exposure, the surface and the weather decide the final look."""
+    from .model.neon import ground_glow, road_height
+    kit = getattr(v, "neon", None)
+    if kit is None or not kit.lights:
+        return np.zeros((0, 3, 3)), np.zeros((0, 3))
+    (x0, y0, _), (x1, y1, _) = v.bbox
+    xs = np.arange(x0 - margin, x1 + margin + 1e-9, cell)
+    ys = np.arange(y0 - margin, y1 + margin + 1e-9, cell)
+    X, Y = np.meshgrid(xs, ys, indexing="ij")
+    P = np.stack([X, Y, road_height(kit, Y) - 0.003], -1)
+    xc, yc = (X[:-1, :-1] + X[1:, 1:]) / 2, (Y[:-1, :-1] + Y[1:, 1:]) / 2
+    e = ground_glow(kit, xc, yc, rgb)
+    tone = 1.0 - np.exp(-e / GLOW_REF)
+    col = np.clip(ROAD + tone[..., None] * (np.asarray(rgb, np.float64)[:3] / 255.0), 0, 1).reshape(-1, 3)
+    a, b, c, d = P[:-1, :-1], P[1:, :-1], P[1:, 1:], P[:-1, 1:]      # counter-clockwise seen from above
+    tris = np.concatenate([np.stack([a, b, c], -2).reshape(-1, 3, 3), np.stack([a, c, d], -2).reshape(-1, 3, 3)])
+    return tris, np.concatenate([col, col])
+
+
+def glow_views(v, rgb, size=(480, 300), views=((0, 89.9), (35, 28)), body=None):
+    """The car at night over its lit road: [image per view].  body: (tris, cols) of the car without
+    its tubes (from _triangles(..., skip_kinds=("neon",))), to reuse a cached set."""
+    body = body if body is not None else _triangles(v, "material", skip_kinds=("neon",))
+    tube = neon_triangles(v, rgb)
+    road = glow_triangles(v, rgb)
+    tris = np.concatenate([body[0], tube[0], road[0]])
+    cols = np.concatenate([body[1] * 0.35, tube[1], road[1]])
+    unlit = np.concatenate([np.zeros(len(body[0]), bool), np.ones(len(tube[0]) + len(road[0]), bool)])
+    return [render(tris, cols, vw, size, light=(0.0, 0.0, 1.0), unlit=unlit) for vw in views]
+
+
 def _triangles(v, color_mode="material", skip_kinds=()):
     """All LOD-1 triangles in Root space -> (tri (N,3,3), colour (N,3), kind list)."""
     if color_mode == "material":
@@ -94,8 +158,9 @@ def _basis(az, el):
     return r, u, c
 
 
-def render(tris, cols, view="front_3q", size=(640, 400), seed=1, light=None) -> np.ndarray:
-    """-> uint8 (H, W, 3)."""
+def render(tris, cols, view="front_3q", size=(640, 400), seed=1, light=None, unlit=None) -> np.ndarray:
+    """-> uint8 (H, W, 3).  unlit: per-triangle flags for triangles drawn in their own colour
+    (lights, a lit road), not shaded."""
     W, H = size
     az, el = VIEWS[view] if isinstance(view, str) else view
     r, u, c = _basis(az, el)
@@ -125,6 +190,8 @@ def render(tris, cols, view="front_3q", size=(640, 400), seed=1, light=None) -> 
     shade = 0.32 + 0.68 * np.abs(n @ L)
     facing = np.abs(n @ c)
     shade *= 0.85 + 0.15 * facing
+    if unlit is not None:
+        shade[np.asarray(unlit, bool)[ok]] = 1.0
     # samples per triangle ~ screen area
     area = 0.5 * np.abs((X[:, 1] - X[:, 0]) * (Y[:, 2] - Y[:, 0]) - (X[:, 2] - X[:, 0]) * (Y[:, 1] - Y[:, 0]))
     k = np.clip(np.ceil(area * DENSITY), 1, 20000).astype(np.int64)

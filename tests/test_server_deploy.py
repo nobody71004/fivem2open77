@@ -205,7 +205,7 @@ def test_stage_live_and_restart():
         car = [c for c in st["cars"] if c["name"] == "testcar"][0]
         assert car["record"] == "Vehicle.testcar" and car["version"] == "1.0.2" and car["display"] == "Test Car"
         assert car["in_load"] and "testcar.zip" in car["packages"]
-        assert st["hub"]["version"] == "1.1.1" and st["hub"]["pending"][0]["name"] == "testcar"
+        assert st["hub"]["version"] == "1.1.3" and st["hub"]["pending"][0]["name"] == "testcar"
 
         # 7. restart: every resource in resources.load starts
         out = fake.run("restart", "-", "open77-test")

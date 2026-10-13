@@ -19,8 +19,9 @@
 -- Neon kits: every converted car resource announces itself ("f2o77:car": record, appearance, neon
 -- colours) when it starts and when this hub starts ("f2o77:hubReady").  /neon <colour> switches
 -- the driver's car to that colour's appearance with Open77.vehicles.setAppearance, which every
--- player sees; /neon off goes back to the car's own appearance.
-local HUB_VERSION = "1.1.1"
+-- player sees; /neon off goes back to the car's own appearance.  The kit shines with the car's
+-- lights: the hub switches them on with a colour and when a driver gets into a car whose neon is on.
+local HUB_VERSION = "1.1.3"
 local CHECK_MS = 5000
 local DEFAULTS = {
     restart_when_empty = true, empty_grace_seconds = 60, daily_restart_utc = "",
@@ -276,6 +277,35 @@ local function kitOf(record)
     end
 end
 
+-- A kit's lights are the car's own lights, lit with its headlights (and the headlight mode is the
+-- light state Open77 keeps in step for every player).  So picking a colour, or driving off in a car
+-- whose neon is on, switches the headlights on; and once the new appearance is in place on every
+-- client the light mode is sent again, so the car lights the new colour's lights.
+local RELIGHT_MS = 1500
+
+local function canLight()
+    return type(Open77.vehicles.getLights) == "function" and type(Open77.vehicles.setLights) == "function"
+end
+
+local function neonShowing(info, appearance)
+    for _, c in ipairs(info.neon.colors) do if c.appearance == appearance then return true end end
+    return false
+end
+
+local function lightsOn(vid)
+    if not canLight() then return end
+    if Open77.vehicles.getLights(vid) == "off" then Open77.vehicles.setLights(vid, "on") end
+end
+
+local function relight(vid)
+    if not canLight() then return end
+    CreateThread(function()
+        Wait(RELIGHT_MS)
+        local mode = Open77.vehicles.getLights(vid)
+        if mode and mode ~= "off" then Open77.vehicles.setLights(vid, mode) end
+    end)
+end
+
 local function neonCommand(source, args)
     if source == 0 then return log("/neon is for players sitting in a car") end
     local tell = function(text) Open77.chat.send(source, "[neon] " .. text) end
@@ -322,10 +352,73 @@ local function neonCommand(source, args)
     if not target then return tell(("No colour called '%s'. /neon lists them."):format(want)) end
     local ok, reason = Open77.vehicles.setAppearance(seat.vehicleId, target)
     if not ok then return tell("Could not switch: " .. tostring(reason)) end
-    tell(label == "off" and "Neon off." or ("Neon: " .. label .. "."))
+    if label == "off" then return tell("Neon off.") end
+    lightsOn(seat.vehicleId)
+    relight(seat.vehicleId)
+    tell("Neon: " .. label .. " (it shines with the car's lights).")
 end
 if not pcall(RegisterCommand, "neon", neonCommand, false) then log("/neon is taken; use /f2o77neon") end
 pcall(RegisterCommand, "f2o77neon", neonCommand, false)
+
+-- ------------------------------------------------------------------ in a converted car
+-- A driver who gets into a car with a neon kit is told about /neon, once per car and session.
+--
+-- A player the game will not let out never gets out: when it finds no room beside the car it
+-- slides the player to another seat to try there, and back, seat after seat.  Three seats taken
+-- inside LOOP_SECONDS in one converted car is that loop, not a person: the hub takes the player
+-- out (the converter now gives wide cars the room, this is the safety net).
+local LOOP_SECONDS = 8
+local tipped = {}         -- playerId -> { [record] = true }
+local seatTimes = {}      -- playerId -> { vehicle = id, times = { monotonic seconds } }
+local rescued = {}        -- playerId -> monotonic seconds of the last forced exit
+
+local function exitLoop(id, vid, car)
+    local t = Open77.time.monotonic()
+    local s = seatTimes[id]
+    if not s or s.vehicle ~= vid then
+        s = { vehicle = vid, times = {} }
+        seatTimes[id] = s
+    end
+    local keep = {}
+    for _, x in ipairs(s.times) do if t - x <= LOOP_SECONDS then keep[#keep + 1] = x end end
+    keep[#keep + 1] = t
+    s.times = keep
+    if #keep < 3 or (rescued[id] and t - rescued[id] < 30) then return end
+    rescued[id] = t
+    s.times = {}
+    local ok, reason = Open77.vehicles.forcePlayerOutOfVehicle(id, vid)
+    log("exit loop in %s: player %d %s", tostring(car.record), id,
+        ok and "taken out of the car" or ("could not be taken out (" .. tostring(reason) .. ")"))
+    if ok then
+        Open77.chat.send(id, "[cars] The game found no room to let you out and kept moving you between seats, "
+                             .. "so you were taken out of the car.")
+    end
+end
+
+AddEventHandler("onPlayerEnteredVehicle", function(playerId, vehicleId, seat)
+    local id, vid = tonumber(playerId), tonumber(vehicleId)
+    if not id or not vid then return end
+    local car = Open77.vehicles.get(vid)
+    local info = car and cars[car.record]
+    if not info then return end                      -- not a converted car
+    exitLoop(id, vid, car)
+    if seat == "seat_front_left" and kitOf(car.record) and neonShowing(info, car.appearance) then
+        lightsOn(vid)                                -- the neon shines with the car's lights
+    end
+    if seat == "seat_front_left" and kitOf(car.record) then
+        tipped[id] = tipped[id] or {}
+        if not tipped[id][car.record] then
+            tipped[id][car.record] = true
+            Open77.chat.send(id, ("[neon] %s has a neon kit: /neon <colour> (/neon list), /neon next, /neon off.")
+                :format(tostring(info.display or car.record)))
+        end
+    end
+end)
+
+AddEventHandler("onPlayerDisconnected", function(playerId)
+    local id = tonumber(playerId)
+    if id then tipped[id], seatTimes[id], rescued[id] = nil, nil, nil end
+end)
 
 -- ------------------------------------------------------------------ players
 AddEventHandler("onPlayerReady", function(playerId)

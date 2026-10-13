@@ -183,6 +183,11 @@ def build_tweak(vehicle, prof, *, record: str, ent_path: str, appearance: str, n
         # engine/wheel/bump sounds: names of sound setups in the game's audio metadata
         main["player_audio_resource"] = sound["player"]
         main["traffic_audio_resource"] = sound["traffic"]
+    if seating is not None and getattr(seating, "unmount", None):
+        # where the game looks for room to let a player out (x: metres from the centre line).  The
+        # donor's 1.65 m is inside a wide car's wheel fairings: every exit is refused and the game
+        # slides the player from seat to seat instead
+        main["unmountOffsetPosition"] = _vec(seating.unmount)
     package = None
     if seating is not None and t.get("data_package") and seating.template != prof.get("seating", "sport2"):
         # the sitting animation set: a low car gets the hypercars' lower, reclined posture

@@ -551,15 +551,18 @@ class VehicleBuilder:
             bi = tag_to_bone.get(child.bone_tag)
             if bi is None or self.names[bi] not in WHEEL_BONES:
                 continue
-            meshes[WHEEL_BONES[self.names[bi]]] = (child.drawable, bi)
-        front = meshes.get("fl") or meshes.get("fr")
+            # GTA draws every wheel with the front one when the others' drawables are empty (most
+            # cars ship one wheel mesh): only a drawable with geometry counts
+            pieces = self._drawable_pieces(child.drawable)
+            if pieces:
+                meshes[WHEEL_BONES[self.names[bi]]] = (pieces, bi)
+        front = meshes.get("fl") or meshes.get("fr") or meshes.get("bl") or meshes.get("br")
         rear = meshes.get("bl") or meshes.get("br") or front
         self.vehicle.axles = {}
         if front is not None:
-            for axle, item in (("front", front), ("back", rear)):
-                drawable, bi = item
+            for axle, (pieces, bi) in (("front", front), ("back", rear)):
                 mirror = self.names[bi] in ("wheel_rf", "wheel_rr")
-                self._wheel_meshes(axle, self._drawable_pieces(drawable), mirror)
+                self._wheel_meshes(axle, pieces, mirror)
             return
         # some models carry the wheels in the main drawable, bound to the wheel bones
         if self.wheel_pieces:

@@ -5,11 +5,17 @@
   ``sport1_vehicle`` (hypercars: Caliburn, Outlaw, Turbo-R -- lower and reclined),
   ``standard2_vehicle`` (ordinary cars) and so on.  A GTA "LOW" layout (supercars) gets sport1.
 * Head room.  When a closed roof sits over the seat and the posture's head height would poke
-  through it, the seat is lowered (at most MAX_LOWER, never closer than SEAT_FLOOR to the road).
-* Getting out.  The game checks a standing spot next to each seat (the donor's InteractionSlots,
-  1 m to the side of the seat bone and 0.5 m down).  On a wide or low car that spot lands inside
-  the body or under the road, the exit is refused and the player slides from seat to seat.  The
-  spot is moved to just outside the body, at road level.
+  through it, the seat is lowered (at most MAX_LOWER in a low car, MAX_LOWER_UPRIGHT in others,
+  never closer than SEAT_FLOOR to the road).
+* Getting out.  The game lets a player out only where a player-sized space beside the car is free:
+  on the vehicle record's ``unmountOffsetPosition`` (x: metres from the centre line; every
+  Cyberpunk car has 1.65, i.e. about 0.65-0.7 m outside a 0.95-1.0 m half-width; the big trucks
+  2.5, the bikes 1.0).  When neither side is free it slides the player to the other seat to get
+  out there, and back, for ever.  A wide car (the Biome's wheel fairings are 1.26 m out) needs that
+  distance raised to its own width plus the same clearance, measured over the stretch of the car a
+  player standing beside the seat covers (the collision hull's slices reach that far too).  The
+  standing spot of each seat (InteractionSlots, the donor's 1 m to the side and 0.5 m down) is
+  moved out with it, and up to the road when it would be under it.
 
 All positions are Cyberpunk Root space (X right, Y forward, Z up, wheel centres at Z = 0).
 """
@@ -29,10 +35,17 @@ TEMPLATES = {
 }
 SEAT_NAMES = ("seat_front_left", "seat_front_right", "seat_back_left", "seat_back_right")
 SIDE_OF = {"seat_front_left": -1.0, "seat_back_left": -1.0, "seat_front_right": 1.0, "seat_back_right": 1.0}
-MAX_LOWER = 0.10         # m a seat may be lowered for head room
+MAX_LOWER = 0.10         # m a seat may be lowered for head room (low cars, which can recline instead)
+MAX_LOWER_UPRIGHT = 0.15 # m for everything else: saloons and SUVs keep the upright posture
 SEAT_FLOOR = 0.12        # m the seat bone stays above the road
 ROOF_THICKNESS = 0.03    # m between the outer roof and the inside of the cabin
-EXIT_MARGIN = 0.50       # m from the body to the standing spot (a player is ~0.4 m across)
+EXIT_CLEARANCE = 0.70    # m from the widest body beside a seat to where the player stands after getting
+                         # out: what Cyberpunk's own cars leave (1.65 m from the centre, 0.95-1.0 m wide)
+EXIT_WINDOW = 0.80       # m along the car, either side of a seat, whose width counts: a standing player
+                         # (~0.4 m radius) and the collision hull's slices both reach that far
+UNMOUNT_DEFAULT = (1.65, 5.0, 2.5)   # unmountOffsetPosition of every Cyberpunk car (the donors included)
+MIN_CLEARANCE = 0.50     # m outside the body below which the default distance is not trusted: the
+                         # BMW i8 (1.11 m out, 0.54 m left) gets out, the Biome (1.26 m, 0.39 m) does not
 
 
 @dataclass
@@ -41,6 +54,9 @@ class SeatFit:
     template_reason: str
     seats: dict = field(default_factory=dict)     # name -> {position, lowered, headroom, roof, exit}
     warnings: list = field(default_factory=list)
+    notes: list = field(default_factory=list)
+    unmount: tuple | None = None                  # unmountOffsetPosition for the record; None = the donor's
+    exit_needed: float = 0.0                      # m from the centre line a player needs to get out
 
     @property
     def tweak_template(self):
@@ -51,6 +67,10 @@ class SeatFit:
                 "seats": {k: {kk: (round(vv, 3) if isinstance(vv, float) else
                                    [round(float(x), 3) for x in vv] if isinstance(vv, (tuple, list, np.ndarray)) else vv)
                               for kk, vv in s.items()} for k, s in self.seats.items()},
+                "exit_distance": round(float(self.unmount[0] if self.unmount else UNMOUNT_DEFAULT[0]), 3),
+                "exit_needed": round(float(self.exit_needed), 3),
+                "unmount": [round(float(x), 3) for x in self.unmount] if self.unmount else None,
+                "notes": list(self.notes),
                 "warnings": list(self.warnings)}
 
 
@@ -135,13 +155,17 @@ def _roof_over(shell, x, y, z):
     return float(np.percentile(roof, 20)) - ROOF_THICKNESS
 
 
-def fit_seats(vehicle, conf, donor_template="sport2") -> SeatFit:
+def fit_seats(vehicle, conf, donor_template="sport2", occupant_seats=None) -> SeatFit:
     """Choose the posture, lower seats that would put the head through the roof, and place the
     standing spot each seat's exit is checked at.  Moves vehicle.bones[seat] / vehicle.seats.
 
-    Posture "auto" keeps the donor's unless the head does not fit under a closed roof even with
-    the seat lowered; then the hypercars' lower, reclined sport1 posture is used."""
+    Posture "auto" keeps the donor's unless a GTA *low* car (LAYOUT_LOW...) cannot fit the head under
+    its roof even with the seat lowered; then the hypercars' lower, reclined sport1 posture is used.
+    Other cars keep the upright posture and lower the seat a little more.  Only the seats the donor
+    can seat a player in (occupant_seats) decide: a GTA rear bench behind a two-seat donor is never
+    sat on."""
     conf = conf or {}
+    usable = set(occupant_seats or SEAT_NAMES)
     shell = _TopMap(_shell_triangles(vehicle))
     pts = shell.p if shell.ok else np.zeros((0, 3))
     seats = []
@@ -153,13 +177,16 @@ def fit_seats(vehicle, conf, donor_template="sport2") -> SeatFit:
         g = _ground(vehicle, pos[1])
         seats.append((name, b, pos, g, _roof_over(shell, pos[0], pos[1], pos[2])))
 
-    def worst_deficit(head):
+    layout = (vehicle.gta_layout or "").upper()
+    low = "LOW" in layout
+
+    def worst_deficit(head, max_lower):
         worst = 0.0
         for name, b, pos, g, roof in seats:
-            if roof is None:
+            if roof is None or name not in usable:
                 continue
             room = max(0.0, pos[2] - (g + SEAT_FLOOR))
-            worst = max(worst, (pos[2] + head + 0.01 - roof) - min(MAX_LOWER, room))
+            worst = max(worst, (pos[2] + head + 0.01 - roof) - min(max_lower, room))
         return worst
 
     want = conf.get("template", "auto")
@@ -167,14 +194,36 @@ def fit_seats(vehicle, conf, donor_template="sport2") -> SeatFit:
         template, why = want, "profile"
     else:
         template, why = donor_template, "the donor's"
-        if worst_deficit(TEMPLATES[donor_template][1]) > 0.005 and donor_template != "sport1":
-            layout = (vehicle.gta_layout or "").upper()
-            template = "sport1"
-            why = ("the head does not fit under the roof with the donor's posture"
-                   + (f" ({layout})" if "LOW" in layout else ""))
+        if donor_template != "sport1" and worst_deficit(TEMPLATES[donor_template][1], MAX_LOWER) > 0.005:
+            if low:
+                template = "sport1"
+                why = f"the head does not fit under this low roof with the donor's posture ({layout})"
+            else:
+                why = "the donor's, seats lowered for head room"
     fit = SeatFit(template, why)
     head = TEMPLATES[template][1]
+    max_lower = MAX_LOWER if (template == "sport1" or low) else MAX_LOWER_UPRIGHT
     extra_lower = float(conf.get("lower", 0.0) or 0.0)
+
+    # ---- how far out a player has to stand to get out: the widest body on that seat's side over
+    # the stretch of car beside it, plus the clearance Cyberpunk's own cars have.  One distance for
+    # the whole car (the record has one unmountOffsetPosition); the donor's when that is enough.
+    def side_width(name, pos, g):
+        side = SIDE_OF[name]
+        if not len(pts):
+            return 0.95
+        near = pts[(np.abs(pts[:, 1] - pos[1]) < EXIT_WINDOW) & (pts[:, 2] > g + 0.10) & (pts[:, 2] < pos[2] + 0.8)]
+        out = near[near[:, 0] * side > 0]
+        return float((out[:, 0] * side).max()) if len(out) else 0.95
+
+    widths = {name: side_width(name, pos, g) for name, b, pos, g, roof in seats}
+    widest = max(widths.values(), default=0.95)
+    fit.exit_needed = widest + EXIT_CLEARANCE
+    if UNMOUNT_DEFAULT[0] - widest < MIN_CLEARANCE:
+        x = float(np.ceil(fit.exit_needed / 0.05 - 1e-6) * 0.05)
+        fit.unmount = (round(x, 2), UNMOUNT_DEFAULT[1], UNMOUNT_DEFAULT[2])
+    exit_x = fit.unmount[0] if fit.unmount else None
+
     for name, b, pos, g, roof in seats:
         x, y, z = pos
         info = {"position": tuple(pos), "lowered": 0.0, "roof": roof, "headroom": None}
@@ -183,8 +232,8 @@ def fit_seats(vehicle, conf, donor_template="sport2") -> SeatFit:
             deficit = (z + head + 0.01) - roof
             room = max(0.0, z - (g + SEAT_FLOOR))
             if deficit > 0:
-                lower = min(deficit, MAX_LOWER, room)
-                if deficit - lower > 0.005:
+                lower = min(deficit, max_lower, room)
+                if deficit - lower > 0.005 and name in usable:
                     fit.warnings.append(f"{name}: the head may still touch the roof by {100 * (deficit - lower):.0f} cm "
                                         f"({template} seating); seats.lower moves the seat further down")
         lower += extra_lower
@@ -200,16 +249,15 @@ def fit_seats(vehicle, conf, donor_template="sport2") -> SeatFit:
             info["headroom"] = float(roof - pos[2])
         # ---- where the player stands after getting out on this seat's side.  The donor's spot
         # (1 m out, 0.5 m down from the seat bone) is kept when it is clear of the body and not
-        # under the road; otherwise it moves to just outside the body at road level.
+        # under the road; otherwise it moves out to the car's exit distance, at road level.
         side = SIDE_OF[name]
-        near = pts[(np.abs(pts[:, 1] - y) < 0.4) & (pts[:, 2] > g + 0.10) & (pts[:, 2] < pos[2] + 0.8)] if len(pts) else pts
-        out = near[near[:, 0] * side > 0] if len(near) else near
-        hw = float((out[:, 0] * side).max()) if len(out) else 0.95
+        hw = widths[name]
         default = np.array([pos[0] + side * 1.0, y, pos[2] - 0.5])
-        inside = default[0] * side < hw + 0.2
+        inside = default[0] * side < (exit_x if exit_x else hw + 0.2)
         buried = default[2] < g - 0.08
         if inside or buried:
-            info["exit"] = (side * max(hw + EXIT_MARGIN, abs(default[0])), float(y), float(g - 0.02))
+            lateral = max(exit_x or (hw + EXIT_CLEARANCE), abs(default[0])) if inside else abs(default[0])
+            info["exit"] = (side * lateral, float(y), float(g - 0.02))
             info["exit_moved"] = ("out of the body" if inside else "") + (" and " if inside and buried else "") + \
                                  ("up to the road" if buried else "")
         else:
@@ -217,5 +265,8 @@ def fit_seats(vehicle, conf, donor_template="sport2") -> SeatFit:
             info["exit_moved"] = ""
         info["body_halfwidth"] = hw
         fit.seats[name] = info
+    if fit.unmount:
+        fit.notes = [f"exit {fit.unmount[0]:.2f} m from the centre line (the body is {max(widths.values()):.2f} m "
+                     f"out beside the seats; Cyberpunk cars use {UNMOUNT_DEFAULT[0]:.2f})"]
     vehicle.warnings.extend(fit.warnings)
     return fit

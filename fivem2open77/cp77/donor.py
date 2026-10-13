@@ -36,6 +36,8 @@ DONORS = {
         "sound": "v_car_porsche_911_turbo",
         # how the player sits (vehDataPackage.seatingTemplateOverride, see model/seats.py)
         "seating": "sport2",
+        # the seats its OccupantSlots (Vehicle2SeatSetDefault) let a player sit in
+        "occupant_seats": ("seat_front_left", "seat_front_right"),
         # additive animation delta axes (bone-local, positive angle opens) decoded from the donor .anims
         "open_axes": {
             "door_front_left_a": (0, 0, -1),
