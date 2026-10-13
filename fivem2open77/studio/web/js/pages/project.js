@@ -87,10 +87,11 @@ const NEON_SIDES = [["left", "left sill"], ["right", "right sill"], ["front", "u
 
 function neonTab(root, ctx) {
   const d = ctx.inspect.neon || { palette: [], kit: null, enabled: false };
-  const conf = Object.assign({ enabled: true, sides: ["left", "right", "front", "back"], colors: "gta", default: "off",
-    brightness: 1, height_offset: 0 }, ctx.profile.neon || {});
+  const conf = Object.assign({ enabled: true, sides: ["left", "right", "front", "back"], colors: "gta", default: "on",
+    brightness: 1, spread: 2, tubes: false, height_offset: 0 }, ctx.profile.neon || {});
   const kit = d.kit;
   const enabled = h("input", { type: "checkbox", checked: conf.enabled });
+  const showTubes = h("input", { type: "checkbox", checked: !!conf.tubes });
   const sides = NEON_SIDES.map(([k, label]) => [k, h("input", { type: "checkbox", checked: conf.sides.includes(k) }), label]);
   // colours: the GTA palette (all by default) plus custom "#rrggbb" ones
   const custom = (Array.isArray(conf.colors) ? conf.colors : []).filter((c) => typeof c === "object" || /^#?[0-9a-f]{6}$/i.test(c));
@@ -112,11 +113,14 @@ function neonTab(root, ctx) {
   const def = h("select", h("option", { value: "on" }, "on (the first colour)"),
     h("option", { value: "off" }, "off (kit fitted, lights off)"),
     (kit ? kit.colors : d.palette).map((c) => h("option", { value: c.key }, c.label)));
-  def.value = conf.default || "off";
+  def.value = conf.default || "on";
   const bright = h("input", { type: "range", min: 0.2, max: 4, step: 0.1, value: conf.brightness });
   const brightO = h("output", Number(conf.brightness).toFixed(1) + "x");
   bright.oninput = () => { brightO.textContent = Number(bright.value).toFixed(1) + "x"; };
-  const lift = h("input", { type: "range", min: -10, max: 10, step: 0.5, value: Math.round((conf.height_offset || 0) * 1000) / 10 });
+  const spread = h("input", { type: "range", min: 0.5, max: 5, step: 0.1, value: conf.spread });
+  const spreadO = h("output", Number(conf.spread).toFixed(1) + " m");
+  spread.oninput = () => { spreadO.textContent = Number(spread.value).toFixed(1) + " m"; };
+  const lift =h("input", { type: "range", min: -10, max: 10, step: 0.5, value: Math.round((conf.height_offset || 0) * 1000) / 10 });
   const liftO = h("output", `${lift.value} cm`);
   lift.oninput = () => { liftO.textContent = `${lift.value} cm`; };
 
@@ -136,7 +140,8 @@ function neonTab(root, ctx) {
       enabled: enabled.checked,
       sides: sides.filter(([, box]) => box.checked).map(([k]) => k),
       colors: allGta ? "gta" : [...keys, ...extra],
-      default: def.value, brightness: Number(bright.value), height_offset: Number(lift.value) / 100,
+      default: def.value, brightness: Number(bright.value), spread: Number(spread.value),
+      tubes: showTubes.checked, height_offset: Number(lift.value) / 100,
     } };
     await ctx.patch(patch);
     ctx.version = Date.now();
@@ -148,28 +153,37 @@ function neonTab(root, ctx) {
   const tubes = kit ? Object.entries(kit.tubes) : [];
   root.append(h("div.split",
     h("div",
-      h("div.card", h("div.row", h("h3", { style: { margin: 0 } }, "How it mounts"), h("div.grow"), h("span.muted", "from below / below front / left / below rear")),
+      h("div.card", h("div.row", h("h3", { style: { margin: 0 } }, "How it mounts"), h("div.grow"),
+        h("span.muted", "from below / below front / left / below rear / the road at night, from above and the front corner")),
         kit ? previewBar : null,
         kit ? img : h("div.empty", conf.enabled ? "No tube fits under this car (see below)." : "The kit is turned off."),
         h("div.help", { style: { marginTop: "8px" } },
-          "Tubes hang just under the body: from the model's neon bones when it has them (",
+          "The tubes run just under the body: from the model's neon bones when it has them (",
           d.gta_bones.length ? d.gta_bones.join(", ") : "this one has none", "), otherwise measured from the underside. ",
-          "In game each tube also throws its colour on the road.")),
+          kit && kit.tubes_visible ? "They show in game as glowing strips. "
+            : "Like GTA V's neon they are not drawn in game (the dots mark where the light comes from): only the glow shows. ",
+          "Soft lights under the sills wash the road around the car in the kit's colour, the way a real LED kit's light scatters on the road; ",
+          "they shine with the car's lights (the car hub switches them on with a colour) ",
+          "(bottom pictures: about how far and how bright; the game's exposure, the surface and the weather decide the rest). ",
+          "Brightness and Glow reach change it.")),
       kit ? h("div.card", h("h3", "Tubes"), h("table.tbl", h("thead", h("tr", h("th", "side"), h("th", "length"), h("th", "height"), h("th", "placed by"))),
         h("tbody", tubes.map(([side, t]) => h("tr", h("td", side), h("td", `${t.length.toFixed(2)} m`),
           h("td", `${(t.clearance * 100).toFixed(0)} cm off the road`),
           h("td.muted", t.source))))),
-        h("div.help", `${kit.lights} lights under the car.`)) : null,
+        h("div.help", `${kit.lights} soft lights under the car` + (kit.light_height
+          ? `, ${Math.round(kit.light_height[0] * 100)}-${Math.round(kit.light_height[1] * 100)} cm off the road.` : "."))) : null,
       (kit && kit.warnings.length) || (!kit && (ctx.inspect.warnings || []).some((w) => w.startsWith("neon"))) ?
         h("div.card", h("h3", h("span.warn", "⚠"), "Notes"),
           [...(kit ? kit.warnings : ctx.inspect.warnings.filter((w) => w.startsWith("neon")))].map((w) => h("div.help", w))) : null),
     h("div",
       h("div.card", h("h3", "Neon kit"),
         h("label.row", enabled, h("span", "fit a GTA V style neon kit (every colour is an appearance of the car)")),
+        h("label.row", showTubes, h("span", "show the LED tubes as glowing strips (off: light only, like GTA V)")),
         h("div.help", "Sides"), h("div.row.wrap", sides.map(([, box, label]) => h("label.choice", box, h("span", label)))),
         h("div.form", { style: { marginTop: "10px" } },
           h("label.field", "When the car spawns", def),
           h("label.field", "Brightness", h("div.row", bright, brightO)),
+          h("label.field", "Glow reach", h("div.row", spread, spreadO)),
           h("label.field", "Height (+ up, - down)", h("div.row", lift, liftO))),
         h("div.row", { style: { marginTop: "12px" } }, h("div.grow"), h("button.btn.primary", { onclick: save }, "Save"))),
       h("div.card", h("h3", "Colours"),
@@ -182,7 +196,8 @@ function neonTab(root, ctx) {
         h("div.kv", h("code", "/neon"), h("span", "list the colours"),
           h("code", "/neon hot pink"), h("span", "switch (driver only; everyone sees it)"),
           h("code", "/neon next"), h("span", "cycle"), h("code", "/neon off"), h("span", "lights off")),
-        h("div.help", { style: { marginTop: "8px" } }, "Needs the car hub 1.1 or newer on the server (installed with the car).")))));
+        h("div.help", { style: { marginTop: "8px" } }, "Needs the car hub 1.1 or newer on the server (installed with the car); ",
+          "1.1.3 or newer switches the car's lights on with the neon.")))));
 }
 
 // ------------------------------------------------------------------ build helper

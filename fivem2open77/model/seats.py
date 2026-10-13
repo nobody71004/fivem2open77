@@ -163,9 +163,9 @@ def fit_seats(vehicle, conf, donor_template="sport2", occupant_seats=None) -> Se
     """Choose the posture, lower seats that would put the head through the roof, and place the
     standing spot each seat's exit is checked at.  Moves vehicle.bones[seat] / vehicle.seats.
 
-    Posture "auto" keeps the donor's; when the head does not fit under a closed roof even with the seat
-    lowered as far as these rules allow, the hypercars' lower, reclined sport1 posture is used instead.
-    An explicit template always wins.  Only the seats the donor
+    Posture "auto" keeps the donor's unless a GTA *low* car (LAYOUT_LOW...) cannot fit the head under
+    its roof even with the seat lowered; then the hypercars' lower, reclined sport1 posture is used.
+    Other cars keep the upright posture and lower the seat a little more.  Only the seats the donor
     can seat a player in (occupant_seats) decide: a GTA rear bench behind a two-seat donor is never
     sat on."""
     conf = conf or {}
@@ -199,8 +199,11 @@ def fit_seats(vehicle, conf, donor_template="sport2", occupant_seats=None) -> Se
     else:
         template, why = donor_template, "the donor's"
         if donor_template != "sport1" and worst_deficit(TEMPLATES[donor_template][1], MAX_LOWER) > 0.005:
-            template = "sport1"
-            why = f"the head does not fit under the roof with the donor's posture even lowered ({layout})"
+            if low:
+                template = "sport1"
+                why = f"the head does not fit under this low roof with the donor's posture ({layout})"
+            else:
+                why = "the donor's, seats lowered for head room"
     fit = SeatFit(template, why)
     head = TEMPLATES[template][1]
     max_lower = MAX_LOWER if (template == "sport1" or low) else MAX_LOWER_UPRIGHT

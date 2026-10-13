@@ -18,6 +18,8 @@ import copy
 import hashlib
 import math
 
+import numpy as np
+
 from .handles import IdAllocator, empty_package, materialize, normalize
 from .wkjson import cname, depot, index_handles, value_of, world_transform
 
@@ -110,8 +112,9 @@ def neon_appearance_name(key: str) -> str:
 def build_app(vehicle, donor_app_doc, mesh_paths: dict, *, app_name: str = "default",
               base_entity_type: str | None = None, neon_meshes: dict | None = None) -> dict:
     """mesh_paths: IR part name -> depot path of its .mesh.
-    neon_meshes: colour key -> depot path of that colour's tube mesh; each colour becomes an
-    appearance ``neon_<key>`` = the default appearance + the tubes + their lights."""
+    Every colour of the car's neon kit becomes an appearance ``neon_<key>`` = the default
+    appearance + the kit's lights (+ the glowing tubes when the kit shows them: neon_meshes, colour
+    key -> depot path of that colour's tube mesh)."""
     tpl = _Templates(donor_app_doc)
     doc = copy.deepcopy(donor_app_doc)
     ids = IdAllocator(doc)
@@ -211,11 +214,16 @@ def build_app(vehicle, donor_app_doc, mesh_paths: dict, *, app_name: str = "defa
     pristine = copy.deepcopy(wrapper)
     wrappers.append(define(wrapper, app_name, comps))
     kit = getattr(vehicle, "neon", None)
-    if kit is not None and neon_meshes:
+    if kit is not None:
         for key, label, rgb in kit.colors:
-            if key not in neon_meshes:
-                continue
             nc = [ids.fresh_ids(copy.deepcopy(c)) for c in base_comps]
+            if not neon_meshes or key not in neon_meshes:      # light only, like GTA V's neon
+                for i, light in enumerate(kit.lights):
+                    nc.append(_neon_light(tpl, ids, vehicle, kit, light, i, rgb))
+                nc.append(visual_controller(nc))
+                w = ids.fresh_ids(copy.deepcopy(pristine))
+                wrappers.append(define(w, neon_appearance_name(key), nc))
+                continue
             tube = tpl.get("wipers_01", "entMeshComponent")
             ids.fresh_ids(tube)
             tube["name"] = cname("neon_01")
@@ -282,51 +290,94 @@ def _light_component(tpl, ids, vehicle, spec):
     return c
 
 
-# vehicleLightComponent-only properties: a neon light is a plain gameLightComponent, so the car's
-# light controller (headlights, brake lights, blinkers) never switches it -- the appearance does
+# vehicleLightComponent-only properties (a plain gameLightComponent has the rest)
 _VEHICLE_ONLY = ("allowSeparateEmissiveColor", "emissiveColor", "lightType", "highBeamPitchAngle",
                  "highBeamRadiusMultiplier", "highBeamConeMultiplier")
+# A neon light is one of the car's own lights, switched by the car's light controller with the
+# headlights.  In a vehicle the vehicle lights its lights: every light component in every
+# Cyberpunk vehicle -- the headlights, the Tyger Claws underglow, the AVs' lamps -- is off by
+# default (turnOnByDefault 0), and the first kits' free-standing "always on" lights were never seen
+# lit in game.  The headlight mode is also the one light state
+# Open77 keeps in step for every player (Open77.vehicles.setLights); the car hub turns it on when
+# a driver picks a neon colour or drives off in a car with one.
+NEON_LIGHT_TYPE = "Head"
+
+
+def _light_rotation(direction, along):
+    """Rotation (x, y, z, w) that turns a light's +Y (where Cyberpunk spot and spot-capsule lights
+    shine: the donor's headlights, the game's underglow) onto `direction` and its +X (a capsule's
+    axis) along the tube."""
+    from ..model.build import _rot_to_quat
+    y = np.asarray(direction, np.float64)
+    y = y / np.linalg.norm(y)
+    x = np.asarray(along, np.float64) - y * float(np.dot(along, y))
+    if np.linalg.norm(x) < 1e-6:
+        x = np.cross(y, [0.0, 0.0, 1.0]) if abs(y[2]) < 0.9 else np.cross(y, [1.0, 0.0, 0.0])
+    x = x / np.linalg.norm(x)
+    z = np.cross(x, y)
+    return _rot_to_quat(np.stack([x, y, z], 1))
 
 
 def _neon_light(tpl, ids, vehicle, kit, light, index, rgb):
-    """A point light under the car that throws the kit's colour on the road (always on)."""
+    """One of the soft lights that wash the road around the car in the kit's colour: a spot aimed
+    at the road with the headlights' linear falloff, no specular (like the game's fake bounce
+    lights), on the world light channel only (like the game's underglow).  A vehicle light lit
+    with the headlights (see NEON_LIGHT_TYPE; the layout: model/neon.py plan_lights)."""
+    from ..model.neon import CONE_INNER, CONE_OUTER, LIGHT_CHANNEL, light_lumen
     c = tpl.get("head_light_left_01", "vehicleLightComponent")
     ids.fresh_ids(c)
-    for k in _VEHICLE_ONLY:
-        c.pop(k, None)
-    c["$type"] = "gameLightComponent"
+    c["$type"] = "vehicleLightComponent"
+    c["lightType"] = NEON_LIGHT_TYPE
+    c["highBeamPitchAngle"] = 0          # high beams leave it as it is
+    c["highBeamRadiusMultiplier"] = 1
+    c["highBeamConeMultiplier"] = 1
+    c["allowSeparateEmissiveColor"] = 0
     name = f"neon_light_{light.side}_{index}"
     c["name"] = cname(name)
     c["id"] = cruid(vehicle.name, "light", name)
-    c["type"] = "LT_Point"
+    c["type"] = "LT_Spot"
+    c["spotCapsule"] = 0
+    c["innerAngle"] = CONE_INNER
+    c["outerAngle"] = CONE_OUTER
     c["unit"] = "LU_Lumen"
-    c["attenuation"] = "LA_InverseSquare"
-    c["intensity"] = round(160.0 * kit.brightness, 2)
-    c["radius"] = 2.4
+    c["intensity"] = light_lumen(kit, light, rgb)
     c["EV"] = 0
-    c["sourceRadius"] = 0.05
-    c["innerAngle"] = 30
-    c["outerAngle"] = 120
+    c["attenuation"] = "LA_Linear"
+    c["clampAttenuation"] = 0
+    c["radius"] = round(float(light.radius), 3)
+    c["sourceRadius"] = round(float(light.source_radius), 3)
+    c["softness"] = 2
+    c["directional"] = 0
+    c["sceneDiffuse"] = 1
+    c["sceneSpecularScale"] = 0          # no mirrored streaks on wet roads: a glow, not a line
+    c["roughnessBias"] = 0
+    c["scaleEnvProbes"] = 0
+    c["lightChannel"] = LIGHT_CHANNEL
     c["color"] = {"$type": "Color", "Alpha": 255, "Blue": int(rgb[2]), "Green": int(rgb[1]), "Red": int(rgb[0])}
+    c["temperature"] = -1
     c["iesProfile"] = {"DepotPath": {"$type": "ResourcePath", "$storage": "uint64", "$value": "0"}, "Flags": "Soft"}
     c["enableLocalShadows"] = 0
     c["enableContactShadows"] = 0
     c["contactShadows"] = "CSR_None"
-    c["turnOnByDefault"] = 1
+    c["turnOnByDefault"] = 0              # the car lights it, like every vehicle light
     c["isEnabled"] = 1
+    c["onStrength"] = 1
     c["emissiveOnly"] = 0
     c["isDestructible"] = 0
     c["colliderName"] = cname("None")
     c["colliderTag"] = cname("None")
     c["meshBrokenAppearance"] = cname("None")
-    c["autoHideDistance"] = 60
+    c["autoHideDistance"] = 40          # the game's own: 15 m; other players' kits should show further off
     c["useInParticles"] = 1
+    c["useInTransparents"] = 0
     c["scaleVolFog"] = 0
     c["useInFog"] = 0
-    # body_01 hangs from vehicle_slots Base: light positions are in that frame
+    # body_01 hangs from vehicle_slots Base: positions and directions are in that frame
     frame = vehicle.part_frames.get("body_01")
-    t = frame[0] if frame is not None else (0.0, 0.0, 0.0)
-    x, y, z = (float(light.position[i]) - float(t[i]) for i in range(3))
-    c["localTransform"] = world_transform((x, y, z))
+    t = np.asarray(frame[0], np.float64) if frame is not None else np.zeros(3)
+    r = np.asarray(frame[1], np.float64) if frame is not None else np.eye(3)
+    p = (np.asarray(light.position, np.float64) - t) @ r
+    q = _light_rotation(np.asarray(light.direction, np.float64) @ r, np.asarray(light.along, np.float64) @ r)
+    c["localTransform"] = world_transform(tuple(float(v) for v in p), q)
     c["parentTransform"] = _binding(ids, "body_01", None)
     return c

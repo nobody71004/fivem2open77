@@ -65,9 +65,7 @@ def build_ir(src, prof: dict, log=print):
                                      DONORS[donor].get("occupant_seats"))
     neon_conf = prof.get("neon") or {}
     if neon_conf.get("enabled", True):
-        kit = neon_mod.plan_neon(v, v.markers, neon_conf)
-        if kit is not None and neon_mod.add_neon_part(v, kit) is not None:
-            v.neon = kit
+        neon_mod.fit_kit(v, v.markers, neon_conf)
     return v
 
 
@@ -282,8 +280,11 @@ class Converter:
             for note in sf.notes:
                 log(f"[{name}] getting out: {note}")
         if v.neon is not None:
+            hs = sorted({round(100 * l.height) for l in v.neon.lights})
+            up = f"{hs[0]}-{hs[-1]}" if len(hs) > 1 else f"{hs[0]}"
             log(f"[{name}] neon kit: {', '.join(f'{t.side} {t.length:.2f} m' for t in v.neon.tubes)}; "
-                f"{len(v.neon.colors)} colours, starts {v.neon.default}")
+                f"{len(v.neon.colors)} colours, starts {v.neon.default}; {len(v.neon.lights)} soft lights "
+                f"{up} cm up wash the road {v.neon.spread:.1f} m around the car")
         save(ent_mod.build_ent(v, self.cache.load(prof["ent"]), paths, name, donor_bbox), jpath(paths["ent"]))
         save(build_phys(v, self.cache.load(prof["phys"])), jpath(paths["phys"]))
         name_key = f"{MOD_ROOT}_{name}_name"

@@ -19,8 +19,9 @@
 -- Neon kits: every converted car resource announces itself ("f2o77:car": record, appearance, neon
 -- colours) when it starts and when this hub starts ("f2o77:hubReady").  /neon <colour> switches
 -- the driver's car to that colour's appearance with Open77.vehicles.setAppearance, which every
--- player sees; /neon off goes back to the car's own appearance.
-local HUB_VERSION = "1.1.2"
+-- player sees; /neon off goes back to the car's own appearance.  The kit shines with the car's
+-- lights: the hub switches them on with a colour and when a driver gets into a car whose neon is on.
+local HUB_VERSION = "1.1.3"
 local CHECK_MS = 5000
 local DEFAULTS = {
     restart_when_empty = true, empty_grace_seconds = 60, daily_restart_utc = "",
@@ -276,6 +277,35 @@ local function kitOf(record)
     end
 end
 
+-- A kit's lights are the car's own lights, lit with its headlights (and the headlight mode is the
+-- light state Open77 keeps in step for every player).  So picking a colour, or driving off in a car
+-- whose neon is on, switches the headlights on; and once the new appearance is in place on every
+-- client the light mode is sent again, so the car lights the new colour's lights.
+local RELIGHT_MS = 1500
+
+local function canLight()
+    return type(Open77.vehicles.getLights) == "function" and type(Open77.vehicles.setLights) == "function"
+end
+
+local function neonShowing(info, appearance)
+    for _, c in ipairs(info.neon.colors) do if c.appearance == appearance then return true end end
+    return false
+end
+
+local function lightsOn(vid)
+    if not canLight() then return end
+    if Open77.vehicles.getLights(vid) == "off" then Open77.vehicles.setLights(vid, "on") end
+end
+
+local function relight(vid)
+    if not canLight() then return end
+    CreateThread(function()
+        Wait(RELIGHT_MS)
+        local mode = Open77.vehicles.getLights(vid)
+        if mode and mode ~= "off" then Open77.vehicles.setLights(vid, mode) end
+    end)
+end
+
 local function neonCommand(source, args)
     if source == 0 then return log("/neon is for players sitting in a car") end
     local tell = function(text) Open77.chat.send(source, "[neon] " .. text) end
@@ -322,7 +352,10 @@ local function neonCommand(source, args)
     if not target then return tell(("No colour called '%s'. /neon lists them."):format(want)) end
     local ok, reason = Open77.vehicles.setAppearance(seat.vehicleId, target)
     if not ok then return tell("Could not switch: " .. tostring(reason)) end
-    tell(label == "off" and "Neon off." or ("Neon: " .. label .. "."))
+    if label == "off" then return tell("Neon off.") end
+    lightsOn(seat.vehicleId)
+    relight(seat.vehicleId)
+    tell("Neon: " .. label .. " (it shines with the car's lights).")
 end
 if not pcall(RegisterCommand, "neon", neonCommand, false) then log("/neon is taken; use /f2o77neon") end
 pcall(RegisterCommand, "f2o77neon", neonCommand, false)
@@ -369,6 +402,9 @@ AddEventHandler("onPlayerEnteredVehicle", function(playerId, vehicleId, seat)
     local info = car and cars[car.record]
     if not info then return end                      -- not a converted car
     exitLoop(id, vid, car)
+    if seat == "seat_front_left" and kitOf(car.record) and neonShowing(info, car.appearance) then
+        lightsOn(vid)                                -- the neon shines with the car's lights
+    end
     if seat == "seat_front_left" and kitOf(car.record) then
         tipped[id] = tipped[id] or {}
         if not tipped[id][car.record] then

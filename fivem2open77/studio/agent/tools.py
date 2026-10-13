@@ -335,7 +335,8 @@ def registry() -> dict:
              "grip, spring, drag: 0.25-4}}, sound.engine (auto|donor|name), paint.primary (auto|#rrggbb), "
              "chime {enabled, volume 0-1, range m}, neon {enabled, sides [left,right,front,back], colors ('gta' "
              "or a list of GTA colour names / '#rrggbb' / {name, color}), default ('on' = first colour, 'off', or a colour), brightness "
-             "0.2-4, height_offset -0.1..0.1 m}, seats {template auto|sport1|sport2|standard2|standard25|standard3, "
+             "0.2-4 (how strongly the tubes light the road), spread 0.5-5 m (how far the glow reaches, default 2), tubes (false = light only like GTA V, true = visible glowing LED strips), "
+             "height_offset -0.1..0.1 m}, seats {template auto|sport1|sport2|standard2|standard25|standard3, "
              "lower 0-0.2 m}. Returns what changed.",
              _obj({"patch": {"type": "object"}}, ["patch"]), "change", t_update_profile),
         Tool("build_car", "Build the car with WolvenKit (2-5 minutes) and check the output. Returns the build number, "

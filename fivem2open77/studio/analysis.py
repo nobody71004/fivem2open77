@@ -156,9 +156,10 @@ class Session:
         return png
 
     def neon_sheet(self, prof, color=None, size=(480, 300)) -> bytes:
-        """The kit from below and from the sides, the tubes in `color` (a kit colour key)."""
+        """The kit from below and from the sides, the tubes in `color` (a kit colour key), and the
+        road it lights at night (from above and from the front corner)."""
         import numpy as np
-        from ..render import neon_triangles
+        from ..render import glow_views, light_markers, neon_triangles
         k = self.key(prof)
         with self.lock:
             _, v = self.vehicle(prof)
@@ -170,6 +171,8 @@ class Session:
                 self.tris[(k, "noneon")] = _triangles(v, "material", skip_kinds=("neon",))
             body = self.tris[(k, "noneon")]
             tube = neon_triangles(v, c[2])
+            if not len(tube[0]):                 # light only (tubes hidden): where the light comes from
+                tube = light_markers(v, c[2])
         path = self.project.path("cache", f"neon-{k}-{c[0]}.png")
         if os.path.isfile(path):
             with open(path, "rb") as f:
@@ -177,7 +180,8 @@ class Session:
         tris = np.concatenate([body[0], tube[0]]) if len(tube[0]) else body[0]
         cols = np.concatenate([body[1], tube[1]]) if len(tube[0]) else body[1]
         ims = [render_view(tris, cols, vw, size) for vw in ("bottom", "under_3q", "left", "under_rear_3q")]
-        sheet = np.concatenate([np.concatenate(ims[:2], 1), np.concatenate(ims[2:], 1)], 0)
+        ims += glow_views(v, c[2], size, body=body)
+        sheet = np.concatenate([np.concatenate(ims[i:i + 2], 1) for i in range(0, len(ims), 2)], 0)
         png = png_bytes(sheet)
         with open(path, "wb") as f:
             f.write(png)
