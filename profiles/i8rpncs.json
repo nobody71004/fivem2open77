@@ -1,0 +1,7 @@
+{
+  "name": "i8rpncs",
+  "display_name": "BMW i8 Roadster",
+  "handling": {
+    "wheel_offset": {"front": 0.0, "back": 0.0}
+  }
+}

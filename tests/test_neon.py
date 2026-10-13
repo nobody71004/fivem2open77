@@ -142,6 +142,15 @@ def test_neon_profile_validation():
     assert normalize({"neon": {"enabled": False}})["neon"]["enabled"] is False
 
 
+def test_handling_wheel_offset_profile():
+    assert normalize({})["handling"]["wheel_offset"] is None
+    h = normalize({"handling": {"wheel_offset": {"front": 0, "back": -0.01}}})["handling"]
+    assert h["wheel_offset"] == {"front": 0.0, "back": -0.01}
+    with pytest.raises(ProfileError) as e:
+        normalize({"handling": {"wheel_offset": {"front": 0.5, "roof": 0}}})
+    assert "handling.wheel_offset" in str(e.value)
+
+
 # ----------------------------------------------------------------------------- .app / .ent
 def _donor_app():
     def comp(t, name, **kw):

@@ -60,7 +60,7 @@ DEFAULTS = {
     "parts": {"lids": "auto", "bone_roles": {}, "extras": {}},
     "lights": {},
     "handling": {
-        "drive": "auto", "gears": None, "mass": None, "steer": None,
+        "drive": "auto", "gears": None, "mass": None, "steer": None, "wheel_offset": None,
         "multipliers": {"torque": 1.0, "top_speed": 1.0, "brake": 1.0, "grip": 1.0, "spring": 1.0, "drag": 1.0},
     },
     "sound": {"engine": "auto"},
@@ -216,6 +216,14 @@ def normalize(p: dict, *, donors=None, sounds=None) -> dict:
     h["gears"] = int(g) if g is not None else None
     h["mass"] = _num(errors, "handling.mass", h["mass"], 500, 4000)
     h["steer"] = _num(errors, "handling.steer", h["steer"], 25, 70)
+    wo = h.get("wheel_offset")
+    if wo is not None:
+        if not isinstance(wo, dict) or set(wo) - {"front", "back"}:
+            errors.append('handling.wheel_offset: {"front": metres, "back": metres}')
+            h["wheel_offset"] = None
+        else:
+            h["wheel_offset"] = {k: _num(errors, f"handling.wheel_offset.{k}", v, -0.2, 0.2, allow_none=False)
+                                 for k, v in wo.items()}
     mult = h["multipliers"]
     if not isinstance(mult, dict):
         errors.append("handling.multipliers: a map")

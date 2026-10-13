@@ -120,6 +120,10 @@ def handling_profile(vehicle, prof, overrides=None) -> dict:
     fallback = wheels.get("front") or wheels.get("back") or {"tireRadius": 0.34, "rimRadius": 0.24, "tireWidth": 0.28}
     for axle in ("front", "back"):
         wheels.setdefault(axle, dict(fallback))
+    # the profile may set each axle's lateral wheel offset (metres); else the donor's value is used
+    for axle, off in (o.get("wheel_offset") or {}).items():
+        if axle in wheels:
+            wheels[axle]["offset"] = float(off)
     return {"mass": mass, "layout": layout, "torque": torque, "top_speed": top, "gears": n_gears,
             "brake": brake_f, "spring": spring_f, "grip": grip_f, "drag": drag_f, "steer": steer,
             "moi": tuple(moi), "com": com, "wheels": wheels}
@@ -213,7 +217,8 @@ def build_tweak(vehicle, prof, *, record: str, ent_path: str, appearance: str, n
         w = hp["wheels"].get(axle) or hp["wheels"].get("front" if axle == "back" else "back")
         y.record(f"{wheel_dims}_{axle}", {"$type": "VehicleWheelDimensionsPreset",
                                           "rimRadius": _f(w["rimRadius"]), "tireRadius": _f(w["tireRadius"]),
-                                          "tireWidth": _f(w["tireWidth"]), "wheelOffset": _f(donor_offset[axle])})
+                                          "tireWidth": _f(w["tireWidth"]),
+                                          "wheelOffset": _f(w.get("offset", donor_offset[axle]))})
 
     # drivetrain layout
     roles = {
