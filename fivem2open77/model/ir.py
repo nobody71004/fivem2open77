@@ -58,7 +58,9 @@ class Part:
 @dataclass
 class Material:
     key: str
-    kind: str          # paint, textured, glass, glass_tinted, lights, emissive, chrome, tire, decal, cutout, shadow
+    # paint, paint_detail (decal over paint), textured, glass, glass_opaque, glass_cutout, lightcover,
+    # lights, emissive, tire, decal, plate
+    kind: str
     diffuse: str | None = None
     normal: str | None = None
     spec: str | None = None
@@ -70,6 +72,8 @@ class Material:
     metalness: float = 0.0
     emissive_ev: float = 0.0
     gta_shader: str = ""
+    livery: str | None = None    # paint: DiffuseSampler2, the livery GTA lays over the paint (2nd UV set)
+    tint: tuple | None = None    # glass: transmitted colour (0..1) worked out from the GTA texture
 
 
 @dataclass
@@ -136,7 +140,15 @@ class Vehicle:
             return
 
         def ren(n):
-            return mapping.get(n, n) if isinstance(n, str) else n
+            if not isinstance(n, str):
+                return n
+            if n in mapping:
+                return mapping[n]
+            if "_lights_" in n:                       # lamps carried by a renamed lid/door
+                host, side = n.split("_lights_", 1)
+                if host in mapping:
+                    return f"{mapping[host]}_lights_{side}"
+            return n
 
         self.parts = {ren(k): p for k, p in self.parts.items()}
         for p in self.parts.values():

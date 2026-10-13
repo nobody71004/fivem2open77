@@ -21,11 +21,17 @@ import numpy as np
 from ..gta.drawable import quat_to_mat3
 from ..gta.frag import load_yft
 from ..gta.texture import load_ytd
+from ..imaging import texture_rgba
 from .colors import gta_color
 from .ir import (LOD_MASKS, Bone, LightSpec, Material, Part, SubMesh, Vehicle,
                  WheelAxle)
+from . import kit
+from .overlays import add_paint_overlays
 
 MAX_VERTS = 65000  # Cyberpunk submeshes use 16-bit indices
+LAMP_REACH = 0.45     # metres: lamp-shader geometry this close to a light bone belongs to that light
+OPAQUE_GLASS = 0.98   # GTA glass texels at least this opaque are solid (frit, pillars, black bands)
+CUTOUT_OFFSET = 0.0006  # metres: the alpha-tested copy of a glass triangle sits this far outside it
 
 WHEEL_BONES = {"wheel_lf": "fl", "wheel_rf": "fr", "wheel_lr": "bl", "wheel_rr": "br"}
 DOOR_BONES = {"door_dside_f": "fl", "door_pside_f": "fr", "door_dside_r": "bl", "door_pside_r": "br"}
@@ -54,6 +60,15 @@ def _light_kind(name: str):
         if rx.match(name):
             return kind
     return None
+
+
+def _srgb_to_linear(c):
+    c = np.asarray(c, np.float64)
+    return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+
+
+def _loose(name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", name.lower())
 
 
 def _sanitize(name: str) -> str:
@@ -221,9 +236,23 @@ class VehicleBuilder:
         self.log = log
         self.warnings = []
         self.role_overrides = {}
-        ex = self.opt.get("extras") or set()
-        self.extras_on = {k.lower() for k, on in ex.items() if on} if isinstance(ex, dict) else {e.lower() for e in ex}
+        ex = self.opt.get("extras") or {}
+        # the profile's explicit choices; the model's own defaults (vehicles.meta requiredExtras,
+        # FLAG_EXTRAS_ALL, what the car needs) fill in the rest once the skeleton is known (_plan_parts)
+        self.extras_profile = ({str(k).lower(): bool(on) for k, on in ex.items()} if isinstance(ex, dict)
+                               else {str(e).lower(): True for e in ex})
+        self.extras_on = {k for k, on in self.extras_profile.items() if on}
+        self.extras_default = {}
+        mods = self.opt.get("mods") or {}
+        self.mods_profile = ({str(k).lower(): bool(on) for k, on in mods.items()} if isinstance(mods, dict)
+                             else {str(m).lower(): True for m in mods})
+        self.mods_on = set()
+        self.mod_info = {}
+        self.mod_frags = {}
+        self.hidden_bones = set()
+        self.parts_plan = {}
         self.bone_verts = defaultdict(int)     # GTA bone -> high-LOD vertices it carries
+        self.light_host = {}                   # light bone index -> part of the door/lid it hangs from
 
     # ------------------------------------------------------------------ loading
     def load(self):
@@ -240,6 +269,13 @@ class VehicleBuilder:
                     self.textures.setdefault(k, v)
             except Exception as e:  # noqa: BLE001
                 self.warnings.append(f"cannot read texture dictionary {path}: {e}")
+        # loose name index: packs misspell texture names in their shaders ("lightsBW" for the
+        # dictionary's "lights BW"); a match that ignores case, spaces and punctuation is used when it
+        # is unambiguous
+        self.tex_loose = {}
+        for k in self.textures:
+            lk = _loose(k)
+            self.tex_loose[lk] = None if lk in self.tex_loose and self.tex_loose[lk] != k else k
         self.shaders = self.drawable.shader_group.shaders
         self.world = [self.sk.world_matrix(i) for i in range(len(self.sk.bones))]
         self.names = [b.name.lower() for b in self.sk.bones]
@@ -279,15 +315,127 @@ class VehicleBuilder:
             return ("steering", "sw")
         return (v, n)
 
+    def _plan_parts(self):
+        """Decide which GTA extras and mod-kit parts the car wears (see model/kit.py): the profile's
+        choice, else GTA's rules (requiredExtras, FLAG_EXTRAS_ALL), else on when the part adds a
+        substantial piece the model lacks.  Sets extras_on, mods_on and the stock bones fitted
+        parts hide."""
+        info = self.src.info
+        required = set((info.extra.get("requiredExtras") or []) if info else [])
+        every = bool(info and "FLAG_EXTRAS_ALL" in (info.flags or []))
+        self.extras_required = required
+        extras = [n for n in self.names if re.match(r"^extra_", n)]
+        by_extra, base, verts_of = defaultdict(list), [], defaultdict(int)
+        for b, p in kit.drawable_points(self.drawable):
+            if b >= len(self.names):
+                continue
+            verts_of[b] += len(p)
+            if self.names[b] in SKIP_BONES:
+                continue
+            ex = self._extra_of(b)
+            (by_extra[ex] if ex else base).append(p)
+        mods = {}
+        for mod, path in getattr(self.src, "mods", None) or []:
+            e = mods.setdefault(mod.model.lower(), {"mod": mod, "path": path, "slots": set()})
+            e["slots"].add(mod.kind)
+        self.mod_info = mods
+
+        def candidates(use_profile):
+            out = []
+            for n in extras:
+                forced = self.extras_profile.get(n) if use_profile else None
+                why = None
+                if forced is None and (every or n in required):
+                    forced, why = True, ("vehicles.meta requires it" if n in required else "FLAG_EXTRAS_ALL")
+                p = np.concatenate(by_extra[n]) if by_extra.get(n) else np.zeros((0, 3))
+                out.append({"id": ("extra", n), "keys": keys[("extra", n)], "forced": forced, "why": why,
+                            "verts": len(p), "replaced": 0})
+            for name, e in mods.items():
+                if name not in self.mod_frags:
+                    continue
+                off = {self.names.index(t) for t in e["mod"].turn_off if t in self.names}
+                hidden = [j for j in range(len(self.names)) if any(a in off for a in self._ancestors(j))]
+                out.append({"id": ("mod", name), "keys": keys[("mod", name)],
+                            "forced": self.mods_profile.get(name) if use_profile else None,
+                            "verts": e["verts"], "replaced": sum(verts_of.get(j, 0) for j in hidden),
+                            "slots": set(e["slots"])})
+            return out
+
+        keys = {}
+        for n in extras:
+            keys[("extra", n)] = kit.voxel_keys(np.concatenate(by_extra[n])) if by_extra.get(n) else np.zeros(0, np.int64)
+        for name, e in mods.items():
+            try:
+                frag = load_yft(e["path"], name=e["path"])
+            except Exception as ex:  # noqa: BLE001
+                self.warnings.append(f"mod kit part {name}: cannot read {e['path']}: {ex}")
+                continue
+            if frag.drawable is None:
+                continue
+            self.mod_frags[name] = frag
+            pts = [q for _, q in kit.drawable_points(frag.drawable)]
+            e["verts"] = int(sum(len(q) for q in pts))
+            keys[("mod", name)] = kit.voxel_keys(np.concatenate(pts)) if pts else np.zeros(0, np.int64)
+        base_keys = kit.voxel_keys(np.concatenate(base)) if base else np.zeros(0, np.int64)
+        auto = kit.plan(base_keys, candidates(False)) if (extras or self.mod_frags) else {}
+        actual = kit.plan(base_keys, candidates(True)) if (extras or self.mod_frags) else {}
+        self.parts_plan = {"auto": auto, "actual": actual}
+        self.extras_default = {n: auto.get(("extra", n), (False, ""))[0] for n in extras}
+        self.extras_on = {n for (k, n), (on, _) in actual.items() if k == "extra" and on}
+        self.extras_on |= {n for n, on in self.extras_profile.items() if on and n not in self.extras_default}
+        self.mods_on = {n for (k, n), (on, _) in actual.items() if k == "mod" and on}
+        self.hidden_bones = set()
+        for name in self.mods_on:
+            for t in mods[name]["mod"].turn_off:
+                if t in self.names:
+                    self.hidden_bones.add(self.names.index(t))
+        unknown = sorted(set(self.mods_profile) - set(mods))
+        if unknown:
+            self.warnings.append("profile: mod kit parts not in this car's kit: " + ", ".join(unknown))
+
+    def _extra_of(self, i):
+        """The extra_N bone that bone i belongs to (itself or an ancestor), or None."""
+        for a in self._ancestors(i):
+            if re.match(r"^extra_", self.names[a]):
+                return self.names[a]
+        return None
+
     def bone_role(self, i, overrides=True):
         """-> (role, key) for skeleton bone index i."""
         name = self.names[i]
+        if self.hidden_bones and any(a in self.hidden_bones for a in self._ancestors(i)):
+            return ("skip", name)                     # a fitted mod-kit part replaces it
+        # an extra that is off hides everything below it, wherever it hangs (extras below the boot
+        # used to show whatever the profile said)
+        ex = self._extra_of(i)
+        if ex and ex not in self.extras_on:
+            ov = None
+            if overrides:
+                for a in self._ancestors(i):
+                    ov = self._override_role(self.names[a])
+                    if ov or self.names[a] == ex:
+                        break
+            return ov or ("extra", ex)
+        lk = _light_kind(name)
         for a in self._ancestors(i):
             n = self.names[a]
             if overrides:
                 ov = self._override_role(n)
                 if ov:
                     return ov
+            if lk and lk not in ("interior", "neon") and a != i:
+                # a lamp on a door or a lid (tail lights split between body and boot, mirror
+                # indicators): still a light, carried by that door/lid
+                host = None
+                if n in DOOR_BONES:
+                    host = f"door_{DOOR_BONES[n]}_a"
+                elif n == "bonnet":
+                    host = "hood_a"
+                elif n.startswith("boot"):
+                    host = "trunk_a"
+                if host:
+                    self.light_host[i] = host
+                    return ("light", lk)
             if n in WINDOW_BONES:
                 return ("window", WINDOW_BONES[n])
             if n in DOOR_BONES:
@@ -304,11 +452,10 @@ class VehicleBuilder:
                 return ("hub", HUB_BONES[n])
         if name in SKIP_BONES:
             return ("skip", name)
-        if re.match(r"^extra_", name):
-            return ("extra", name)
-        lk = _light_kind(name)
         if lk:
             return ("light", lk)
+        if ex:
+            return ("body", name)                     # an extra that is on is part of the body
         if name == "windscreen":
             return ("glass", "front")
         if name == "windscreen_r":
@@ -370,23 +517,34 @@ class VehicleBuilder:
     def material_for(self, shader_index: int, bone_role) -> str:
         sh = self.shaders[shader_index] if shader_index < len(self.shaders) else None
         sname = sh.name if sh else "unknown"
-        role = bone_role[0]
-        light = role == "light" and bone_role[1] not in ("interior", "neon")
-        if sname.startswith("vehicle_lightsemissive") and light:
-            key = "lights"
+        role, rkey = bone_role[0], bone_role[1]
+        lamp = role == "light" and rkey not in ("interior", "neon")
+        diffuse_params = ("DiffuseSampler", "TextureSampler", "DiffuseTex")
+        if sname.startswith("vehicle_lightsemissive") and lamp:
+            # the lamp itself: Cyberpunk's vehicle light material (lit per zone by the car's light
+            # components) wearing the GTA lamp texture, one material per GTA shader (they used to
+            # share one untextured material, so every lamp showed the game's stock LED pattern)
+            key = f"lights{shader_index:03d}"
             if key not in self.vehicle.materials:
-                self.vehicle.materials[key] = Material(key=key, kind="lights", gta_shader=sname)
+                self.vehicle.materials[key] = Material(
+                    key=key, kind="lights", gta_shader=sname, diffuse=self._tex(sh, *diffuse_params),
+                    normal=self._tex(sh, "BumpSampler", "BumpTex", "NormalSampler"))
             return key
-        key = f"m{shader_index:03d}"
+        if "vehglass" in sname and role == "light":
+            key = f"m{shader_index:03d}_lc"                  # a lamp's lens
+            if key not in self.vehicle.materials:
+                self.vehicle.materials[key] = Material(key=key, kind="lightcover", gta_shader=sname, alpha="blend",
+                                                       diffuse=self._tex(sh, *diffuse_params))
+            return key
+        glow = sname.startswith("vehicle_lightsemissive") and role == "light"     # interior lights
+        key = f"m{shader_index:03d}" + ("_e" if glow else "")
         if key in self.vehicle.materials:
             return key
-        diffuse = self._tex(sh, "DiffuseSampler", "TextureSampler", "DiffuseTex", "DiffuseSampler2")
+        diffuse = self._tex(sh, *diffuse_params)
         normal = self._tex(sh, "BumpSampler", "BumpTex", "NormalSampler")
         spec = self._tex(sh, "SpecSampler", "SpecTex")
         mat = Material(key=key, kind="textured", diffuse=diffuse, normal=normal, spec=spec, gta_shader=sname)
-        dc = sh.vec("matDiffuseColor") if sh else None
-        if dc:
-            mat.color = (float(dc[0]), float(dc[1]), float(dc[2]), 1.0)
+        mat.color = self._tint(sh.vec("matDiffuseColor") if sh else None)
         if sname.startswith("vehicle_paint"):
             num = re.search(r"vehicle_paint(\d)", sname)
             n = int(num.group(1)) if num else 1
@@ -394,24 +552,63 @@ class VehicleBuilder:
             mat.paint_slot = 2 if n == 2 else 1
             mat.roughness = 0.15
             mat.metalness = 0.5
+            # GTA multiplies the paint by DiffuseSampler (baked logos, trims, shading) and lays the
+            # livery (DiffuseSampler2, second UV set) over it; both become decal overlays
+            mat.livery = self._tex(sh, "DiffuseSampler2")
         elif "vehglass" in sname:
             mat.kind = "glass"
             mat.alpha = "blend"
         elif sname.startswith("vehicle_tire"):
             mat.kind = "tire"
             mat.roughness = 0.8
-        elif sname.startswith(("vehicle_dash_emissive", "vehicle_emissive")) or sname.startswith("vehicle_lightsemissive"):
+        elif sname.startswith(("vehicle_dash_emissive", "vehicle_emissive")) or glow:
             mat.kind = "emissive"
             mat.emissive_ev = 2.0 if sname.startswith("vehicle_dash") else 0.0
+        elif sname.startswith("vehicle_lightsemissive"):
+            # a lamp texture on a bone that is no light (and no lamp bone near it): GTA never lights
+            # it either, so it is plain textured geometry rather than a patch that always glows
+            mat.kind = "textured"
         elif sname.startswith(("vehicle_badges", "vehicle_decal", "vehicle_cutout", "vehicle_detail", "vehicle_blurredrotor")):
             mat.kind = "decal"
             mat.alpha = "test"
         elif sname.startswith("vehicle_licenseplate"):
             mat.kind = "plate"
-        if mat.diffuse is None and mat.kind not in ("paint", "glass", "lights"):
+        if mat.diffuse is None and mat.kind not in ("paint", "glass", "lights", "plate"):
             self.missing_textures.add(self._texname(sh, "DiffuseSampler") or f"(none on {sname})")
         self.vehicle.materials[key] = mat
         return key
+
+    def _slot_colors(self):
+        """The car's six GTA colour slots (sRGB 0..1): primary, secondary, pearl, wheels, interior
+        trim, dashboard -- carvariations' first colour combination, with sensible stand-ins."""
+        if getattr(self, "_slots", None) is not None:
+            return self._slots
+        var = self.src.variation
+        idx = var.colors[0] if var and var.colors else []
+        stand_in = [(0.2, 0.2, 0.2), None, None, (0.55, 0.55, 0.57), (0.12, 0.12, 0.12), (0.12, 0.12, 0.12)]
+        out = []
+        for k in range(6):
+            c = gta_color(idx[k]) if k < len(idx) else None
+            out.append(c or stand_in[k] or out[0])
+        self._slots = out
+        return out
+
+    def _tint(self, dc):
+        """GTA's matDiffuseColor -> the RGB multiplier (linear) of a textured material.  Vehicle models
+        mark colour slots with it: (2, n, n) tints the texture with the car's colour n (1 primary,
+        2 secondary, 3 pearl, 4 wheels, 5 interior trim, 6 dashboard: what GTA's rim, trim and
+        dashboard colours change).  A plain 0..1 colour is used as it is; anything else (some tools
+        write odd values) is ignored rather than blowing the texture out."""
+        if not dc:
+            return (1.0, 1.0, 1.0, 1.0)
+        x, y, z = (float(c) for c in dc[:3])
+        n = int(round(y))
+        if abs(x - 2.0) < 1e-3 and abs(y - n) < 1e-3 and abs(z - y) < 1e-3 and 1 <= n <= 6:
+            r, g, b = (float(c) for c in _srgb_to_linear(self._slot_colors()[n - 1]))
+            return (r, g, b, 1.0)
+        if all(0.0 <= c <= 1.0 for c in (x, y, z)):
+            return (x, y, z, 1.0)
+        return (1.0, 1.0, 1.0, 1.0)
 
     def _texname(self, sh, *params):
         if sh is None:
@@ -423,11 +620,96 @@ class VehicleBuilder:
         if not n:
             return None
         n = n.lower()
+        if n not in self.textures:
+            alt = self.tex_loose.get(_loose(n))
+            if alt:
+                self.renamed_textures[n] = alt
+                n = alt
         if n in self.textures and self.textures[n].supported:
             self.used_textures.add(n)
             return n
-        self.missing_textures.add(n)
+        if n in self.textures:
+            self.unsupported_textures.add(f"{n} ({self.textures[n].format_name})")
+        else:
+            self.missing_textures.add(n)
         return None
+
+    # ------------------------------------------------------- texture looks
+    def _image(self, name, max_size=256):
+        """Decoded texture (h, w, 4) float 0..1 (a mip no bigger than max_size), cached; None when
+        the texture is missing or its format cannot be decoded here."""
+        key = (name, max_size)
+        if key not in self._images:
+            tex = self.textures.get(name)
+            rgba = texture_rgba(tex, max_size) if tex is not None else None
+            self._images[key] = rgba.astype(np.float32) / 255.0 if rgba is not None else None
+        return self._images[key]
+
+    @staticmethod
+    def _sample(img, uv):
+        """Nearest texel of img at uv (N, 2), wrapping like the GPU (D3D: v grows downwards)."""
+        h, w = img.shape[:2]
+        x = np.clip((np.mod(uv[:, 0], 1.0) * w).astype(np.int64), 0, w - 1)
+        y = np.clip((np.mod(uv[:, 1], 1.0) * h).astype(np.int64), 0, h - 1)
+        return img[y, x]
+
+    def _glass_split(self, mat_key, base, sel):
+        """Split glass triangles by what their texture says (GTA glass textures are often palettes:
+        a clear quadrant, a tinted one, an opaque black one for the frit and the B-pillars).
+        -> [(material key, triangles)].  Opaque texels become solid textured geometry; clear ones
+        glass tinted the way GTA blends them (1 - a * (1 - rgb)); a triangle that crosses from
+        clear to opaque keeps the glass and gets an alpha-tested copy for its opaque part."""
+        m = self.vehicle.materials[mat_key]
+        if m.kind not in ("glass", "lightcover") or not m.diffuse:
+            return [(mat_key, sel, 0.0)]
+        img = self._image(m.diffuse)
+        uv0 = base.get("uv0")
+        if img is None or uv0 is None or not len(sel):
+            return [(mat_key, sel, 0.0)]
+        uv = np.asarray(uv0, np.float64)[sel]                                   # (T, 3, 2)
+        bary = np.array([[1 / 3, 1 / 3, 1 / 3], [1, 0, 0], [0, 1, 0], [0, 0, 1],
+                         [0.6, 0.2, 0.2], [0.2, 0.6, 0.2], [0.2, 0.2, 0.6],
+                         [0.5, 0.5, 0], [0, 0.5, 0.5], [0.5, 0, 0.5]])
+        pts = np.einsum("sk,tkd->tsd", bary, uv)                                 # (T, S, 2)
+        px = self._sample(img, pts.reshape(-1, 2)).reshape(len(sel), len(bary), 4)
+        a = px[..., 3]
+        opaque = a >= OPAQUE_GLASS
+        all_opaque = opaque.all(1)
+        any_opaque = opaque.any(1)
+        clear = ~opaque
+        # tint of the clear samples of each triangle
+        w = clear.astype(np.float64)
+        tint_px = 1.0 - px[..., 3:4] * (1.0 - px[..., :3])
+        tint = (tint_px * w[..., None]).sum(1) / np.maximum(w.sum(1, keepdims=True), 1e-6)
+        out = []
+        if all_opaque.any():
+            ok = f"{mat_key}_o"
+            if ok not in self.vehicle.materials:
+                self.vehicle.materials[ok] = Material(key=ok, kind="glass_opaque", diffuse=m.diffuse,
+                                                      gta_shader=m.gta_shader, roughness=0.12)
+            out.append((ok, sel[all_opaque], 0.0))
+        rest = ~all_opaque
+        if rest.any():
+            # one glass material per tint (eighths per channel: stable keys whatever the geometry)
+            q = np.round(np.clip(tint[rest], 0, 1) * 8.0).astype(np.int64)
+            keys, inv = np.unique(q, axis=0, return_inverse=True)
+            idx = np.flatnonzero(rest)
+            for ci, k in enumerate(keys):
+                members = idx[inv.reshape(-1) == ci]
+                gk = f"{mat_key}_t{k[0]}{k[1]}{k[2]}"
+                if gk not in self.vehicle.materials:
+                    self.vehicle.materials[gk] = Material(key=gk, kind=m.kind, diffuse=m.diffuse, alpha="blend",
+                                                          gta_shader=m.gta_shader,
+                                                          tint=tuple(float(c) / 8.0 for c in k))
+                out.append((gk, sel[members], 0.0))
+            mixed = rest & any_opaque
+            if mixed.any():
+                ck = f"{mat_key}_c"
+                if ck not in self.vehicle.materials:
+                    self.vehicle.materials[ck] = Material(key=ck, kind="glass_cutout", diffuse=m.diffuse,
+                                                          gta_shader=m.gta_shader, alpha="test", roughness=0.12)
+                out.append((ck, sel[mixed], CUTOUT_OFFSET))
+        return out
 
     # -------------------------------------------------------------- geometry
     def _part_for(self, role, key, lod):
@@ -461,7 +743,8 @@ class VehicleBuilder:
         self.vehicle.parts = {}
         self.acc = defaultdict(dict)          # part -> {(material, lod): _Accum}
         self.part_bones = defaultdict(set)
-        self.light_pieces = []                # (lod, bone index, material, attrs, tri)
+        self.light_pieces = []                # (lod, bone index, shader, attrs, tri, host part or None)
+        self.loose_lamps = []                 # lamp-shader pieces on other bones (see collect_lights)
         self.wheel_pieces = defaultdict(list)  # wheel key -> [(lod, bone index, shader, attrs, tri)]
         self.wheel_dx = {}                     # wheel key -> tyre centre minus bone, across the car (m)
         lods = self.opt.get("lods", ("high", "med", "low", "vlow"))
@@ -471,11 +754,43 @@ class VehicleBuilder:
             for model in models:
                 for g in model.geometries:
                     self._take_geometry(g, model, LOD_MASKS[lod_name])
+        self._collect_mods(lods)
 
-    def _take_geometry(self, g, model, lod):
+    def _collect_mods(self, lods):
+        """Geometry of the fitted mod-kit parts: authored in the car's model space, moved by the
+        car bone each is fitted on; their shaders and embedded textures join the car's."""
+        self.shaders = list(self.shaders)
+        for name in sorted(self.mods_on):
+            frag = self.mod_frags.get(name)
+            if frag is None or frag.drawable is None:
+                continue
+            d = frag.drawable
+            mod = self.mod_info[name]["mod"]
+            bone = self.names.index(mod.bone) if mod.bone in self.names else 0
+            offset = len(self.shaders)
+            self.shaders.extend(d.shader_group.shaders)
+            for k, t in d.shader_group.textures.items():
+                if k not in self.textures:
+                    self.textures[k] = t
+                    lk = _loose(k)
+                    self.tex_loose[lk] = None if lk in self.tex_loose and self.tex_loose[lk] != k else k
+            sk = d.skeleton
+            world = [sk.world_matrix(i) for i in range(len(sk.bones))] if sk else []
+            for lod_name, models in d.models.items():
+                if lod_name not in lods:
+                    continue
+                for model in models:
+                    for g in model.geometries:
+                        self._take_geometry(g, model, LOD_MASKS[lod_name], shader_offset=offset, bone=bone, world=world)
+
+    def _take_geometry(self, g, model, lod, shader_offset=0, bone=None, world=None):
+        """One geometry of the car's drawable -- or of a mod-kit part (bone: the car bone it is fitted
+        on, world: the part's own skeleton for its rigid models, shader_offset: where its shaders
+        start in self.shaders)."""
         attrs = g.attrs
         if "position" not in attrs or g.triangle_count == 0:
             return
+        world = world if world is not None else self.world
         pos = attrs["position"].astype(np.float64)
         n = len(pos)
         tri = g.indices.reshape(-1, 3)
@@ -489,22 +804,26 @@ class VehicleBuilder:
             vbone = np.full(n, model.bone_index, dtype=np.int64)
             model_space = False
         # vertices of rigid (non-skinned) models are expressed in their bone's frame
-        if not model_space:
-            w = self.world[model.bone_index]
-            pos = pos @ w[:3, :3].T + w[:3, 3]
+        rot = None
+        if not model_space and model.bone_index < len(world):
+            w = world[model.bone_index]
+            rot = w[:3, :3]
+            pos = pos @ rot.T + w[:3, 3]
+        if bone is not None:
+            vbone = np.full(n, bone, dtype=np.int64)   # a kit part moves with the bone it is fitted on
         nrm = attrs.get("normal")
         if nrm is None:
             nrm = np.zeros((n, 3))
             nrm[:, 2] = 1
         else:
             nrm = nrm.astype(np.float64)
-            if not model_space:
-                nrm = nrm @ self.world[model.bone_index][:3, :3].T
+            if rot is not None:
+                nrm = nrm @ rot.T
         tan = attrs.get("tangent")
         if tan is not None and tan.shape[1] >= 4:
             tan = tan.astype(np.float64)
-            if not model_space:
-                tan = np.concatenate([tan[:, :3] @ self.world[model.bone_index][:3, :3].T, tan[:, 3:4]], 1)
+            if rot is not None:
+                tan = np.concatenate([tan[:, :3] @ rot.T, tan[:, 3:4]], 1)
         else:
             tan = None
         uv0 = attrs.get("texcoord0")
@@ -517,26 +836,42 @@ class VehicleBuilder:
             base["tangent"] = compute_tangents(pos, _normalize(nrm), uv0.astype(np.float64), tri)
         # triangle owner = bone of its first vertex (vehicle parts are rigid, triangles don't straddle)
         tbone = vbone[tri[:, 0]]
+        sidx = shader_offset + g.shader_index
+        sh = self.shaders[sidx] if sidx < len(self.shaders) else None
+        lamp_shader = bool(sh and sh.name.startswith("vehicle_lightsemissive"))
         for b in np.unique(tbone):
+            if b < 0 or b >= len(self.names):
+                continue
             sel = tri[tbone == b]
             role = self.bone_role(int(b))
             if role[0] == "light":
                 if lod == 1:
                     self.bone_verts[self.names[int(b)]] += int(len(np.unique(sel)))
-                self.light_pieces.append((lod, int(b), g.shader_index, base, sel))
+                self.light_pieces.append((lod, int(b), sidx, base, sel, self.light_host.get(int(b))))
                 continue
-            if lod == 1:
+            if lod == 1 and bone is None:
                 self.bone_verts[self.names[int(b)]] += int(len(np.unique(sel)))
             part = self._part_for(role[0], role[1], lod)
             if part is None:
                 if role[0] == "wheel":
                     # wheel geometry modelled in the main drawable (no physics-child wheel drawable)
-                    self.wheel_pieces[role[1]].append((lod, int(b), g.shader_index, base, sel))
+                    self.wheel_pieces[role[1]].append((lod, int(b), sidx, base, sel))
                 continue
-            mat = self.material_for(g.shader_index, role)
+            if lamp_shader and role[0] in ("body", "lid", "door"):
+                # lamp geometry on a bone that is no light: the nearest light bone may claim it
+                # (see collect_lights)
+                self.loose_lamps.append((lod, int(b), sidx, base, sel, part, role))
+                continue
+            mat = self.material_for(sidx, role)
             self.part_bones[part].add(self.names[int(b)])
-            acc = self.acc[part].setdefault((mat, lod), _Accum(mat, lod))
-            acc.add(base, sel)
+            self._add_tris(part, mat, lod, base, sel)
+
+    def _add_tris(self, part, mat, lod, base, sel):
+        """Queue triangles of one material for a part (glass is split by its texture first)."""
+        for key, s, off in self._glass_split(mat, base, sel):
+            attrs = _offset(base, off) if off else base
+            acc = self.acc[part].setdefault((key, lod), _Accum(key, lod))
+            acc.add(attrs, s)
 
     # ------------------------------------------------------------- wheels
     def collect_wheels(self):
@@ -673,31 +1008,79 @@ class VehicleBuilder:
 
     # -------------------------------------------------------------- lights
     def collect_lights(self):
-        """Route vehicle_lightsemissive geometry into per-corner light meshes with zone colours."""
+        """Route lamp geometry into light meshes with zone colours and lay out the light components.
+
+        A lamp is geometry on a GTA light bone (headlight_l, brakelight_r, ...), and also lamp-shader
+        geometry the modeller left on a body/door/lid bone near one: models whose lights live on
+        misc_* bones (the light bones only mark where they are) still get working lights, and the
+        rest of that geometry stays plain textured surface.  Lamps on a door or a lid get a light mesh
+        of their own bound to that door/lid, so they move with it.  A light bone with no lamp geometry
+        at all still casts its light (head and brake lights)."""
         zone_of = {"head": 0, "tail": 0, "indicator": 1, "extra": 2, "reverse": 2, "brake": 3}
         type_of = {"head": "Head", "extra": "Head", "tail": "Head", "reverse": "Reverse", "brake": "Brake"}
+        # light bones that can claim lamp geometry: real lamps where lamps are -- at the ends of the
+        # car or at its sides (mirror indicators) -- not one a modeller left at the origin
+        wpos = np.array([self.cp_world(i)[:3, 3] for i in self.wheel_bones.values()])
+        reach_y, reach_x = 0.5 * float(np.abs(wpos[:, 1]).max()), 0.85 * float(np.abs(wpos[:, 0]).mean())
+
+        def outside(i):
+            p = self.cp_world(i)[:3, 3]
+            return abs(p[1]) >= reach_y or abs(p[0]) >= reach_x
+
+        lamps = [i for i, n in enumerate(self.names)
+                 if _light_kind(n) not in (None, "neon") and not n.endswith("_hi")
+                 and self.bone_role(i)[0] == "light" and outside(i)]
+        self.lamps_claimed = defaultdict(int)
+        if self.loose_lamps:
+            lp = np.array([self.world[i][:3, 3] for i in lamps]) if lamps else np.zeros((0, 3))
+            for lod, b, shader_index, base, sel, part, role in self.loose_lamps:
+                rest = sel
+                cabin = re.match(r"^(interior|dash|dials|gauge|seat|steer|console|roof_in)", self.names[b])
+                if len(lp) and not cabin:
+                    c = np.asarray(base["position"], np.float64)[sel].mean(1)
+                    d = np.linalg.norm(c[:, None, :] - lp[None, :, :], axis=2)
+                    near = d.argmin(1)
+                    claimed = d[np.arange(len(c)), near] <= LAMP_REACH
+                    host = None
+                    if role[0] == "door":
+                        host = f"door_{role[1]}_a"
+                    elif role[0] == "lid":
+                        host = "hood_a" if role[1] == "bonnet" else "trunk_a"
+                    for li in np.unique(near[claimed]):
+                        s = sel[claimed & (near == li)]
+                        if self.bone_role(lamps[li])[1] == "interior":
+                            # next to a plate/door light: glows a little, where it is
+                            mat = self.material_for(shader_index, ("light", "interior"))
+                            self._add_tris(part, mat, lod, base, s)
+                        else:
+                            self.light_pieces.append((lod, lamps[li], shader_index, base, s, host))
+                        if lod == 1:
+                            self.lamps_claimed[self.names[b]] += int(len(s))
+                    rest = sel[~claimed]
+                if len(rest):
+                    mat = self.material_for(shader_index, role)
+                    self.part_bones[part].add(self.names[b])
+                    self._add_tris(part, mat, lod, base, rest)
+        lamps = [i for i in lamps if self.bone_role(i)[1] != "interior"]
+        geo = defaultdict(lambda: [np.zeros(3), 0])              # light group -> (sum, count) Root space
         used = defaultdict(set)
-        for lod, b, shader_index, base, sel in self.light_pieces:
+        for lod, b, shader_index, base, sel, host in self.light_pieces:
             kind = self.bone_role(b)[1]
             name = self.names[b]
             if kind in ("interior", "neon"):
-                part, zone = None, None
-            else:
-                pos = self.cp_world(b)[:3, 3]
-                end = "f" if pos[1] >= 0 else "b"
-                side = "l" if pos[0] < -0.05 else ("r" if pos[0] > 0.05 else "m")
-                if side == "m":
-                    side = "l" if end == "f" else "m"
-                part = f"lights_{end}{side}"
-                zone = zone_of.get(kind, 0)
-                if name.endswith("_hi"):
-                    continue  # duplicate high-detail indicator meshes
-            if part is None:
-                # emissive interior details: keep them as plain textured interior geometry
-                mat = self.material_for(shader_index, ("interior", name))
-                acc = self.acc["interior_01"].setdefault((mat, lod), _Accum(mat, lod))
-                acc.add(base, sel)
+                # emissive interior details: keep them as interior geometry that glows a little
+                mat = self.material_for(shader_index, ("light", "interior"))
+                self._add_tris("interior_01", mat, lod, base, sel)
                 continue
+            if name.endswith("_hi"):
+                continue  # duplicate high-detail indicator meshes
+            pos = self.cp_world(b)[:3, 3]
+            end = "f" if pos[1] >= 0 else "b"
+            side = "l" if pos[0] < -0.05 else ("r" if pos[0] > 0.05 else "m")
+            if side == "m":
+                side = "l" if end == "f" else "m"
+            part = f"lights_{end}{side}" if host is None else f"{host}_lights_{side}"
+            zone = zone_of.get(kind, 0)
             mat = self.material_for(shader_index, ("light", kind))
             n = len(base["position"])
             color = np.zeros((n, 4))
@@ -705,32 +1088,95 @@ class VehicleBuilder:
             color[:, 3] = 1.0
             attrs = dict(base)
             attrs["color"] = color
-            acc = self.acc[part].setdefault((mat, lod), _Accum(mat, lod))
-            acc.add(attrs, sel)
+            self._add_tris(part, mat, lod, attrs, sel)
             self.part_bones[part].add(name)
             if lod == 1:
                 used[(part, zone, kind)].add(b)
+                pts = np.asarray(base["position"], np.float64)[np.unique(sel)] + self.shift[:3, 3]
+                g = geo[(part, zone, kind)]
+                g[0] = g[0] + pts.sum(0)
+                g[1] += len(pts)
         # light components
         self.vehicle.lights = []
-        for (part, zone, kind), bones in sorted(used.items()):
+
+        def spec(part, zone, kind, bones):
             pts = np.array([self.cp_world(b)[:3, 3] for b in bones])
             p = pts.mean(0)
+            gs, gn = geo.get((part, zone, kind), (None, 0))
+            if gn and np.linalg.norm(gs / gn - p) > 0.3:
+                p = gs / gn                       # the bone is far from its lamp: light from the lamp
             if kind == "indicator":
                 ltype = "LeftBlinker" if p[0] < 0 else "RightBlinker"
             else:
                 ltype = type_of.get(kind, "Head")
             facing_back = p[1] < 0
-            self.vehicle.lights.append(LightSpec(
-                name=f"{kind}_{part[7:]}_{zone}", light_type=ltype, zone=zone, part=part,
-                position=(float(p[0]), float(p[1]), float(p[2] - self.base_z)),
-                direction=(0.0, -1.0 if facing_back else 1.0, -0.05),
-                color=(255, 40, 40) if kind in ("brake", "tail") else ((255, 150, 30) if kind == "indicator" else (255, 250, 220))))
+            f = self.part_frame(part)
+            local = (p - f[:3, 3]) @ f[:3, :3]
+            d = np.array([0.0, -1.0 if facing_back else 1.0, -0.05]) @ f[:3, :3]
+            tag = part[7:] if part.startswith("lights_") else part.replace("_lights_", "_")
+            return LightSpec(
+                name=f"{kind}_{tag}_{zone}", light_type=ltype, zone=zone, part=part,
+                position=tuple(float(x) for x in local), direction=tuple(float(x) for x in d),
+                color=(255, 40, 40) if kind in ("brake", "tail") else ((255, 150, 30) if kind == "indicator" else (255, 250, 220)))
+
+        for (part, zone, kind), bones in sorted(used.items()):
+            self.vehicle.lights.append(spec(part, zone, kind, bones))
+        # light bones with no lamp geometry anywhere near them still light the road (head) and show
+        # the brake light; they hang from the body
+        lit = {b for bones in used.values() for b in bones}
+        for b in lamps:
+            kind = self.bone_role(b)[1]
+            if b in lit or kind not in ("head", "brake"):
+                continue
+            pos = self.cp_world(b)[:3, 3]
+            if any(l.light_type == type_of[kind] and np.linalg.norm(
+                    np.array(self._light_root(l)) - pos) < 0.3 for l in self.vehicle.lights):
+                continue
+            self.vehicle.lights.append(spec("body_01", zone_of[kind], kind, [b]))
+            self.vehicle.lights[-1].name = f"{kind}_{self.names[b]}_bone"
+        self._synth_lights()
+
+    def _synth_lights(self):
+        """A car with no headlights or brake lights at all (concept-car models without light bones)
+        gets them at the corners of its nose and tail, so it can still be driven at night."""
+        have = {l.light_type for l in self.vehicle.lights}
+        want = [k for k, t in (("head", "Head"), ("brake", "Brake")) if t not in have]
+        self.synth_lights = []
+        if not want or "body_01" not in self.acc:
+            return
+        pts = [sub["position"] for (m, lod), acc in self.acc["body_01"].items() if lod == 1 for sub, _ in acc.chunks]
+        if not pts:
+            return
+        p = np.concatenate(pts).astype(np.float64) + self.shift[:3, 3]           # Root space
+        y0, y1 = float(p[:, 1].min()), float(p[:, 1].max())
+        half_w = 0.5 * float(p[:, 0].max() - p[:, 0].min())
+        for kind in want:
+            front = kind == "head"
+            end = p[p[:, 1] > y1 - 0.35] if front else p[p[:, 1] < y0 + 0.35]
+            if not len(end):
+                continue
+            z = float(end[:, 2].min() + 0.55 * (end[:, 2].max() - end[:, 2].min()))
+            y = (y1 - 0.12) if front else (y0 + 0.12)
+            for side, sx in (("fl" if front else "bl", -1.0), ("fr" if front else "br", 1.0)):
+                pos = (sx * 0.62 * half_w, y, z - self.base_z)
+                self.vehicle.lights.append(LightSpec(
+                    name=f"{kind}_{side}_synth", light_type="Head" if front else "Brake", zone=0 if front else 3,
+                    part="body_01", position=pos, direction=(0.0, 1.0 if front else -1.0, -0.05),
+                    color=(255, 250, 220) if front else (255, 40, 40)))
+                self.synth_lights.append(f"{kind}_{side}_synth")
+
+    def _light_root(self, light):
+        """Root-space position of a LightSpec (positions are in the frame of the part it hangs from)."""
+        f = self.part_frame(light.part)
+        return tuple((np.asarray(light.position, np.float64) @ f[:3, :3].T) + f[:3, 3])
 
     # ----------------------------------------------------------- assemble
     def part_frame(self, part):
         """Root-space 4x4 frame of the rig bone a part is bound to."""
         base = np.eye(4)
         base[2, 3] = self.base_z
+        if "_lights_" in part:
+            return self.part_frame(part.split("_lights_")[0])   # lamps carried by a door or a lid
         if part in ("window_f", "window_b"):
             return base
         if part.startswith("door_") or (part.startswith("window_") and part.endswith("_a")):
@@ -910,9 +1356,14 @@ class VehicleBuilder:
                      for i, n in enumerate(self.names) if n in ("neon_l", "neon_r", "neon_f", "neon_b")}
         self.used_textures = set()
         self.missing_textures = set()
+        self.unsupported_textures = set()
+        self.renamed_textures = {}
+        self._images = {}
+        self._plan_parts()
         self.collect()
         self.collect_wheels()
         self.collect_lights()
+        self.overlay_report = add_paint_overlays(self)
         self.assemble()
         self.rig_overrides()
         # paint colours from carvariations
@@ -922,7 +1373,12 @@ class VehicleBuilder:
             prim = gta_color(c[0]) if len(c) > 0 else None
             sec = gta_color(c[1]) if len(c) > 1 else None
             v.paint_colors = (prim or (0.2, 0.2, 0.2), sec or prim or (0.2, 0.2, 0.2))
-        v.textures = {k: self.textures[k] for k in sorted(self.used_textures)}
+        # materials no submesh uses (a glass split into tints, a shader whose geometry went to an extra
+        # that is off) and the textures only they needed are left out
+        used_mats = {sm.material for p in v.parts.values() for sm in p.submeshes}
+        v.materials = {k: m for k, m in v.materials.items() if k in used_mats}
+        refs = {t for m in v.materials.values() for t in (m.diffuse, m.normal) if t}
+        v.textures = {k: self.textures[k] for k in sorted(self.used_textures) if k in refs}
         allp = np.concatenate([s.positions for p in v.parts.values() if p.kind in ("body",)
                                for s in p.submeshes if s.lod == 1]) if "body_01" in v.parts else np.zeros((1, 3))
         v.bbox = (tuple(allp.min(0) + [0, 0, self.base_z]), tuple(allp.max(0) + [0, 0, self.base_z]))
@@ -931,7 +1387,40 @@ class VehicleBuilder:
                                  f"(GTA shared textures such as vehshare); flat colours are used instead: "
                                  + ", ".join(sorted(self.missing_textures)[:12])
                                  + (" ..." if len(self.missing_textures) > 12 else ""))
+        if self.unsupported_textures:
+            self.warnings.append(f"{len(self.unsupported_textures)} textures are in a format the converter cannot "
+                                 "read yet; flat colours are used instead: " + ", ".join(sorted(self.unsupported_textures)[:8]))
+        if getattr(self, "synth_lights", None):
+            self.warnings.append("the model has no head/brake light bones; lights were added at the corners of "
+                                 "its nose and tail: " + ", ".join(self.synth_lights))
+        if self.renamed_textures:
+            self.warnings.append("textures matched by a near name (the model's shader misspells them): " + ", ".join(
+                f"{a} -> {b}" for a, b in sorted(self.renamed_textures.items())[:8]))
+        extras = []
+        actual = self.parts_plan.get("actual", {})
+        auto = self.parts_plan.get("auto", {})
+        for n in sorted(self.extras_default):
+            i = self.names.index(n)
+            verts = sum(c for b, c in self.bone_verts.items() if self._extra_of(self.names.index(b)) == n)
+            extras.append({"name": n, "on": n in self.extras_on, "default": self.extras_default[n],
+                           "required": n in self.extras_required, "verts": int(verts),
+                           "why": actual.get(("extra", n), (None, ""))[1],
+                           "parent": self.names[self.sk.bones[i].parent] if self.sk.bones[i].parent >= 0 else None})
+        mods_detail = []
+        for name, e in sorted(self.mod_info.items()):
+            mods_detail.append({"model": name, "slots": sorted(e["slots"]), "bone": e["mod"].bone,
+                                "label": e["mod"].label, "verts": int(e.get("verts", 0)),
+                                "replaces": list(e["mod"].turn_off), "on": name in self.mods_on,
+                                "default": bool(auto.get(("mod", name), (False, ""))[0]),
+                                "why": actual.get(("mod", name), (None, "cannot be read"))[1]})
+        fitted = [m for m in mods_detail if m["on"]]
+        if fitted:
+            self.warnings.append("mod kit parts fitted (the car needs them to be whole): " + ", ".join(
+                f"{m['model']} ({'/'.join(x.replace('VMT_', '').lower() for x in m['slots'])})" for m in fitted[:8]))
         v.warnings = self.src.warnings + self.warnings
+        lamps = defaultdict(int)
+        for l in v.lights:
+            lamps[l.light_type] += 1
         v.report = {
             "gta_bones": len(self.sk.bones),
             "parts": {k: {"verts": p.vertex_count(1), "submeshes": len([s for s in p.submeshes if s.lod == 1]),
@@ -939,8 +1428,16 @@ class VehicleBuilder:
                       for k, p in v.parts.items()},
             "textures_used": len(v.textures),
             "textures_missing": sorted(self.missing_textures),
+            "textures_unsupported": sorted(self.unsupported_textures),
+            "textures_renamed": dict(sorted(self.renamed_textures.items())),
             "bones": self.bone_table(),
-            "extras": sorted(n for n in self.names if re.match(r"^extra_", n)),
+            "extras": sorted(self.extras_default),
+            "extras_detail": extras,
+            "mods": mods_detail,
+            "lamps_claimed": dict(sorted(self.lamps_claimed.items())),
+            "lights_added": list(getattr(self, "synth_lights", [])),
+            "light_types": dict(sorted(lamps.items())),
+            "overlays": self.overlay_report,
         }
         return v
 
@@ -970,7 +1467,17 @@ def _normalize(a):
     return a / np.maximum(n, 1e-12)
 
 
+def _offset(attrs: dict, dist: float) -> dict:
+    """attrs with the positions pushed `dist` metres out along the normals (an overlay that sits
+    just above the surface it decorates, like the game's own decal meshes)."""
+    out = dict(attrs)
+    out["position"] = np.asarray(attrs["position"], np.float64) + _normalize(np.asarray(attrs["normal"], np.float64)) * dist
+    return out
+
+
 def _kind_of(part: str) -> str:
+    if "_lights_" in part:
+        return "lights"
     if part.startswith("door_"):
         return "door"
     if part.startswith("window_") and part.endswith("_a"):
@@ -996,6 +1503,8 @@ def _kind_of(part: str) -> str:
 
 def _binding_of(part: str):
     """(slot, parent component) for a part."""
+    if "_lights_" in part:
+        return _binding_of(part.split("_lights_")[0])        # rides on the door/lid's rig bone
     if part.startswith("door_"):
         return SIDE_SLOT("door", part), None
     if part.startswith("window_") and part.endswith("_a"):

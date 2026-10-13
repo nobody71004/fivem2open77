@@ -106,6 +106,12 @@ def _compact_inspect(d, detail="summary"):
                                                                      "nInitialDriveGears") if k in d["handling"]["gta"]}
                        if d["handling"].get("gta") else None}
     out["extras"] = d.get("extras")
+    if d.get("extras_detail"):
+        out["extras_detail"] = d["extras_detail"]
+    if d.get("mods"):
+        out["mods"] = d["mods"]
+    if d.get("looks"):
+        out["looks"] = d["looks"]
     out["lights"] = [{k: l[k] for k in ("name", "type", "part")} for l in d["lights"]]
     bones = d.get("bones", [])
     if detail == "bones":
@@ -202,7 +208,7 @@ def t_logs(ctx, args):
 
 
 # ----------------------------------------------------------------------------- change
-_NAME_MAPS = (("parts", "bone_roles"), ("parts", "extras"), ("lights",))
+_NAME_MAPS = (("parts", "bone_roles"), ("parts", "extras"), ("parts", "mods"), ("lights",))
 
 
 def _expand(patch: dict, path=()) -> dict:
@@ -330,7 +336,7 @@ def registry() -> dict:
              "display_name (the car's name players see, e.g. 'BMW i8 Roadster'), name (record id: lower-case a-z0-9_, "
              "leave it unless asked), model (ONLY to choose one model file of a multi-car resource; never a car name), "
              "donor, parts.lids (auto|semantic|swap), parts.bone_roles {gta_bone: role} with "
-             f"roles {roles}, parts.extras {{extra_n: true}}, lights {{name: {{color '#rrggbb', type, skip}}}}, "
+             f"roles {roles}, parts.extras {{extra_n: true}}, parts.mods {{kit_part_model: true}}, lights {{name: {{color '#rrggbb', type, skip}}}}, "
              "handling {drive auto|rwd|fwd|awd, gears 4-7, mass kg, steer deg, multipliers {torque, top_speed, brake, "
              "grip, spring, drag: 0.25-4}}, sound.engine (auto|donor|name), paint.primary (auto|#rrggbb), "
              "chime {enabled, volume 0-1, range m}, neon {enabled, sides [left,right,front,back], colors ('gta' "

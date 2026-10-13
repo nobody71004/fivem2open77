@@ -90,6 +90,21 @@ def _vec(el, tag, default=(0.0, 0.0, 0.0)):
         return default
 
 
+def extra_bones(text: str) -> list:
+    """vehicles.meta extra names (EXTRA_1 EXTRA_10 ...) -> the skeleton's bone names (extra_1,
+    extra_ten: GTA spells the tenth one out)."""
+    out = []
+    for tok in re.split(r"[\s,]+", text or ""):
+        m = re.match(r"^extra_?(\d+)$", tok.strip(), re.I)
+        if not m:
+            continue
+        n = int(m.group(1))
+        name = "extra_ten" if n == 10 else f"extra_{n}"
+        if name not in out:
+            out.append(name)
+    return out
+
+
 @dataclass
 class VehicleModelInfo:
     model_name: str
@@ -133,6 +148,7 @@ def parse_vehicles_meta(data, name="vehicles.meta"):
                 "audioNameHash": _txt(item, "audioNameHash", ""),
                 "plateType": _txt(item, "plateType", ""),
                 "dashboardType": _txt(item, "dashboardType", ""),
+                "requiredExtras": extra_bones(_txt(item, "requiredExtras", "") or ""),
             },
         ))
     rel = root.find("txdRelationships")
@@ -200,6 +216,19 @@ class Variation:
     colors: list        # list of [primary, secondary, pearl, wheel, interior, dashboard] index lists
     lights_id: int | None
     plate_probabilities: dict
+    kits: list = field(default_factory=list)      # mod kit names (carcols Kits) the car uses
+
+
+@dataclass
+class VisibleMod:
+    """One visible part of a carcols mod kit: a .yft authored in the car's model space, fitted
+    on `bone` (it moves with it) and hiding the car's `turn_off` bones while fitted."""
+    model: str
+    kind: str                 # VMT_BONNET, VMT_SPOILER, ...
+    bone: str
+    label: str = ""
+    turn_off: list = field(default_factory=list)
+    linked: list = field(default_factory=list)
 
 
 def parse_carvariations(data, name="carvariations.meta"):
@@ -220,7 +249,12 @@ def parse_carvariations(data, name="carvariations.meta"):
                     except ValueError:
                         pass
         lid = _val(item, "lightSettings", None, cast=int)
-        out[model.lower()] = Variation(model_name=model, colors=colors, lights_id=lid, plate_probabilities={})
+        kits = []
+        k = item.find("kits")
+        if k is not None:
+            kits = [(x.text or "").strip() for x in k.findall("Item") if (x.text or "").strip()]
+        out[model.lower()] = Variation(model_name=model, colors=colors, lights_id=lid, plate_probabilities={},
+                                       kits=kits)
     return out
 
 
@@ -237,4 +271,27 @@ def parse_carcols(data, name="carcols.meta"):
         if hl is not None:
             col = _txt(hl, "color", None)
             lights[lid] = {"headlight_color": col}
-    return {"lights": lights}
+    kits = {}
+    kroot = root.find("Kits")
+    for kit in (kroot.findall("Item") if kroot is not None else []):
+        kname = (_txt(kit, "kitName", "") or "").strip()
+        if not kname:
+            continue
+        mods = []
+        vm = kit.find("visibleMods")
+        for it in (vm.findall("Item") if vm is not None else []):
+            model = (_txt(it, "modelName", "") or "").strip()
+            if not model or model.lower() == "dummy_mod_frag_model":
+                continue
+
+            def names(tag):
+                el = it.find(tag)
+                return [(x.text or "").strip().lower() for x in el.findall("Item") if (x.text or "").strip()] \
+                    if el is not None else []
+
+            mods.append(VisibleMod(model=model, kind=(_txt(it, "type", "") or "").strip(),
+                                   bone=(_txt(it, "bone", "chassis") or "chassis").strip().lower(),
+                                   label=(_txt(it, "modShopLabel", "") or "").strip(),
+                                   turn_off=names("turnOffBones"), linked=names("linkedModels")))
+        kits[kname.lower()] = mods
+    return {"lights": lights, "kits": kits}

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import re
@@ -56,6 +57,7 @@ def build_ir(src, prof: dict, log=print):
     bopts = {k: prof[k] for k in ("name", "display_name") if prof.get(k)}
     bopts["bone_roles"] = prof["parts"]["bone_roles"]
     bopts["extras"] = prof["parts"]["extras"]
+    bopts["mods"] = prof["parts"].get("mods", {})
     v = VehicleBuilder(src, bopts, log=log).build()
     apply_light_overrides(v, prof["lights"])
     if prof["paint"]["primary"] != "auto":
@@ -213,11 +215,16 @@ class Converter:
         # ---------------------------------------------------------- textures
         tex_paths = {}
         tex_sizes = {}
+        stems = {}
 
         def tex_path(tname, usage):
             key = (tname, usage)
             if key not in tex_paths:
                 stem = _sanitize(tname) + ("_n" if usage == "normal" else "")
+                if stems.get(stem, key) != key:
+                    # two GTA names that sanitise alike ("Body-Detail", "body_detail") keep their own file
+                    stem += "_" + hashlib.sha1(tname.encode()).hexdigest()[:6]
+                stems[stem] = key
                 p = rf"{base}\textures\{stem}.xbm"
                 doc = xbm_document(v.textures[tname], usage)
                 save(doc, jpath(p))

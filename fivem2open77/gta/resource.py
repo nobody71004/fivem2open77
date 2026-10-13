@@ -57,6 +57,7 @@ class VehicleSource:
     warnings: list = field(default_factory=list)
     labels: dict = field(default_factory=dict)   # text label hash -> display text
     pack_name: str = ""                          # name of the download (folder or archive)
+    mods: list = field(default_factory=list)     # [(meta.VisibleMod, yft path)] of the car's mod kits
 
 
 @dataclass
@@ -305,9 +306,11 @@ def scan_resource(path: str) -> ScannedResource:
             variations.update(parse_carvariations(open(mf, "rb").read(), mf))
         except Exception as e:  # noqa: BLE001
             warn(mf, f"cannot parse {os.path.relpath(mf, root)}: {e}")
+    kits = {}
     for mf in meta_files["carcols"]:
         try:
-            parse_carcols(open(mf, "rb").read(), mf)
+            for k, mods in parse_carcols(open(mf, "rb").read(), mf).get("kits", {}).items():
+                kits.setdefault(k, []).extend(mods)
         except Exception as e:  # noqa: BLE001
             warn(mf, f"cannot parse {os.path.relpath(mf, root)}: {e}")
 
@@ -356,8 +359,18 @@ def scan_resource(path: str) -> ScannedResource:
                 ytds.append(f)
         handling = handlings.get((info.handling_id if info else model).lower())
         res_dir = os.path.dirname(os.path.dirname(yft)) if os.path.basename(os.path.dirname(yft)).lower() == "stream" else os.path.dirname(yft)
+        variation = variations.get(m)
+        mods, seen_mods = [], set()
+        for kit in (variation.kits if variation else []):
+            for mod in kits.get(kit.lower(), []):
+                key = (mod.model.lower(), mod.kind)
+                path = near(by_name.get(mod.model.lower() + ".yft"), anchor)
+                if key in seen_mods or not path:
+                    continue
+                seen_mods.add(key)
+                mods.append((mod, path))
         v = VehicleSource(model=model, yft=yft, yft_lod=yft_lod, ytds=ytds, info=info, handling=handling,
-                          variation=variations.get(m), resource_dir=res_dir, labels=labels, pack_name=pack_name)
+                          variation=variation, resource_dir=res_dir, labels=labels, pack_name=pack_name, mods=mods)
         if info is None:
             v.warnings.append("no vehicles.meta entry; using defaults")
         if handling is None:

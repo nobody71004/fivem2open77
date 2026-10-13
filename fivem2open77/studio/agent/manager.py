@@ -40,8 +40,11 @@ Your end-to-end job for a car, unless the user asks for something narrower:
 2. render_car in parts mode (front_3q and rear_3q; left or top when useful) and check: four wheels with tyres
    at the corners; the blue doors are the real doors; the orange hood and red trunk are the lids at the ends
    they should be; windows light blue; no floating, duplicated or missing pieces. Fix wrongly assigned GTA
-   bones with update_profile parts.bone_roles. GTA extras are off by default; turn one on only when a render
-   shows the car incomplete without it.
+   bones with update_profile parts.bone_roles. GTA extras the car's vehicles.meta requires are on (like in
+   GTA), the others off (inspect_car extras_detail: on/required/verts); turn one on only when a render shows
+   the car incomplete without it, off (false) only when it doubles up with another.
+   inspect_car looks says how the materials came out: paint_overlays (paint textures the game shows as decals
+   over the paint), lamps_claimed (lamp geometry on body bones given to the nearest light), lights_added.
 3. If display_name is a code (like the model file name), set the real make and model. Check the engine sound
    suits the car (an electric car should not get a V8); change sound.engine using list_engine_sounds names.
    The neon kit (GTA V underglow) is fitted automatically: render bottom/under_3q in parts mode and check the

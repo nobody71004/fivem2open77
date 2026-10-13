@@ -3,6 +3,8 @@ their roles, lights, wheels, handling (GTA values and what the Cyberpunk drive m
 engine sound, textures and warnings.  The Studio and the AI agent both work from this."""
 from __future__ import annotations
 
+from collections import Counter
+
 from . import profile as profile_mod
 from .cp77 import sound as sound_mod
 from .cp77.donor import DONORS, choose_donor
@@ -71,6 +73,8 @@ def summarize(src, v, prof: dict) -> dict:
         "lids": {"gta": lid_pos, "mode": mode, "plan": plan, "donor": ends},
         "bones": v.report.get("bones", []),
         "extras": v.report.get("extras", []),
+        "extras_detail": v.report.get("extras_detail", []),
+        "mods": v.report.get("mods", []),
         "lights": [{"name": l.name, "type": l.light_type, "zone": l.zone, "part": l.part, "position": _r(l.position),
                     "color": list(l.color)} for l in v.lights],
         "seats": {k: _r(p) for k, p in v.seats.items()},
@@ -85,7 +89,12 @@ def summarize(src, v, prof: dict) -> dict:
         "sound": {k: snd[k] for k in ("player", "traffic", "label", "kind", "source", "override")},
         "materials": {k: {"kind": m.kind, "shader": m.gta_shader, "diffuse": m.diffuse} for k, m in v.materials.items()},
         "textures": {"used": len(v.textures), "missing": v.report.get("textures_missing", []),
+                     "unsupported": v.report.get("textures_unsupported", []),
+                     "renamed": v.report.get("textures_renamed", {}),
                      "formats": sorted({t.format_name for t in v.textures.values()})},
+        "looks": {"paint_overlays": v.report.get("overlays", []), "lamps_claimed": v.report.get("lamps_claimed", {}),
+                  "lights_added": v.report.get("lights_added", []), "light_types": v.report.get("light_types", {}),
+                  "kinds": dict(sorted(Counter(m.kind for m in v.materials.values()).items()))},
         "neon": _neon(v, prof),
         "seating": v.seat_fit.summary() if getattr(v, "seat_fit", None) is not None else None,
         "warnings": list(v.warnings),

@@ -14,7 +14,10 @@ the same result as the bare command line.  ``normalize`` fills defaults and chec
                                           semantic: bonnet->hood_a, boot->trunk_a whatever the layout
                                           swap: always exchange them
         "bone_roles": {"handle_dside_f": "door:fl", "misc_w": "skip"},
-        "extras": {"extra_1": true}       GTA extras to keep (all off by default)
+        "extras": {"extra_1": true},      GTA extras on/off (default: required ones, and those the car
+                                          needs to be whole -- a roof or a body only an extra carries)
+        "mods": {"mycar_bodykit": true}   carcols mod-kit parts on/off (default: the ones the car needs to be
+                                          whole, one per slot; alternatives and add-ons stay off)
       },
       "lights": {"head_fl_0": {"color": [255, 250, 220], "type": "Head", "skip": false}},
       "handling": {
@@ -59,7 +62,7 @@ DEFAULTS = {
     "display_name": None,
     "model": None,
     "donor": "auto",
-    "parts": {"lids": "auto", "bone_roles": {}, "extras": {}},
+    "parts": {"lids": "auto", "bone_roles": {}, "extras": {}, "mods": {}},
     "lights": {},
     "handling": {
         "drive": "auto", "gears": None, "mass": None, "steer": None, "wheel_offset": None,
@@ -188,6 +191,12 @@ def normalize(p: dict, *, donors=None, sounds=None) -> dict:
         parts["extras"] = {}
     else:
         parts["extras"] = {str(k).lower(): bool(v) for k, v in extras.items()}
+    mods = parts.get("mods", {})
+    if not isinstance(mods, dict) or not all(isinstance(x, bool) for x in mods.values()):
+        errors.append("parts.mods: a map of mod kit part (model name) -> true/false")
+        parts["mods"] = {}
+    else:
+        parts["mods"] = {str(k).lower(): bool(v) for k, v in mods.items()}
 
     lights = p["lights"]
     if not isinstance(lights, dict):

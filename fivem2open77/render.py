@@ -3,7 +3,8 @@ the AI agent's visual checks.
 
 Triangles are point-sampled in proportion to their screen area and depth-sorted per pixel, which
 needs no rasteriser loop and is fast enough for half a million triangles.  Colour modes:
-  "material": each material's colour (texture average, paint colour, glass, lights);
+  "material": each triangle in its texture's colour at its centre (paint times its GTA texture,
+              lamps in their texture, glass in its tint);
   "parts":    one colour per part kind (doors blue, hood orange, trunk red, ...), to check mapping.
 """
 from __future__ import annotations
@@ -12,7 +13,7 @@ import math
 
 import numpy as np
 
-from .imaging import png_bytes
+from .imaging import png_bytes, texture_rgba
 from .preview import CORNERS, KIND_COLORS, _Gltf, build_materials
 
 DENSITY = 6.0      # samples per pixel of triangle area (holes ~ e^-DENSITY)
@@ -108,24 +109,60 @@ def glow_views(v, rgb, size=(480, 300), views=((0, 89.9), (35, 28)), body=None):
     return [render(tris, cols, vw, size, light=(0.0, 0.0, 1.0), unlit=unlit) for vw in views]
 
 
+# material kinds whose triangles take their colour from their texture (sampled per triangle)
+_TEXTURED = ("textured", "tire", "emissive", "decal", "lights", "glass_opaque", "glass_cutout", "plate", "paint")
+_CUTOFF = {"decal": 0.4, "glass_cutout": 0.95}
+
+
 def _triangles(v, color_mode="material", skip_kinds=()):
-    """All LOD-1 triangles in Root space -> (tri (N,3,3), colour (N,3), kind list)."""
+    """All LOD-1 triangles in Root space -> (tri (N,3,3), colour (N,3), kind list).  In material
+    mode each triangle takes its texture's colour at its centre (paint times its GTA texture, lamps
+    in their own texture), so renders show logos, lamps and trims, not just flat averages."""
     if color_mode == "material":
         _, means = build_materials(v, _Gltf(), textures=True, max_tex=32)
+    images = {}
+
+    def image(name):
+        if name not in images:
+            tex = v.textures.get(name)
+            rgba = texture_rgba(tex, 128) if tex is not None else None
+            images[name] = rgba.astype(np.float64) / 255.0 if rgba is not None else None
+        return images[name]
+
     tris, cols = [], []
+    paint = [np.asarray(v.paint_colors[0], np.float64), np.asarray(v.paint_colors[1], np.float64)]
 
     def add(part, r, t, kind):
         for sm in part.submeshes:
             if sm.lod != 1 or not len(sm.indices):
                 continue
+            m = v.materials.get(sm.material)
+            if color_mode == "material" and m is not None and m.kind == "paint_detail":
+                continue                     # the paint triangles below carry that texture
             p = sm.positions.astype(np.float64) @ r.T + t
-            tri = p[sm.indices.reshape(-1, 3)]
+            idx = sm.indices.reshape(-1, 3)
+            tri = p[idx]
             if color_mode == "parts":
-                c = KIND_COLORS.get(kind, (0.6, 0.6, 0.6))
+                c = np.tile(np.asarray(KIND_COLORS.get(kind, (0.6, 0.6, 0.6)), np.float64)[None, :3], (len(tri), 1))
             else:
-                c = means.get(sm.material, (0.6, 0.6, 0.6))
+                c = np.tile(np.asarray(means.get(sm.material, (0.6, 0.6, 0.6)), np.float64)[None, :3], (len(tri), 1))
+                img = image(m.diffuse) if m is not None and m.diffuse and m.kind in _TEXTURED else None
+                if img is not None and sm.uv0 is not None:
+                    uv = sm.uv0.astype(np.float64)[idx].mean(1)
+                    h, w = img.shape[:2]
+                    x = np.clip((np.mod(uv[:, 0], 1.0) * w).astype(np.int64), 0, w - 1)
+                    y = np.clip((np.mod(uv[:, 1], 1.0) * h).astype(np.int64), 0, h - 1)
+                    px = img[y, x]
+                    if m.kind == "paint":
+                        c = px[:, :3] * paint[1 if m.paint_slot == 2 else 0][None, :3]
+                    else:
+                        c = px[:, :3] * np.asarray(m.color[:3], np.float64)[None, :]
+                    cut = _CUTOFF.get(m.kind)
+                    if cut is not None:
+                        keep = px[:, 3] >= cut
+                        tri, c = tri[keep], c[keep]
             tris.append(tri)
-            cols.append(np.tile(np.asarray(c, np.float64)[None, :3], (len(tri), 1)))
+            cols.append(c)
 
     for name, part in v.parts.items():
         if part.kind in ("wheel", "tire") or part.kind in skip_kinds:

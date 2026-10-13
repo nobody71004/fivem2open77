@@ -351,15 +351,37 @@ function parts(root, ctx) {
   onlyGeo.addEventListener("change", rows);
 
   const extras = h("div.row");
+  const extraInfo = new Map((d.extras_detail || []).map((e) => [e.name, e]));
   for (const x of d.extras || []) {
-    const cb = h("input", { type: "checkbox", checked: !!((ctx.profile.parts || {}).extras || {})[x] });
+    const info = extraInfo.get(x) || { on: !!((ctx.profile.parts || {}).extras || {})[x], default: false, verts: 0 };
+    const cb = h("input", { type: "checkbox", checked: !!info.on });
     cb.addEventListener("change", async () => {
-      await ctx.patch({ parts: { extras: { [x]: cb.checked ? true : null } } });
+      // back to the model's default (null) when the box matches it, an explicit choice otherwise
+      await ctx.patch({ parts: { extras: { [x]: cb.checked === !!info.default ? null : cb.checked } } });
       await ctx.reload("inspect");
       Object.assign(d, ctx.inspect);
       rows();
     });
-    extras.append(h("label.row", cb, h("code", x)));
+    const tags = [];
+    if (info.required) tags.push(h("span.tag.mov", { title: "vehicles.meta requiredExtras: GTA always fits it" }, "required"));
+    if (info.verts) tags.push(h("span.faint", `${info.verts.toLocaleString()} v`));
+    extras.append(h("label.row", { title: info.why || "" }, cb, h("code", x), ...tags));
+  }
+  // carcols mod-kit parts: one per slot; the ones the car needs to be whole start fitted
+  const mods = h("div.col", { style: { gap: "4px" } });
+  for (const m of d.mods || []) {
+    const cb = h("input", { type: "checkbox", checked: !!m.on });
+    cb.addEventListener("change", async () => {
+      await ctx.patch({ parts: { mods: { [m.model]: cb.checked === !!m.default ? null : cb.checked } } });
+      await ctx.reload("inspect");
+      Object.assign(d, ctx.inspect);
+      ctx.version = Date.now();
+      toast(`${m.model}: ${cb.checked ? "fitted" : "off"}`, "ok");
+    });
+    const slots = (m.slots || []).map((x) => x.replace(/^VMT_/, "").toLowerCase()).join(" / ");
+    mods.append(h("label.row", { title: m.why || "" }, cb, h("code", m.model), h("span.tag", slots),
+      m.verts ? h("span.faint", `${m.verts.toLocaleString()} v`) : null,
+      m.default && m.on ? h("span.tag.mov", { title: m.why || "" }, "needed") : null));
   }
   root.append(
     h("div.grid2",
@@ -369,8 +391,13 @@ function parts(root, ctx) {
         h("div.row", h("span.muted", "Mode"), lidsSel, h("span.muted", "plan: " + plan), h("div.grow"),
           h("button.btn", { onclick: async () => { await ctx.patch({ parts: { lids: lidsSel.value } }); location.reload(); } }, "Save"))),
       h("div.card", h("h3", "GTA extras"),
-        h("p.help", "Optional parts of the GTA model (spoilers, roof, bars). Off by default; tick the ones the car should have."),
+        h("p.help", "Optional parts of the GTA model (spoilers, roof, bars, body kits). The ones vehicles.meta requires are on, " +
+          "like in GTA, and so are the ones that carry a piece the car lacks without them; alternatives and add-ons start off."),
         (d.extras || []).length ? extras : h("div.faint", "this car has no extras"))),
+    (d.mods || []).length ? h("div.card", h("h3", "Mod kit parts"),
+      h("p.help", "Parts from the car's carcols.meta mod kit (one per slot). Some cars keep their body, roof or seats there: " +
+        "those are fitted automatically (\"needed\"); spoilers, bumpers and other alternatives stay off until you tick them."),
+      mods) : null,
     h("div.card", h("div.row", { style: { marginBottom: "10px" } }, h("h3", { style: { margin: 0 } }, "GTA bones → Cyberpunk parts"),
       busy, h("div.grow"), filter, h("label.row", onlyGeo, h("span.muted", "only bones with geometry"))),
       h("p.help", "Every piece of the model moves with the bone it hangs from. Change a role when a part opens, moves or hides wrongly " +

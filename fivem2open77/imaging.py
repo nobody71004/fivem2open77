@@ -144,3 +144,93 @@ def mean_color(rgba: np.ndarray) -> tuple:
     if m.sum() < 8:
         m = np.ones(len(a), bool)
     return tuple((a[m, :3].mean(0) / 255.0).tolist())
+
+
+# ----------------------------------------------------------------------------- encoding
+def mip_chain(rgba: np.ndarray, min_size: int = 1) -> list:
+    """uint8 (h, w, 4) -> [level 0, level 1, ...] halved with a 2x2 box filter down to min_size."""
+    out = [np.ascontiguousarray(rgba, dtype=np.uint8)]
+    cur = out[0].astype(np.float32)
+    while max(cur.shape[0], cur.shape[1]) > min_size and min(cur.shape[0], cur.shape[1]) > 1:
+        h, w = cur.shape[0] // 2 * 2, cur.shape[1] // 2 * 2
+        c = cur[:h, :w]
+        cur = (c[0::2, 0::2] + c[1::2, 0::2] + c[0::2, 1::2] + c[1::2, 1::2]) * 0.25
+        out.append(np.clip(cur + 0.5, 0, 255).astype(np.uint8))
+    return out
+
+
+def _to_blocks(img: np.ndarray):
+    """(h, w, C) -> (nblocks, 16, C) in row-major block order (edge pixels repeated)."""
+    h, w, c = img.shape
+    bh, bw = max(1, (h + 3) // 4), max(1, (w + 3) // 4)
+    pad = np.pad(img, ((0, bh * 4 - h), (0, bw * 4 - w), (0, 0)), mode="edge")
+    return pad.reshape(bh, 4, bw, 4, c).transpose(0, 2, 1, 3, 4).reshape(bh * bw, 16, c)
+
+
+def _pack565(rgb):
+    r = np.clip(np.round(rgb[..., 0] * 31 / 255), 0, 31).astype(np.uint32)
+    g = np.clip(np.round(rgb[..., 1] * 63 / 255), 0, 63).astype(np.uint32)
+    b = np.clip(np.round(rgb[..., 2] * 31 / 255), 0, 31).astype(np.uint32)
+    return (r << 11) | (g << 5) | b
+
+
+def encode_bc3(rgba: np.ndarray) -> bytes:
+    """uint8 (h, w, 4) -> BC3 (DXT5) blocks.  A plain range fit: colour endpoints at the ends of the
+    block's principal axis, alpha endpoints at its min/max (8-step ramp); good enough for decal
+    overlays and previews, and 4x smaller than raw RGBA."""
+    px = _to_blocks(np.asarray(rgba, np.uint8)).astype(np.float32)           # (n, 16, 4)
+    n = len(px)
+    rgb, a = px[..., :3], px[..., 3]
+    # --- colour: project on the principal axis (power iteration on the covariance)
+    mean = rgb.mean(1, keepdims=True)
+    d = rgb - mean
+    cov = np.einsum("nki,nkj->nij", d, d)
+    axis = np.ones((n, 3), np.float32) / np.sqrt(3.0)
+    for _ in range(4):
+        axis = np.einsum("nij,nj->ni", cov, axis)
+        axis /= np.maximum(np.linalg.norm(axis, axis=1, keepdims=True), 1e-6)
+    t = np.einsum("nki,ni->nk", d, axis)
+    lo = mean[:, 0] + axis * t.min(1, keepdims=True)
+    hi = mean[:, 0] + axis * t.max(1, keepdims=True)
+    c0, c1 = _pack565(hi), _pack565(lo)
+    swap = c0 < c1
+    c0, c1 = np.where(swap, c1, c0), np.where(swap, c0, c1)
+    p0, p1 = _rgb565(c0).astype(np.float32), _rgb565(c1).astype(np.float32)
+    pal = np.stack([p0, p1, (2 * p0 + p1) / 3, (p0 + 2 * p1) / 3], 1)          # (n, 4, 3)
+    dist = ((rgb[:, :, None, :] - pal[:, None, :, :]) ** 2).sum(-1)              # (n, 16, 4)
+    sel = dist.argmin(2).astype(np.uint32)
+    sel = np.where((c0 == c1)[:, None], 0, sel)
+    cidx = np.zeros(n, np.uint32)
+    for i in range(16):
+        cidx |= sel[:, i] << np.uint32(2 * i)
+    # --- alpha: 8-value ramp between max (a0) and min (a1)
+    a0 = np.clip(np.round(a.max(1)), 0, 255).astype(np.int32)
+    a1 = np.clip(np.round(a.min(1)), 0, 255).astype(np.int32)
+    ramp = np.stack([a0, a1] + [((7 - i) * a0 + i * a1) // 7 for i in range(1, 7)], 1).astype(np.float32)
+    asel = np.abs(a[:, :, None] - ramp[:, None, :]).argmin(2).astype(np.uint64)
+    asel = np.where((a0 == a1)[:, None], 0, asel).astype(np.uint64)
+    abits = np.zeros(n, np.uint64)
+    for i in range(16):
+        abits |= asel[:, i] << np.uint64(3 * i)
+    out = np.zeros((n, 16), np.uint8)
+    out[:, 0] = a0
+    out[:, 1] = a1
+    for i in range(6):
+        out[:, 2 + i] = ((abits >> np.uint64(8 * i)) & np.uint64(0xFF)).astype(np.uint8)
+    out[:, 8] = c0 & 0xFF
+    out[:, 9] = c0 >> 8
+    out[:, 10] = c1 & 0xFF
+    out[:, 11] = c1 >> 8
+    for i in range(4):
+        out[:, 12 + i] = (cidx >> np.uint32(8 * i)) & 0xFF
+    return out.tobytes()
+
+
+def bc3_texture(name: str, rgba: np.ndarray):
+    """A GtaTexture (BC3, full mip chain down to 4x4) from uint8 RGBA."""
+    from .gta.texture import GtaTexture
+    h, w = rgba.shape[:2]
+    mips = mip_chain(rgba, min_size=4)
+    data = b"".join(encode_bc3(m) for m in mips)
+    return GtaTexture(name=name, width=w, height=h, levels=len(mips), format=FMT_DXT5, stride=w * 4, usage=0,
+                      data=data)

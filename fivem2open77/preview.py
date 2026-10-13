@@ -91,22 +91,54 @@ def _part_to_root(v, part):
     return np.asarray(r, np.float64), np.asarray(t, np.float64)
 
 
-def build_materials(v, g: _Gltf, textures=True, max_tex=128, tint_parts=False):
-    """IR material key -> glTF material index; also returns {key: mean colour} for renders."""
-    out, means, tex_cache = {}, {}, {}
+def _paint_rgb(v, m):
     paint = [tuple(v.paint_colors[0]), tuple(v.paint_colors[1])]
+    return list(paint[1 if m.paint_slot == 2 else 0])
+
+
+def build_materials(v, g: _Gltf, textures=True, max_tex=128, tint_parts=False):
+    """IR material key -> glTF material index; also returns {key: mean colour} for renders.
+    Materials look the way the conversion lays them out: paint times its GTA texture (the decal
+    overlays the game gets are not needed here), lamps in their own texture, glowing, glass in the
+    tint its texture gives, the opaque parts of glass solid."""
+    out, means, tex_cache = {}, {}, {}
+
+    def image(name, tint=None):
+        """(texture index, mean colour) of a texture, optionally multiplied by an RGB tint."""
+        key = (name, tuple(tint) if tint is not None else None)
+        if key not in tex_cache:
+            rgba = texture_rgba(v.textures[name], max_tex) if name in v.textures else None
+            if rgba is not None and tint is not None:
+                rgba = rgba.copy()
+                rgba[..., :3] = np.clip(rgba[..., :3].astype(np.float64) * np.asarray(tint)[None, None, :3], 0, 255).astype(np.uint8)
+            tex_cache[key] = (g.image(png_bytes(rgba)), mean_color(rgba)) if rgba is not None else None
+        return tex_cache[key]
+
     for key, m in v.materials.items():
         base = list(m.color[:3]) if m.color else [0.7, 0.7, 0.7]
         mat = {"name": key, "pbrMetallicRoughness": {"metallicFactor": 0.0, "roughnessFactor": 0.7},
                "doubleSided": False}
+        alpha = 1.0
+        tex = m.diffuse if textures and m.diffuse in v.textures else None
+        tint = None
         if m.kind == "paint":
-            base = list(paint[1 if m.paint_slot == 2 else 0])
+            base = _paint_rgb(v, m)
             mat["pbrMetallicRoughness"].update({"metallicFactor": 0.4, "roughnessFactor": 0.25})
-        elif m.kind in ("glass", "glass_tinted"):
-            base = [0.15, 0.2, 0.25]
+            tint = base                      # GTA: paint x DiffuseSampler
+        elif m.kind == "paint_detail":
+            tex = None                       # the paint above already carries it
+        elif m.kind in ("glass", "glass_tinted", "lightcover"):
+            base = list(m.tint) if m.tint else [0.15, 0.2, 0.25]
+            alpha = 0.35 if m.tint is None else float(max(0.12, min(0.92, 1.0 - float(np.mean(m.tint)) * 0.85)))
             mat["alphaMode"] = "BLEND"
             mat["pbrMetallicRoughness"]["roughnessFactor"] = 0.05
             mat["doubleSided"] = True
+            tex = None
+        elif m.kind in ("glass_opaque", "glass_cutout"):
+            mat["pbrMetallicRoughness"]["roughnessFactor"] = 0.12
+            if m.kind == "glass_cutout":
+                mat["alphaMode"] = "MASK"
+                mat["alphaCutoff"] = 0.95
         elif m.kind == "lights":
             base = [1.0, 0.95, 0.85]
             mat["emissiveFactor"] = [0.9, 0.85, 0.7]
@@ -116,18 +148,21 @@ def build_materials(v, g: _Gltf, textures=True, max_tex=128, tint_parts=False):
             base = list(m.color[:3])
             mat["emissiveFactor"] = [float(x) for x in m.color[:3]]
             mat["pbrMetallicRoughness"]["roughnessFactor"] = 0.3
+            tex = None
         elif m.kind == "decal":
             mat["alphaMode"] = "MASK"
             mat["alphaCutoff"] = 0.4
-        alpha = 0.35 if m.kind in ("glass", "glass_tinted") else 1.0
         means[key] = tuple(base)
-        if textures and m.diffuse and m.kind not in ("paint", "glass", "glass_tinted", "lights") and m.diffuse in v.textures:
-            if m.diffuse not in tex_cache:
-                rgba = texture_rgba(v.textures[m.diffuse], max_tex)
-                tex_cache[m.diffuse] = (g.image(png_bytes(rgba)), mean_color(rgba)) if rgba is not None else None
-            t = tex_cache[m.diffuse]
+        if m.kind in ("glass", "glass_tinted", "lightcover"):
+            # flat renders cannot see through: glass reads as the dark cabin behind it, tinted
+            means[key] = tuple(0.12 + 0.18 * np.asarray(base[:3], np.float64))
+        if tex:
+            t = image(tex, tint)
             if t is not None:
                 mat["pbrMetallicRoughness"]["baseColorTexture"] = {"index": t[0]}
+                if m.kind == "lights":
+                    mat["emissiveTexture"] = {"index": t[0]}
+                    mat["emissiveFactor"] = [0.8, 0.8, 0.8]
                 means[key] = t[1]
                 base = [1.0, 1.0, 1.0]
         mat["pbrMetallicRoughness"]["baseColorFactor"] = [float(base[0]), float(base[1]), float(base[2]), alpha]
@@ -148,6 +183,8 @@ def export_glb(v, path, textures=True, max_tex=128) -> dict:
         for sm in part.submeshes:
             if sm.lod != 1 or not len(sm.indices):
                 continue
+            if getattr(v.materials.get(sm.material), "kind", "") == "paint_detail":
+                continue                         # drawn by the paint's own texture here
             p = sm.positions.astype(np.float64) @ r.T + t
             n = sm.normals.astype(np.float64) @ r.T
             attrs = {"POSITION": g.accessor(_to_gltf(p), 5126, "VEC3", 34962, minmax=True),
