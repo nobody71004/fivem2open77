@@ -143,6 +143,25 @@ def remove_import(project, name: str) -> str:
     return rel
 
 
+def import_path(project, src: str, name: str = "") -> dict:
+    """Import a file or a folder from this PC (a folder keeps its paths under one top-level entry)."""
+    if os.path.isdir(src):
+        top = safe_relpath(name or os.path.basename(src.rstrip("\\/")))
+        for dp, _, fns in os.walk(src):
+            for fn in sorted(fns):
+                full = os.path.join(dp, fn)
+                rel = os.path.relpath(full, src).replace("\\", "/")
+                with open(full, "rb") as f:
+                    add_import(project, f"{top}/{rel}", f, os.path.getsize(full))
+        if not os.path.isdir(os.path.join(_root(project), *top.split("/"))):
+            raise AssetError(f"'{src}' holds no files to import")
+        return describe(_root(project), top)
+    if not os.path.isfile(src):
+        raise AssetError(f"no such file or folder: {src}")
+    with open(src, "rb") as f:
+        return add_import(project, name or os.path.basename(src), f, os.path.getsize(src))
+
+
 # ------------------------------------------------------------------ what an import holds
 def _res_kind(path: str) -> str:
     low = str(path or "").lower().replace("\\", "/")

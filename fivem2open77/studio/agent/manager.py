@@ -118,6 +118,8 @@ Your job for a world edit, unless the user asks for something narrower:
    elements of an instanced mesh), world_move with deltas, world_replace for another mesh, world_add for an
    object of the game (.ent brings its own collision; a .mesh has collision only when it has shapes of its own).
    world_clear_area with dry_run first; show the list; only then dry_run=false.
+   Props, lights and meshes exported from NCWE: world_ncwe_add brings them into the edit (world_ncwe_list shows what
+   it carries; they ship with the build when they carry game archives); world_ncwe_remove takes one out (only when asked).
 4. Read each answer's notes (collision that stays, meshes without collision) and tell the user.
 5. build_world_edit; install_world_edit_in_game for a local test boot when asked; deploy_world_edit only when
    asked or agreed (mode stage: the hub restarts the server when nobody is online); remove_world_edit takes an

@@ -1,12 +1,14 @@
 """NCWE adapter tests use a real stdio process without requiring a beta account."""
 import json
+import os
 from pathlib import Path
 import sys
 from types import SimpleNamespace
+import zipfile
 
 import pytest
 
-from fivem2open77.studio.agent import maptools, ncwe
+from fivem2open77.studio.agent import maptools, ncwe, worldtools
 from fivem2open77.studio.agent.tools import ToolError, registry, tools_for
 from fivem2open77.studio.agent.manager import Session, build_system
 from fivem2open77.studio.settings import validate, SettingsError
@@ -191,3 +193,69 @@ def test_failed_calls_never_claim_success_and_reap(tmp_path, mode):
             client.rpc("exit" if mode == "exit" else "hang")
         proc = client.proc
     assert proc.poll() is not None
+
+
+def test_world_ncwe_tools_registry():
+    """world_ncwe_* reach the world agent and MCP clients; map and car projects keep their own set."""
+    names = {"world_ncwe_list", "world_ncwe_add", "world_ncwe_remove"}
+    tools = registry()
+    assert names <= set(worldtools.WORLD_TOOLS)
+    assert names <= set(tools)
+    assert names <= set(tools_for("world"))
+    for kind in (None, "car", "map"):
+        assert not names & set(tools_for(kind))
+    assert tools["world_ncwe_list"].risk == "read"
+    assert tools["world_ncwe_add"].risk == "change"
+    assert tools["world_ncwe_remove"].risk == "change"
+
+
+def _world_ctx(root, kind="world"):
+    project = SimpleNamespace(kind=kind, path=lambda *parts: os.path.join(str(root), *parts))
+    return SimpleNamespace(project=project, log=lambda msg: None)
+
+
+def _reply(blocks):
+    return json.loads(blocks[0]["text"])
+
+
+def test_world_ncwe_import_list_remove(tmp_path):
+    ctx = _world_ctx(tmp_path / "world")
+    export = tmp_path / "props.zip"
+    with zipfile.ZipFile(export, "w") as z:
+        z.writestr("archive/pc/mod/props.archive", b"x")
+    added = _reply(worldtools.t_world_ncwe_add(ctx, {"path": str(export)}))
+    assert added["imported"]["name"] == "props.zip"
+    assert added["imported"]["ready"] is True
+    listed = _reply(worldtools.t_world_ncwe_list(ctx, {}))
+    assert [i["name"] for i in listed["imports"]] == ["props.zip"]
+    assert listed["collisions"] == []
+
+    folder = tmp_path / "pack"
+    (folder / "archive" / "pc" / "mod").mkdir(parents=True)
+    (folder / "archive" / "pc" / "mod" / "lights.archive").write_bytes(b"y")
+    _reply(worldtools.t_world_ncwe_add(ctx, {"path": str(folder)}))
+    listed = _reply(worldtools.t_world_ncwe_list(ctx, {}))
+    assert [i["name"] for i in listed["imports"]] == ["pack", "props.zip"]
+
+    removed = _reply(worldtools.t_world_ncwe_remove(ctx, {"name": "pack"}))
+    assert removed["removed"] == "pack"
+    listed = _reply(worldtools.t_world_ncwe_list(ctx, {}))
+    assert [i["name"] for i in listed["imports"]] == ["props.zip"]
+
+
+def test_world_ncwe_tools_refuse_bad_input(tmp_path):
+    ctx = _world_ctx(tmp_path / "world")
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    with pytest.raises(ToolError, match="path:"):
+        worldtools.t_world_ncwe_add(ctx, {"path": ""})
+    with pytest.raises(ToolError, match="no such file"):
+        worldtools.t_world_ncwe_add(ctx, {"path": str(tmp_path / "missing.zip")})
+    with pytest.raises(ToolError, match="no files"):
+        worldtools.t_world_ncwe_add(ctx, {"path": str(empty)})
+    with pytest.raises(ToolError, match="no import named"):
+        worldtools.t_world_ncwe_remove(ctx, {"name": "missing.zip"})
+    with pytest.raises(ToolError, match="name:"):
+        worldtools.t_world_ncwe_remove(ctx, {"name": " "})
+    with pytest.raises(ToolError, match="not a world edit"):
+        worldtools.t_world_ncwe_list(_world_ctx(tmp_path / "map", kind="map"), {})

@@ -32,7 +32,7 @@ import sys
 import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 
 SFX_CONFIG = """;!@Install@!UTF-8!
 Title="fivem2open77 Studio {version}"
@@ -85,6 +85,11 @@ def copytree(src, dst, ignore=None):
 
 
 def build(a):
+    # the launcher is the window the Studio opens: a bundle without it is no release (the 1.4.1 release
+    # shipped with no launcher because nothing checked for it)
+    if not os.path.isfile(os.path.join(a.host, "fivem2open77-studio.exe")):
+        raise SystemExit(f"--host {a.host} has no fivem2open77-studio.exe: build the launcher first "
+                         "(dotnet build host/Fivem2Open77Studio.csproj -c Release -p:OutputPath=...)")
     out = os.path.abspath(a.out)
     app = os.path.join(out, "fivem2open77-studio")
     shutil.rmtree(app, ignore_errors=True)
@@ -99,6 +104,9 @@ def build(a):
         if f.endswith((".pdb", ".xml")) or f == "Microsoft.Web.WebView2.Wpf.dll":
             continue
         (copytree if os.path.isdir(s) else shutil.copy2)(s, os.path.join(app, f))
+
+    if not os.path.isfile(os.path.join(app, "fivem2open77-studio.exe")):
+        raise SystemExit("the launcher is missing from the app folder: refusing to package")
 
     # python
     py = os.path.join(app, "runtime", "python")

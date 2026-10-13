@@ -368,20 +368,8 @@ def t_ncwe_assets_import(ctx, args):
     src = os.path.expanduser(str(args.get("path") or "").strip())
     if not src or not os.path.exists(src):
         raise ToolError(f"no such file or folder: {src or '(path)'}")
-    name = str(args.get("name") or "").strip()
     try:
-        if os.path.isdir(src):
-            top = ncweassets.safe_relpath(name or os.path.basename(src.rstrip("\\/")))
-            for dp, _, fns in os.walk(src):
-                for fn in sorted(fns):
-                    full = os.path.join(dp, fn)
-                    rel = os.path.relpath(full, src).replace("\\", "/")
-                    with open(full, "rb") as f:
-                        ncweassets.add_import(p, f"{top}/{rel}", f, os.path.getsize(full))
-            info = ncweassets.describe(p.path("assets", "ncwe"), top)
-        else:
-            with open(src, "rb") as f:
-                info = ncweassets.add_import(p, name or os.path.basename(src), f, os.path.getsize(src))
+        info = ncweassets.import_path(p, src, str(args.get("name") or "").strip())
     except ncweassets.AssetError as e:
         raise ToolError(str(e)) from None
     ctx.log(f"NCWE asset imported: {info['name']}")

@@ -119,7 +119,7 @@ class StdioClient:
 
     def initialize(self):
         result = self.rpc("initialize", {"protocolVersion": "2024-11-05", "capabilities": {},
-                                         "clientInfo": {"name": "fivem2open77-studio", "version": "1.4.0"}})
+                                         "clientInfo": {"name": "fivem2open77-studio", "version": "1.4.1"}})
         self.rpc("notifications/initialized", notify=True)
         return result
 

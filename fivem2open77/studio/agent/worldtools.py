@@ -6,7 +6,10 @@ above (0 faces +y north, 90 faces west).
 """
 from __future__ import annotations
 
+import os
+
 from ...world.edits import EditError
+from .. import ncweassets
 from .tools import Tool, ToolError, _obj, text
 
 NUM = {"type": "number"}
@@ -205,6 +208,43 @@ def t_world_game(ctx, args):
     return text(ctx.wait_job(job, 300))
 
 
+def t_world_ncwe_list(ctx, args):
+    p = _world_project(ctx)
+    items = ncweassets.list_imports(p)
+    return text({"imports": items, "total_bytes": sum(i["bytes"] for i in items),
+                 "collisions": ncweassets.collisions(p),
+                 "note": "imports that carry game archives ship with the world edit at build; collisions are archive "
+                         "name clashes to fix before building"})
+
+
+def t_world_ncwe_add(ctx, args):
+    p = _world_project(ctx)
+    src = os.path.expanduser(str(args.get("path") or "").strip())
+    if not src:
+        raise ToolError("path: an NCWE export (.zip/.7z/.rar), a game archive or a folder of them on this PC")
+    try:
+        info = ncweassets.import_path(p, src, str(args.get("name") or "").strip())
+    except ncweassets.AssetError as e:
+        raise ToolError(str(e)) from None
+    ctx.log(f"NCWE import added to the world edit: {info['name']}")
+    return text({"imported": info, "collisions": ncweassets.collisions(p),
+                 "note": "ships with the world edit at its next build when it carries game archives; "
+                         "build_world_edit checks it"})
+
+
+def t_world_ncwe_remove(ctx, args):
+    p = _world_project(ctx)
+    name = str(args.get("name") or "").strip()
+    if not name:
+        raise ToolError("name: the import to take out (world_ncwe_list shows them)")
+    try:
+        removed = ncweassets.remove_import(p, name)
+    except ncweassets.AssetError as e:
+        raise ToolError(str(e)) from None
+    ctx.log(f"NCWE import removed from the world edit: {removed}")
+    return text({"removed": removed, "note": "the next build leaves it out; an earlier build keeps it until rebuilt"})
+
+
 def registry() -> dict:
     tools = [
         Tool("world_status", "Night City's index (read from the game once) and the open world edit: its actions, what they add "
@@ -272,10 +312,20 @@ def registry() -> dict:
              _obj({"server": {"type": "string"}, "resource": {"type": "string"},
                    "names": {"type": "array", "items": {"type": "string"}}, "restart": {"type": "boolean"}}, ["server"]),
              "deploy", t_world_remove),
+        Tool("world_ncwe_list", "NCWE imports in the open world edit: the props, lights and meshes exported from the NCWE "
+             "world editor that ship with the edit (what each carries) and any archive name collisions to fix before "
+             "building.", _obj(), "read", t_world_ncwe_list),
+        Tool("world_ncwe_add", "Bring an NCWE export into the open world edit from this PC: a .zip/.7z/.rar ArchiveXL mod, "
+             "a game archive, or a folder of them (kept in the project; name defaults to the file's or folder's own). "
+             "Imports carrying game archives are packed into the edit at build.",
+             _obj({"path": {"type": "string"}, "name": {"type": "string"}}, ["path"]), "change", t_world_ncwe_add),
+        Tool("world_ncwe_remove", "Take an NCWE import out of the open world edit by its name (world_ncwe_list shows them). "
+             "The next build leaves it out.", _obj({"name": {"type": "string"}}, ["name"]), "change", t_world_ncwe_remove),
     ]
     return {t.name: t for t in tools}
 
 
 WORLD_TOOLS = ("world_status", "new_world_edit", "world_prepare", "world_find", "world_object", "world_delete",
                "world_move", "world_replace", "world_add", "world_clear_area", "world_undo", "world_drop_action",
-               "build_world_edit", "install_world_edit_in_game", "deploy_world_edit", "remove_world_edit")
+               "build_world_edit", "install_world_edit_in_game", "deploy_world_edit", "remove_world_edit",
+               "world_ncwe_list", "world_ncwe_add", "world_ncwe_remove")
