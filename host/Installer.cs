@@ -156,21 +156,33 @@ namespace Fivem2Open77.Studio
         }
     }
 
+    /// <summary>The installer's window: the HUD start screen with the copy's progress (drag it anywhere).</summary>
     sealed class ProgressForm : Form
     {
-        readonly ProgressBar bar = new ProgressBar { Dock = DockStyle.Bottom, Height = 18, Maximum = 100 };
+        readonly HudSplash hud;
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool ReleaseCapture();
+        [System.Runtime.InteropServices.DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr h, int msg, IntPtr w, IntPtr l);
 
         public ProgressForm(string text)
         {
             Text = Program.AppName;
-            FormBorderStyle = FormBorderStyle.FixedDialog;
+            try { Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+            FormBorderStyle = FormBorderStyle.None;
             StartPosition = FormStartPosition.CenterScreen;
-            ControlBox = false;
-            Size = new System.Drawing.Size(420, 120);
-            Controls.Add(new Label { Text = text, Dock = DockStyle.Fill, TextAlign = System.Drawing.ContentAlignment.MiddleCenter });
-            Controls.Add(bar);
+            ShowInTaskbar = true;
+            Size = new System.Drawing.Size(780, 470);
+            BackColor = System.Drawing.Color.FromArgb(3, 5, 10);
+            hud = new HudSplash { Dock = DockStyle.Fill, Version = Program.Version, Status = text, Progress = 0, Detail = Installer.InstallDir };
+            hud.MouseDown += (s, e) =>
+            {
+                if (e.Button != MouseButtons.Left) return;
+                ReleaseCapture();
+                SendMessage(Handle, 0xA1, (IntPtr)2, IntPtr.Zero);     // WM_NCLBUTTONDOWN on the caption: move the window
+            };
+            Controls.Add(hud);
         }
 
-        public void Set(int pct) => bar.Value = Math.Max(0, Math.Min(100, pct));
+        public void Set(int pct) { hud.Progress = pct; hud.Refresh(); }
     }
 }

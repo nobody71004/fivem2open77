@@ -13,6 +13,9 @@ namespace Fivem2Open77.Studio
     {
         public const string AppName = "fivem2open77 Studio";
 
+        /// <summary>The version without the build's source revision (1.5.0, not 1.5.0+abc123).</summary>
+        public static string Version => Application.ProductVersion.Split('+')[0];
+
         [STAThread]
         static int Main(string[] args)
         {

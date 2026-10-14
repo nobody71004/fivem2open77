@@ -1,5 +1,5 @@
-// The Studio window: WebView2 showing the local Studio server.  Falls back to the default
-// browser when the WebView2 runtime is missing.
+// The Studio window: WebView2 showing the local Studio server, behind the HUD start screen until
+// the page has loaded.  Falls back to the default browser when the WebView2 runtime is missing.
 using System;
 using System.Diagnostics;
 using System.Drawing;
@@ -16,7 +16,8 @@ namespace Fivem2Open77.Studio
         readonly Backend backend;
         readonly bool useBrowser;
         WebView2 web;
-        readonly Label status;
+        readonly HudSplash splash;
+        bool shown;
         readonly string stateFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "fivem2open77", "window.txt");
 
         public MainForm(Backend backend, bool useBrowser)
@@ -25,18 +26,15 @@ namespace Fivem2Open77.Studio
             this.useBrowser = useBrowser;
             Text = Program.AppName;
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
-            BackColor = Color.FromArgb(15, 17, 22);
             ForeColor = Color.FromArgb(230, 233, 240);
             StartPosition = FormStartPosition.CenterScreen;
             MinimumSize = new Size(1000, 680);
             Size = new Size(1440, 920);
             Font = new Font("Segoe UI", 10f);
-            status = new Label
-            {
-                Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter,
-                Text = "Starting fivem2open77 Studio...", ForeColor = Color.FromArgb(152, 161, 179),
-            };
-            Controls.Add(status);
+            BackColor = Color.FromArgb(3, 5, 10);
+            // the start screen stays over the web view until the Studio's page has loaded
+            splash = new HudSplash { Dock = DockStyle.Fill, Version = Program.Version, Status = "Starting the Studio server" };
+            Controls.Add(splash);
             LoadWindowState();
             Shown += async (s, e) => await StartAsync();
             FormClosing += (s, e) => SaveWindowState();
@@ -44,6 +42,7 @@ namespace Fivem2Open77.Studio
 
         async Task StartAsync()
         {
+            splash.Detail = backend.Workspace;
             try
             {
                 await Task.Run(() => backend.Start(TimeSpan.FromSeconds(120)));
@@ -63,16 +62,40 @@ namespace Fivem2Open77.Studio
                 Close();
             }));
             if (useBrowser) { BrowserMode(); return; }
+            splash.Status = "Loading the interface";
+            splash.Detail = "server on 127.0.0.1:" + backend.Port;
             try
             {
-                web = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = Color.FromArgb(15, 17, 22) };
+                web = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = Color.FromArgb(3, 5, 10) };
                 string data = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "fivem2open77", "webview2");
                 var env = await CoreWebView2Environment.CreateAsync(null, data);
                 Controls.Add(web);
+                splash.BringToFront();
                 await web.EnsureCoreWebView2Async(env);
-                status.Visible = false;
-                web.BringToFront();
                 var core = web.CoreWebView2;
+                core.NavigationCompleted += (s, e) =>
+                {
+                    if (shown) return;
+                    if (!e.IsSuccess)
+                    {
+                        splash.Status = "The interface did not load";
+                        splash.Detail = e.WebErrorStatus + " - " + backend.Url.Split('?')[0];
+                        splash.SetAction("Try again", () => web.Reload());
+                        return;
+                    }
+                    shown = true;
+                    splash.Status = "Online";
+                    splash.Progress = 100;
+                    var hide = new Timer { Interval = 220 };
+                    hide.Tick += (s2, e2) =>
+                    {
+                        hide.Dispose();
+                        web.BringToFront();
+                        splash.Visible = false;     // its timer stops with it
+                        web.Focus();
+                    };
+                    hide.Start();
+                };
                 core.Settings.IsStatusBarEnabled = false;
                 core.Settings.AreDefaultContextMenusEnabled = true;
                 core.Settings.IsZoomControlEnabled = true;
@@ -102,10 +125,12 @@ namespace Fivem2Open77.Studio
 
         void BrowserMode()
         {
-            status.Text = "fivem2open77 Studio is running in your browser.\n\nKeep this window open while you use it; closing it stops the Studio.\n\n" + backend.Url.Split('?')[0];
-            var btn = new Button { Text = "Open in browser", AutoSize = true, Dock = DockStyle.Bottom, Height = 44, FlatStyle = FlatStyle.Flat };
-            btn.Click += (s, e) => OpenExternal(backend.Url);
-            Controls.Add(btn);
+            splash.Visible = true;
+            splash.BringToFront();
+            splash.Status = "Running in your browser";
+            splash.Progress = 100;
+            splash.Detail = "Keep this window open while you use it: closing it stops the Studio.  " + backend.Url.Split('?')[0];
+            splash.SetAction("Open in browser", () => OpenExternal(backend.Url));
             OpenExternal(backend.Url);
         }
 
