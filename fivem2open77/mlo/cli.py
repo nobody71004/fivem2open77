@@ -43,7 +43,7 @@ def _emit(a, obj, human):
 
 
 def _mlo_opts(a) -> dict:
-    return {k: getattr(a, k, None) for k in ("name", "display_name", "anchor", "coords", "place", "entity_sets",
+    return {k: getattr(a, k, None) for k in ("name", "display_name", "anchor", "coords", "area", "place", "entity_sets",
                                              "exclude", "no_collision", "no_coverage", "static_doors", "solid_doors", "open_gates",
                                              "door_map", "cell", "quiet_interiors",
                                              "ground_spacing",
@@ -216,6 +216,8 @@ def add_parsers(sub, common, game_dir, cache_cls):
         sp.add_argument("--display-name", help="name shown in game")
         sp.add_argument("--coords", help="FiveM spawn coords x,y,z (default: a coords .txt in the input)")
         sp.add_argument("--anchor", help="GTA world point x,y,z the map is placed by (default: around --coords)")
+        sp.add_argument("--area", help="x,y,radius (GTA world metres): only what stands there -- a whole city "
+                                       "such as Liberty V is converted a district at a time")
         sp.add_argument("--entity-sets", default="default", help="MLO entity sets: default | all | none | a,b")
         sp.add_argument("--exclude", help="comma-separated archetype names to leave out")
         sp.add_argument("--no-collision", action="store_true", help="visual only")

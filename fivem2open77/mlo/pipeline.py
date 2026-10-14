@@ -23,6 +23,9 @@ _FLOAT = r"(-?\d+(?:\.\d+)?)"
 _COORDS_RE = re.compile(rf"{_FLOAT}\s*,\s*{_FLOAT}\s*,\s*{_FLOAT}(?:\s*,\s*{_FLOAT})?")
 
 
+HUGE_MAP = 40000      # objects: past this a map is a city, converted by area
+
+
 class MapInputError(Exception):
     pass
 
@@ -45,7 +48,9 @@ def find_map_files(path: str):
     if any(f.lower().endswith(".fxap") for f in files):
         raise EscrowProtectedError("this resource is protected by Cfx.re asset escrow (.fxap found). Escrowed assets "
                                    "are encrypted for one server licence and cannot be converted.")
-    stream = [f for f in files if f.lower().endswith(STREAM_EXTS)]
+    # stream files, plus the texture parenting (gtxd.meta: a txd's textures can live in a parent)
+    stream = [f for f in files if f.lower().endswith(STREAM_EXTS)
+              or re.search(r"gtxd[^/\\]*\.(meta|xml)$", os.path.basename(f).lower())]
     if not stream:
         raise MapInputError("no GTA map files (.ymap/.ytyp/.ydr/.ybn) found in the input")
     coords = None
@@ -114,7 +119,21 @@ class MapConverter:
         if display == display.lower() or display == display.upper():
             display = display.title()                 # keep the author's casing ("EstateV2")
         t0 = time.time()
-        scene = MapScene(stream, entity_sets=o.get("entity_sets", "default"), log=self.log)
+        area = _parse_vec(o.get("area"), 3, 3, "--area") if o.get("area") else None
+        if area and area[2] <= 0:
+            raise MapInputError("--area: the radius must be more than 0")
+        scene = MapScene(stream, entity_sets=o.get("entity_sets", "default"), log=self.log, area=area)
+        objects = len(scene.instances) + sum(len(m.children) for m in scene.mlos)
+        if not area and objects > HUGE_MAP:
+            top = scene.districts(8)
+            raise MapInputError(
+                f"{res_name} is a whole city ({objects} objects in {len(scene.ymap_info)} ymaps): convert it a "
+                f"district at a time with an area (x,y,radius in GTA metres). Biggest districts: " + "; ".join(
+                    f"{d['name']} ({d['entities']} objects) {d['center'][0]:.0f},{d['center'][1]:.0f},{min(d['radius'], 400):.0f}"
+                    for d in top))
+        if area and not objects:
+            raise MapInputError(f"nothing of {res_name} stands within {area[2]:.0f} m of {area[0]:.0f},{area[1]:.0f} "
+                                "(GTA world metres); pick an area from the map's districts")
         builder = MapBuilder(scene, name, display, log=self.log, coords=coords,
                              anchor=_parse_vec(o.get("anchor"), 3, 3, "--anchor"),
                              cell=float(o.get("cell") or 48.0),

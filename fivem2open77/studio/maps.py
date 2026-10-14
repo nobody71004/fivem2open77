@@ -35,6 +35,7 @@ DEFAULTS = {
     "display_name": "",        # shown in game; empty = from the resource name
     "coords": None,            # [x, y, z] the FiveM spawn point (default: a coords .txt in the input)
     "anchor": None,            # [x, y, z] GTA world point the map is cut around (default: around coords)
+    "area": None,              # [x, y, radius] GTA world metres: convert only what stands there (cities)
     "entity_sets": "default",  # MLO entity sets: default | all | none | [names]
     "exclude": [],             # archetype names to leave out
     "collision": True,         # False: visual only
@@ -51,7 +52,7 @@ DEFAULTS = {
     "quiet_interiors": "off",  # off | bottom | all: ambient-noise suppression volumes over MLO floors (mlo/ambience.py)
 }
 # options that change what is built (the look and the renders): not the names, not where it is baked
-LOOK_KEYS = ("coords", "anchor", "entity_sets", "exclude", "collision", "doors", "solid_doors",
+LOOK_KEYS = ("coords", "anchor", "area", "entity_sets", "exclude", "collision", "doors", "solid_doors",
              "open_gates", "cell", "ground_spacing", "collision_budget", "instance_min_tris", "door_map")
 NAME_RX = re.compile(r"^[a-z][a-z0-9_]{2,47}$")
 ITEM_RX = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
@@ -143,6 +144,11 @@ def normalize_options(raw: dict | None) -> dict:
     o["display_name"] = disp
     o["coords"] = _vec3(o["coords"], "coords", errors)
     o["anchor"] = _vec3(o["anchor"], "anchor", errors)
+    area = _vec3(o["area"], "area", errors)
+    if area is not None and not (1.0 <= area[2] <= 5000.0):
+        errors.append("area: x, y and a radius of 1 to 5000 m")
+        area = None
+    o["area"] = area
     es = o["entity_sets"]
     if isinstance(es, str) and es in ("default", "all", "none"):
         pass
@@ -206,6 +212,7 @@ def converter_opts(o: dict, version: str | None = None, keep_work=False, place=T
     out = {"name": o["name"] or None, "display_name": o["display_name"] or None,
            "coords": ",".join(str(v) for v in o["coords"]) if o["coords"] else None,
            "anchor": ",".join(str(v) for v in o["anchor"]) if o["anchor"] else None,
+           "area": ",".join(str(v) for v in o["area"]) if o.get("area") else None,
            "entity_sets": es if isinstance(es, str) else ",".join(es),
            "exclude": ",".join(o["exclude"]) or None,
            "no_collision": not o["collision"], "no_coverage": not o["coverage"],

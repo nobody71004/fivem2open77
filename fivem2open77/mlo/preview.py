@@ -390,7 +390,10 @@ def summary(scene, model, coords, res_name) -> dict:
             "world_entities": sc.get("world_entities"), "skipped_lod_entities": sc.get("skipped_lod_entities"),
             "missing_total": sc.get("missing_total"), "missing_archetypes": dict(list(missing.items())[:40]),
             "ymaps": sc.get("ymaps"), "world_collisions": sc.get("world_collisions"),
-            "skipped_files": sc.get("skipped_files"), "warnings": sc.get("warnings")},
+            "skipped_files": sc.get("skipped_files"), "warnings": sc.get("warnings"),
+            "area": sc.get("area"), "out_of_area": sc.get("out_of_area"), "districts": sc.get("districts")},
+        "textures_missing": dict(list((rep.get("textures_missing") or {}).items())[:60]),
+        "untextured_cutouts_dropped": rep.get("untextured_cutouts_dropped") or {},
         "entity_sets": sets,
         "warnings": list(model.warnings) + [w for w in (sc.get("warnings") or []) if w not in model.warnings],
     }

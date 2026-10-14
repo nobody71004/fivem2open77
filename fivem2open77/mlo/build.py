@@ -60,6 +60,10 @@ MAX_CHUNKS = 64
 MAX_MESH_VERTS = 400_000
 
 
+def _loose_tex(name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", name.lower())
+
+
 def _sanitize(name: str) -> str:
     s = re.sub(r"_+", "_", re.sub(r"[^a-z0-9_]+", "_", str(name).lower())).strip("_") or "part"
     if not s[0].isalpha():
@@ -170,6 +174,8 @@ class MapBuilder:
         self._geo = {}
         self._tex_keys = {}
         self._all_ytd = None
+        self.missing_textures = Counter()
+        self.dropped_untextured = Counter()
 
     # ------------------------------------------------------------------ textures / materials
     def _texture_key(self, tex):
@@ -196,9 +202,16 @@ class MapBuilder:
             n = tname.lower()
             t = own.get(n) or ext.get(n)
             if t is None:
-                if self._all_ytd is None:
-                    self._all_ytd = self.scene.all_ytd_textures()
-                t = self._all_ytd.get(n)
+                t = self.scene.find_texture(n)          # any dictionary of the resource (names indexed)
+            if t is None:
+                # a near name: shaders misspell textures ("lightsBW" for "lights BW")
+                loose = _loose_tex(n)
+                cand = [k for k in list(own) + list(ext) if _loose_tex(k) == loose]
+                if cand:
+                    t = own.get(cand[0]) or ext.get(cand[0])
+                else:
+                    alt = self.scene.find_texture_loose(loose)
+                    t = alt
             if t is None or not t.supported or not t.data:
                 missing[n] += 1
                 return None
@@ -254,6 +267,12 @@ class MapBuilder:
                 nrm, tan = _repair_frames(pos, tri, nrm, tan)
                 shader = shaders[g.shader_index] if g.shader_index < len(shaders) else None
                 mat = map_material(shader, lookup)
+                if getattr(mat, "missing_diffuse", None) and mat.alpha in ("test", "blend") \
+                        and mat.kind not in ("glass", "water"):
+                    # a decal, a grass card or a cut-out fence whose texture is GTA's own: without
+                    # it that is an opaque white sheet over the surface below; leave it out
+                    self.dropped_untextured[mat.missing_diffuse] += 1
+                    continue
                 self.model.materials.setdefault(mat.key, mat)
                 out.append((mat.key, {"position": pos, "normal": nrm, "tangent": tan, "uv0": uv0, "uv1": uv1,
                                       "color": None}, tri))
@@ -566,6 +585,7 @@ class MapBuilder:
     def build(self) -> MapModel:
         sc = self.scene
         self.missing_textures = Counter()
+        self.dropped_untextured = Counter()
         anchor, coords = self._choose_anchor()
         self.model.anchor = anchor
         A = np.eye(4)
@@ -769,6 +789,13 @@ class MapBuilder:
         report["door_map"] = self.door_map
         report["skipped"] = dict(report["skipped"])
         report["textures_missing"] = dict(self.missing_textures.most_common())
+        report["untextured_cutouts_dropped"] = dict(self.dropped_untextured.most_common())
+        if self.missing_textures:
+            guessed = sum(1 for m in self.model.materials.values() if getattr(m, "missing_diffuse", None))
+            self.model.warnings.append(
+                f"{len(self.missing_textures)} textures are GTA's own (the map only names them, e.g. "
+                + ", ".join(list(self.missing_textures)[:6]) + f"): {guessed} surfaces keep the colour their name "
+                f"suggests, {sum(self.dropped_untextured.values())} decal/cut-out pieces that would be white sheets are left out")
         report["materials"] = len(self.model.materials)
         report["textures"] = len(self.model.textures)
         report["anchor_gta"] = [round(v, 3) for v in anchor]

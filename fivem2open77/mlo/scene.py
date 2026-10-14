@@ -151,9 +151,15 @@ def index_stream(files) -> StreamIndex:
 class MapScene:
     """Everything the converter needs from a FiveM map resource."""
 
-    def __init__(self, stream_files, entity_sets="default", log=print):
+    def __init__(self, stream_files, entity_sets="default", log=print, area=None):
+        """area: (x, y, radius) in GTA world metres -- only what stands there is kept (a whole city
+        such as Liberty V is converted district by district)."""
         self.log = log
-        self.idx = index_stream(stream_files)
+        self.area = tuple(float(v) for v in area) if area else None
+        self.out_of_area = 0
+        self.gtxd_files = [f for f in stream_files if "gtxd" in os.path.basename(f).lower()
+                           and os.path.splitext(f)[1].lower() in (".meta", ".xml")]
+        self.idx = index_stream([f for f in stream_files if f not in self.gtxd_files])
         for h, n in self.idx.names.items():
             MetaHash.names.setdefault(h, n)
         self.entity_sets = entity_sets
@@ -172,6 +178,9 @@ class MapScene:
         self._ydds = {}
         self._ybn_cache = {}
         self._ytd_cache = {}
+        self._tex_index = None
+        self.txd_parent = {}               # child txd hash -> parent txd hash (gtxd.meta)
+        self._load_gtxd()
         self._load_types()
         self._load_maps()
         self._load_world_collision()
@@ -240,31 +249,86 @@ class MapScene:
             self._ydds[h] = load_ydd(p, name=os.path.basename(p)) if p else None
         return self._ydds[h]
 
+    def _ytd(self, txd: int) -> dict:
+        if txd not in self._ytd_cache:
+            p = self.idx.ytd.get(txd)
+            if not p:
+                self._ytd_cache[txd] = {}
+            else:
+                try:
+                    self._ytd_cache[txd] = load_ytd(p, name=p)
+                except (ResourceError, ValueError) as e:
+                    self.warnings.append(f"cannot read {os.path.basename(p)}: {e}")
+                    self._ytd_cache[txd] = {}
+        return self._ytd_cache[txd]
+
     def textures_for(self, h: int) -> dict:
-        """External texture dictionary of an archetype ({lower name: GtaTexture})."""
+        """External textures of an archetype ({lower name: GtaTexture}): its texture dictionary and
+        the dictionaries gtxd.meta makes its parents (nearest first)."""
         a = self.archetypes.get(h)
         txd = a.txd if a else 0
-        if not txd or txd not in self.idx.ytd:
-            return {}
-        if txd not in self._ytd_cache:
-            try:
-                self._ytd_cache[txd] = load_ytd(self.idx.ytd[txd], name=self.idx.ytd[txd])
-            except (ResourceError, ValueError) as e:
-                self.warnings.append(f"cannot read {os.path.basename(self.idx.ytd[txd])}: {e}")
-                self._ytd_cache[txd] = {}
-        return self._ytd_cache[txd]
+        out = {}
+        seen = set()
+        while txd and txd not in seen and len(seen) < 12:
+            seen.add(txd)
+            for k, v in self._ytd(txd).items():
+                out.setdefault(k, v)
+            txd = self.txd_parent.get(txd)
+        return out
+
+    def texture_index(self) -> dict:
+        """{lower texture name: txd hash} over every .ytd of the resource, read once without the
+        pixels (a city has thousands of dictionaries: loading them all at once does not fit)."""
+        if self._tex_index is None:
+            from ..gta.texture import ytd_names
+            idx = {}
+            for h, p in self.idx.ytd.items():
+                try:
+                    for n in ytd_names(p):
+                        idx.setdefault(n, h)
+                except (ResourceError, ValueError, IndexError, OSError):
+                    continue
+            self._tex_index = idx
+        return self._tex_index
+
+    def find_texture(self, name: str):
+        """A texture anywhere in the resource by name (None when it is not shipped)."""
+        h = self.texture_index().get(name.lower())
+        return self._ytd(h).get(name.lower()) if h is not None else None
+
+    def find_texture_loose(self, loose: str):
+        """A texture whose name matches ignoring case, spaces and punctuation, when only one does."""
+        if not hasattr(self, "_loose_index"):
+            li = {}
+            for n, h in self.texture_index().items():
+                k = re.sub(r"[^a-z0-9]", "", n)
+                li[k] = None if (k in li and li[k] != (n, h)) else (n, h)
+            self._loose_index = li
+        hit = self._loose_index.get(loose)
+        return self._ytd(hit[1]).get(hit[0]) if hit else None
 
     def all_ytd_textures(self) -> dict:
         out = {}
-        for h, p in self.idx.ytd.items():
-            if h not in self._ytd_cache:
-                try:
-                    self._ytd_cache[h] = load_ytd(p, name=p)
-                except (ResourceError, ValueError):
-                    self._ytd_cache[h] = {}
-            for k, v in self._ytd_cache[h].items():
+        for h in self.idx.ytd:
+            for k, v in self._ytd(h).items():
                 out.setdefault(k, v)
         return out
+
+    # ------------------------------------------------------------------ texture parenting
+    def _load_gtxd(self):
+        """gtxd.meta (CMapParentTxds): child txd -> parent txd, so textures shared by many
+        dictionaries are found in the parent."""
+        for path in self.gtxd_files:
+            try:
+                text = open(path, "rb").read().decode("utf-8", errors="replace")
+            except OSError:
+                continue
+            for parent, child in re.findall(r"<parent>\s*([^<\s]+)\s*</parent>\s*<child>\s*([^<\s]+)\s*</child>", text, re.I):
+                self.txd_parent[joaat(child.lower())] = joaat(parent.lower())
+            for child, parent in re.findall(r"<child>\s*([^<\s]+)\s*</child>\s*<parent>\s*([^<\s]+)\s*</parent>", text, re.I):
+                self.txd_parent.setdefault(joaat(child.lower()), joaat(parent.lower()))
+        if self.txd_parent:
+            self.log(f"gtxd: {len(self.txd_parent)} texture dictionaries take textures from a parent")
 
     def ybn(self, h: int) -> Collision | None:
         if h in self._ybn_cache:
@@ -326,9 +390,14 @@ class MapScene:
                 continue
             ents = root.get("entities") or []
             kept = custom = 0
+            xy = [tuple(e.get("position") or (0, 0, 0))[:2] for e in ents]
             for e in ents:
                 h = int(e.get("archetypeName") or 0)
                 lod = int(e.get("lodLevel") or 0)
+                if self.area and not self.in_area(e.get("position") or (0, 0, 0),
+                                                  60.0 if e.get("_type") == "CMloInstanceDef" else 0.0):
+                    self.out_of_area += 1
+                    continue
                 if e.get("_type") == "CMloInstanceDef":
                     self._add_mlo(e, ymap)
                     kept += 1
@@ -344,8 +413,42 @@ class MapScene:
                 custom += 1
                 self.instances.append(Instance(archetype=h, name=self.name_of(h), matrix=self._entity_matrix(e),
                                                lod_level=lod, source=ymap, tint=int(e.get("tintValue") or 0)))
-            self.ymap_info.append({"ymap": ymap, "entities": len(ents), "kept": kept, "converted": custom,
-                                   "vanilla_cell": bool(VANILLA_CELL.match(ymap))})
+            info = {"ymap": ymap, "entities": len(ents), "kept": kept, "converted": custom,
+                    "vanilla_cell": bool(VANILLA_CELL.match(ymap))}
+            if xy:
+                a = np.asarray(xy, np.float64)
+                info["bbox"] = [round(float(v), 1) for v in (a[:, 0].min(), a[:, 1].min(), a[:, 0].max(), a[:, 1].max())]
+            self.ymap_info.append(info)
+
+    def in_area(self, pos, margin=0.0) -> bool:
+        if not self.area:
+            return True
+        x, y, r = self.area
+        return (float(pos[0]) - x) ** 2 + (float(pos[1]) - y) ** 2 <= (r + margin) ** 2
+
+    def districts(self, limit=40) -> list:
+        """The map's ymaps grouped into districts by name (bronx_e_stream3 -> bronx_e), with their
+        extent and size: what to pick an area from when the map is a whole city."""
+        groups = {}
+        for info in self.ymap_info:
+            if "bbox" not in info:
+                continue
+            key = re.sub(r"(_strbig\d*|_stream\d*|_lod|_slod\d*|_milo_.*|_interior.*|_\d+)+$", "", info["ymap"]) or info["ymap"]
+            g = groups.setdefault(key, {"name": key, "ymaps": 0, "entities": 0, "bbox": list(info["bbox"])})
+            g["ymaps"] += 1
+            g["entities"] += info["entities"]
+            b = g["bbox"]
+            b[0], b[1] = min(b[0], info["bbox"][0]), min(b[1], info["bbox"][1])
+            b[2], b[3] = max(b[2], info["bbox"][2]), max(b[3], info["bbox"][3])
+        out = []
+        for g in groups.values():
+            b = g["bbox"]
+            cx, cy = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+            g["center"] = [round(cx, 1), round(cy, 1)]
+            g["radius"] = round(max(30.0, 0.5 * max(b[2] - b[0], b[3] - b[1])), 1)
+            out.append(g)
+        out.sort(key=lambda g: -g["entities"])
+        return out[:limit]
 
     def _add_mlo(self, e, ymap):
         h = int(e.get("archetypeName") or 0)
@@ -442,6 +545,12 @@ class MapScene:
                 continue
             c = self.ybn(h)
             if c is not None and not c.empty:
+                if self.area and len(c.triangles):
+                    t = c.triangles.reshape(-1, 3)
+                    x, y, r = self.area
+                    near = ((t[:, 0] - x) ** 2 + (t[:, 1] - y) ** 2) <= (r + 30.0) ** 2
+                    if not near.any():
+                        continue
                 self.world_collisions.append((stem, c))
 
     # ------------------------------------------------------------------ summary
@@ -455,6 +564,9 @@ class MapScene:
                                "collision_triangles": int(len(m.collision.triangles)) if m.collision else 0}
                               for m in self.mlos],
             "world_entities": len(self.instances),
+            "area": list(self.area) if self.area else None,
+            "out_of_area": self.out_of_area,
+            "districts": self.districts(),
             "skipped_lod_entities": self.skipped_lod,
             "missing_archetypes": dict(self.missing.most_common()),
             "missing_total": int(sum(self.missing.values())),

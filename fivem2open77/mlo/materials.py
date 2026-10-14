@@ -63,15 +63,63 @@ def roughness_from(shader) -> float:
     return float(max(0.05, min(0.95, r)))
 
 
+# what a texture GTA ships itself (and a map only names) most likely shows, by its name: the
+# surface keeps that colour instead of turning flat white.  First match wins.
+_GUESSES = [
+    (r"glass|window|wndw|mirror", (0.30, 0.36, 0.42)),
+    (r"pool_?tile", (0.42, 0.66, 0.76)),
+    (r"water|pool|pond|sea", (0.18, 0.32, 0.40)),
+    (r"terr?acott?a", (0.64, 0.36, 0.24)),
+    (r"roof", (0.36, 0.30, 0.28)),
+    (r"step|stair|ledge|kerb|curb", (0.60, 0.59, 0.56)),
+    (r"hedge|bush|shrub|leaf|leaves|foliage|ivy|tree|fern|palm|plant|veg|fur_grass", (0.22, 0.31, 0.14)),
+    (r"grass|lawn|turf|meadow|wetland", (0.31, 0.40, 0.19)),
+    (r"woodchip|bark|mulch", (0.40, 0.29, 0.19)),
+    (r"mud|dirt|soil|earth|ground", (0.40, 0.33, 0.24)),
+    (r"sand|beach|dune", (0.74, 0.66, 0.49)),
+    (r"gravel|pebble", (0.50, 0.47, 0.42)),
+    (r"rock|stone|cliff|boulder|slate", (0.48, 0.46, 0.43)),
+    (r"road|tarmac|asphalt|street|lane|parking|blacktop", (0.19, 0.19, 0.20)),
+    (r"pavement|sidewalk|paving|pave|concrete|cement|drain", (0.56, 0.55, 0.53)),
+    (r"marble", (0.85, 0.83, 0.79)),
+    (r"granite|terrazzo", (0.54, 0.52, 0.51)),
+    (r"tile|tiling|ceramic", (0.78, 0.78, 0.76)),
+    (r"brick", (0.54, 0.30, 0.22)),
+    (r"wood|plank|parquet|timber|oak|pine|walnut|deck|floorboard|worktop", (0.50, 0.35, 0.22)),
+    (r"carpet|rug|fabric|cloth|curtain|sofa|couch|cushion", (0.45, 0.40, 0.38)),
+    (r"leather", (0.28, 0.19, 0.14)),
+    (r"rust", (0.44, 0.25, 0.15)),
+    (r"chrome|steel|metal|alu|iron|silver|tin|grate|grill", (0.58, 0.59, 0.61)),
+    (r"gold|brass", (0.72, 0.58, 0.30)),
+    (r"shingle", (0.32, 0.30, 0.30)),
+    (r"plaster|stucco|wall|ceiling|paint", (0.80, 0.78, 0.74)),
+    (r"black|dark|shadow", (0.06, 0.06, 0.06)),
+    (r"white", (0.90, 0.90, 0.90)),
+]
+
+
+def guess_color(*names) -> tuple | None:
+    """(r, g, b) sRGB 0..1 for a missing GTA texture, from its (and its shader's) name; None when
+    nothing in the names says what it is."""
+    import re
+    text = " ".join(str(n).lower() for n in names if n)
+    for rx, rgb in _GUESSES:
+        if re.search(rx, text):
+            return rgb
+    return None
+
+
 def map_material(shader, tex_lookup) -> Material:
     """shader: gta.drawable.Shader; tex_lookup(name) -> canonical texture key or None."""
     sname = shader.name if shader else "default"
     kind, alpha = classify(sname, shader.render_bucket if shader else 0)
     diffuse = normal = spec = None
+    wanted = None
     if shader is not None:
         for p in DIFFUSE_PARAMS:
             t = shader.tex(p)
             if t:
+                wanted = wanted or t
                 diffuse = tex_lookup(t)
                 if diffuse:
                     break
@@ -87,8 +135,14 @@ def map_material(shader, tex_lookup) -> Material:
     m.roughness = roughness_from(shader)
     m.metalness = 0.0
     dc = shader.vec("matDiffuseColor") if shader else None
-    if dc:
+    if dc and all(0.0 <= float(c) <= 4.0 for c in dc[:3]):
         m.color = (float(dc[0]), float(dc[1]), float(dc[2]), 1.0)
+    m.missing_diffuse = wanted if (wanted and not diffuse) else None
+    if m.missing_diffuse:
+        # a texture of GTA's own the map only names: keep the surface in the colour it most likely
+        # has (mid grey when its name says nothing) rather than flat white
+        g = guess_color(wanted, sname) or (0.55, 0.55, 0.55)
+        m.color = (m.color[0] * g[0], m.color[1] * g[1], m.color[2] * g[2], 1.0)
     if kind == "emissive":
         em = shader.vec("emissiveMultiplier") if shader else None
         mult = float(em[0]) if em else 1.0
@@ -100,7 +154,7 @@ def map_material(shader, tex_lookup) -> Material:
         bump = shader.vec("bumpiness") if shader else None
         m.paint_slot = 0
         m.normal_strength = float(max(0.2, min(2.0, bump[0]))) if bump else 1.0
-    m.key = "m_" + hashlib.sha1(repr((kind, alpha, diffuse, normal, spec, round(m.roughness, 3), m.color,
+    m.key = "m_" + hashlib.sha1(repr((kind, alpha, diffuse, normal, spec, round(m.roughness, 3), tuple(round(c, 4) for c in m.color),
                                       round(m.emissive_ev, 2), sname)).encode()).hexdigest()[:10]
     return m
 

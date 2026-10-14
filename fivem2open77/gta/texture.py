@@ -158,6 +158,30 @@ def read_texture_dictionary(rd: ResourceReader, ptr: int) -> dict:
     return out
 
 
+def ytd_names(path_or_bytes, name: str = "") -> list:
+    """The lower-case texture names of a .ytd without copying any pixel data."""
+    data = path_or_bytes if isinstance(path_or_bytes, (bytes, bytearray)) else open(path_or_bytes, "rb").read()
+    rsc = read_rsc7(bytes(data), expect_version=13, name=name or str(path_or_bytes))
+    rd = ResourceReader(rsc, name=name)
+    c = rd.at(0x50000000)
+    if c is None:
+        return []
+    c.skip(0x10)
+    c.skip(16)
+    rd.pointer_list_header(c)
+    tex_ptr, tcount, _ = rd.pointer_list_header(c)
+    out = []
+    for p in rd.pointer_array(tex_ptr, tcount):
+        t = rd.at(p)
+        if t is None:
+            continue
+        t.skip(0x28)
+        n = rd.string_at(t.u64())
+        if n:
+            out.append(n.lower())
+    return out
+
+
 def load_ytd(path_or_bytes, name: str = "") -> dict:
     data = path_or_bytes if isinstance(path_or_bytes, (bytes, bytearray)) else open(path_or_bytes, "rb").read()
     rsc = read_rsc7(bytes(data), expect_version=13, name=name or str(path_or_bytes))
@@ -165,4 +189,4 @@ def load_ytd(path_or_bytes, name: str = "") -> dict:
     return read_texture_dictionary(rd, 0x50000000)
 
 
-__all__ = ["GtaTexture", "load_ytd", "read_texture_dictionary", "read_texture", "joaat"]
+__all__ = ["GtaTexture", "load_ytd", "ytd_names", "read_texture_dictionary", "read_texture", "joaat"]

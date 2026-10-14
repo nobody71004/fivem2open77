@@ -395,6 +395,15 @@ function doorsTab(root, ctx) {
 }
 
 // ------------------------------------------------------------------ options
+function districtPicker(L, onPick) {
+  const ds = (L && L.scene && L.scene.districts) || [];
+  if (ds.length < 2) return null;
+  const sel = h("select", h("option", { value: "" }, "pick a district..."),
+    ds.map((dd, i) => h("option", { value: String(i) }, `${dd.name} (${dd.entities.toLocaleString()} objects)`)));
+  sel.addEventListener("change", () => { if (sel.value !== "") onPick(ds[Number(sel.value)]); });
+  return h("div.row", h("span.muted", "Districts"), sel);
+}
+
 function optionsTab(root, ctx) {
   const raw = ctx.state.options || {};
   const o = ctx.state.normalized || Object.assign({}, ctx.state.defaults);
@@ -460,7 +469,7 @@ function optionsTab(root, ctx) {
       quiet_interiors: quiet.value,
       cell: Number(el.cell.value), ground_spacing: Number(el.ground_spacing.value),
       collision_budget: Number(el.collision_budget.value), instance_min_tris: Number(el.instance_min_tris.value),
-      coords: parseVec(el.coords.value), anchor: parseVec(el.anchor.value),
+      coords: parseVec(el.coords.value), anchor: parseVec(el.anchor.value), area: parseVec(el.area.value),
     };
     if (patch.entity_sets === "pick" || (Array.isArray(patch.entity_sets) && !patch.entity_sets.length)) patch.entity_sets = "none";
     for (const k of Object.keys(patch)) {
@@ -484,7 +493,11 @@ function optionsTab(root, ctx) {
       spotCard(ctx)),
     h("div.grid2",
       h("div.card", h("h3", "What is included"),
-        h("label.field", "MLO entity sets", esMode), esList,
+        h("label.field", "Area (GTA metres: x, y, radius)", vec("area", "the whole map")),
+        districtPicker(L, (dd) => { el.area.value = `${dd.center[0]}, ${dd.center[1]}, ${Math.min(dd.radius, 400)}`; }),
+        h("div.help", "A whole city (Liberty V and the like) is converted a district at a time: only what stands within the " +
+          "radius is kept. Leave it empty for an MLO or a normal map."),
+        h("label.field", { style: { marginTop: "10px" } }, "MLO entity sets", esMode), esList,
         sets.length ? null : h("div.help", "This map's MLOs have no optional entity sets."),
         h("label.field", { style: { marginTop: "10px" } }, "Leave out these objects", exclude), pick,
         h("div.help", "For props that do not belong (a placeholder, a broken object), by their GTA archetype name.")),
