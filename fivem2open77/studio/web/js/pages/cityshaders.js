@@ -2,6 +2,19 @@
 // three.js' y-up): vG is the game position (x east, y north, z up).  All write the logarithmic
 // depth of the renderer (a 16 km city and a 1.8 m walker share one depth buffer) and fade into the
 // night fog themselves.
+//
+// No NaN, ever: Direct3D (ANGLE on Windows) computes pow(x, y) as exp2(y * log2(x)), so a base a
+// hair below zero -- a texture coordinate interpolated to 1.0000001, a dot product of unit vectors
+// at 1.0000001 -- gives NaN, and one NaN pixel in the HDR buffer becomes a black square once the
+// bloom blurs it (a beam's top did exactly that on an RTX 5070: half the view black).  So: squares
+// are sq(), fractional powers take a clamped base, normals are normalised safely, and the composer
+// cleans the buffer before the bloom anyway (CLEAN_FS).
+export const MATH = /* glsl */ `
+float sq(float x) { return x * x; }
+vec3 safeNormalize(vec3 v) { return v * inversesqrt(max(dot(v, v), 1e-12)); }
+bool nonFinite(float v) { return (floatBitsToUint(v) & 0x7f800000u) == 0x7f800000u; }
+`;
+
 export const LIB = /* glsl */ `
 uniform float uTime;
 uniform vec3 uFogColor;
@@ -19,7 +32,7 @@ float gridLine(vec2 p, float step, float halfw) {
   return max(l.x, l.y) * fade;
 }
 vec3 fogged(vec3 c, float dist) {
-  float f = 1.0 - exp(-pow(dist * uFogDensity, 2.0));
+  float f = 1.0 - exp(-sq(dist * uFogDensity));
   return mix(c, uFogColor, clamp(f, 0.0, 1.0));
 }
 // the scan wave sent out from a spot (a map is focused, a spot is set)
@@ -28,13 +41,13 @@ float pulseAt(vec2 g) {
   if (uPulse.w <= 0.0 || t < 0.0 || t > 5.0) return 0.0;
   float r = distance(g, uPulse.xy);
   float R = t * 750.0;
-  return exp(-pow((r - R) / 28.0, 2.0)) * (1.0 - t / 5.0) * uPulse.w + exp(-pow((r - R * 0.6) / 10.0, 2.0)) * (1.0 - t / 5.0) * 0.35 * uPulse.w;
+  return exp(-sq((r - R) / 28.0)) * (1.0 - t / 5.0) * uPulse.w + exp(-sq((r - R * 0.6) / 10.0)) * (1.0 - t / 5.0) * 0.35 * uPulse.w;
 }
 float cursorAt(vec2 g) {
   if (uCursor.z <= 0.0) return 0.0;
   float d = distance(g, uCursor.xy);
-  float ring = exp(-pow((d - 26.0) / 2.2, 2.0)) * (0.75 + 0.25 * sin(uTime * 6.0));
-  float inner = exp(-pow((d - 9.0) / 1.2, 2.0)) * 0.6;
+  float ring = exp(-sq((d - 26.0) / 2.2)) * (0.75 + 0.25 * sin(uTime * 6.0));
+  float inner = exp(-sq((d - 9.0) / 1.2)) * 0.6;
   vec2 q = abs(g - uCursor.xy);
   float cross = (1.0 - smoothstep(0.4, 0.4 + fwidth(q.x) * 1.5, q.x)) * step(q.y, 60.0) * step(14.0, q.y)
               + (1.0 - smoothstep(0.4, 0.4 + fwidth(q.y) * 1.5, q.y)) * step(q.x, 60.0) * step(14.0, q.x);
@@ -45,11 +58,11 @@ float cursorAt(vec2 g) {
 const VHEAD = /* glsl */ `
 #include <common>
 #include <logdepthbuf_pars_vertex>
-`;
+` + MATH;
 const FHEAD = /* glsl */ `
 #include <common>
 #include <logdepthbuf_pars_fragment>
-`;
+` + MATH;
 
 // ---------------------------------------------------------------- terrain and water
 export const terrainVS = VHEAD + /* glsl */ `
@@ -67,7 +80,7 @@ uniform float uGrid;
 varying vec3 vG; varying vec3 vN; varying float vDist;
 void main() {
   #include <logdepthbuf_fragment>
-  vec3 n = normalize(vN);
+  vec3 n = safeNormalize(vN);
   float h = vG.z;
   vec3 col = mix(vec3(0.0025, 0.005, 0.011), vec3(0.009, 0.019, 0.03), smoothstep(-25.0, 420.0, h));
   float diff = max(dot(n, normalize(vec3(-0.38, 0.42, 0.82))), 0.0);
@@ -82,7 +95,7 @@ void main() {
   float c = abs(fract(h / 20.0 - 0.5) - 0.5) * 20.0;
   float cw = max(fwidth(h), 1e-4);
   col += vec3(0.0, 0.2, 0.24) * (1.0 - smoothstep(0.0, cw * 1.5, c)) * 0.22 * (1.0 - smoothstep(1.5, 8.0, cw)) * uGrid;
-  col += vec3(0.25, 0.95, 1.0) * pulseAt(vG.xy) * 1.2;
+  col += vec3(0.25, 0.95, 1.0) * pulseAt(vG.xy) * 0.8;
   col += vec3(0.3, 1.0, 0.9) * cursorAt(vG.xy);
   gl_FragColor = vec4(fogged(col, vDist), 1.0);
 }`;
@@ -135,7 +148,7 @@ void main() {
   float far = 1.0 - 0.45 * smoothstep(1500.0, 9000.0, vDist);         // dense far streets do not add up to white
   far *= mix(0.12, 1.0, smoothstep(20.0, 450.0, vDist));               // up close a street is dark tarmac with a sheen
   vec3 col = base * uIntensity * flick * far + mix(vec3(1.0, 0.85, 0.6), base, 0.35) * packets * 0.45;
-  col += vec3(0.4, 1.0, 1.0) * pulseAt(vG.xy) * 1.5;
+  col += vec3(0.4, 1.0, 1.0) * pulseAt(vG.xy) * 0.9;
   col *= 1.0 - smoothstep(9000.0, 22000.0, vDist);
   gl_FragColor = vec4(col, 1.0);
 }`;
@@ -159,7 +172,7 @@ uniform vec3 uColor; uniform vec3 uRim;
 varying vec3 vG; varying vec3 vN; varying float vDist;
 void main() {
   #include <logdepthbuf_fragment>
-  vec3 n = normalize(vN);
+  vec3 n = safeNormalize(vN);
   float diff = max(dot(n, normalize(vec3(-0.38, 0.42, 0.82))), 0.0);
   vec3 col = uColor * (0.25 + 0.6 * diff);
   float scan = 1.0 - smoothstep(0.0, 0.15 + fwidth(vG.z) * 0.6, abs(fract(vG.z / 4.0) - 0.5));
@@ -181,7 +194,7 @@ void main() {
   vG = gp.xyz;
   vec4 wp = modelMatrix * gp;
   vW = wp.xyz;
-  vNw = normalize(mat3(modelMatrix) * mat3(instanceMatrix) * normal);
+  vNw = safeNormalize(mat3(modelMatrix) * mat3(instanceMatrix) * normal);
   vDist = distance(wp.xyz, cameraPosition);
   gl_Position = projectionMatrix * viewMatrix * wp;
   #include <logdepthbuf_vertex>
@@ -232,13 +245,14 @@ void main() {
   float farE = mix(1.0, 0.4, smoothstep(700.0, 6000.0, vDist));
   col += accent * edge * (top > 0.5 ? 1.25 : 0.8) * (0.4 + 0.6 * vf) * farE;
   col += top * accent * (0.006 + 0.012 * tall);
-  vec3 V = normalize(cameraPosition - vW);
-  float fres = pow(1.0 - max(dot(normalize(vNw), V), 0.0), 3.0);
+  vec3 V = safeNormalize(cameraPosition - vW);
+  float ndv = 1.0 - clamp(dot(safeNormalize(vNw), V), 0.0, 1.0);
+  float fres = ndv * ndv * ndv;
   col += accent * fres * 0.06;
   // a scan sweep climbing the towers
-  float sweep = exp(-pow((vG.z - mod(uTime * 45.0, 700.0) + 50.0) / 2.5, 2.0));
+  float sweep = exp(-sq((vG.z - mod(uTime * 45.0, 700.0) + 50.0) / 2.5));
   col += accent * sweep * side * 0.5;
-  col += vec3(0.3, 1.0, 1.0) * pulseAt(vG.xy) * (0.6 + edge);
+  col += vec3(0.3, 1.0, 1.0) * pulseAt(vG.xy) * (0.35 + 0.7 * edge);
   if (abs(vId - uHover) < 0.5) col += vec3(0.45, 1.0, 1.0) * (0.035 + edge * 1.1) + vec3(0.03, 0.12, 0.15) * win * detail;
   col = fogged(col, vDist);
   float a = 1.0;
@@ -258,7 +272,7 @@ void main() {
   vec4 w0 = modelMatrix * vec4(position, 1.0);
   float d = distance(w0.xyz, cameraPosition);
   float w = max(uWidth, d * uPxScale * uPx);
-  vec2 perp = normalize(vec2(-aDir.y, aDir.x) + 1e-6);
+  vec2 perp = vec2(-aDir.y, aDir.x) * inversesqrt(max(dot(aDir, aDir), 1e-12));
   vec3 p = position + vec3(perp * aSide * w * 0.5, 0.0);
   vSide = aSide; vAlong = aAlong; vDist = d;
   vG = (modelMatrix * vec4(p, 1.0)).xyz;
@@ -299,9 +313,9 @@ varying vec2 vUv; varying float vDist;
 void main() {
   #include <logdepthbuf_fragment>
   float y = vUv.y;
-  float fade = pow(1.0 - y, 1.6);
+  float fade = pow(clamp(1.0 - y, 0.0, 1.0), 1.6);
   float bands = 0.6 + 0.4 * smoothstep(0.6, 1.0, sin(y * 90.0 - uTime * 5.0));
-  float core = 0.5 + 0.5 * pow(abs(sin(vUv.x * 3.14159 * 2.0)), 0.5);
+  float core = 0.5 + 0.5 * sqrt(abs(sin(vUv.x * 3.14159 * 2.0)));
   vec3 col = uColor * uIntensity * fade * bands * (0.6 + 0.4 * core);
   gl_FragColor = vec4(col, 1.0);
 }`;
@@ -334,7 +348,7 @@ void main() {
   vec2 g = abs(fract(q / 5.0 - 0.5) - 0.5) * 5.0;
   float grid = (1.0 - smoothstep(0.06, 0.06 + max(fw.x, fw.y) * 1.5, min(g.x, g.y))) * (1.0 - smoothstep(60.0, 400.0, vDist));
   float scanY = fract(uTime * 0.25) * size.y;
-  float scan = exp(-pow((q.y - scanY) / max(0.6, size.y * 0.01), 2.0));
+  float scan = exp(-sq((q.y - scanY) / max(0.6, size.y * 0.01)));
   vec3 col = uColor * uIntensity * (0.05 + grid * 0.12 + outline * 0.9 + corner * 1.6 + scan * 0.35);
   gl_FragColor = vec4(col, 1.0);
 }`;
@@ -347,8 +361,8 @@ void main() {
   float r = length(vP);
   float t = fract(uTime * 0.45 + uPhase);
   float R = t;
-  float ring = exp(-pow((r - R) / 0.035, 2.0)) * (1.0 - t);
-  float inner = exp(-pow((r - 0.08) / 0.02, 2.0)) * 0.8;
+  float ring = exp(-sq((r - R) / 0.035)) * (1.0 - t);
+  float inner = exp(-sq((r - 0.08) / 0.02)) * 0.8;
   vec3 col = uColor * uIntensity * (ring + inner);
   gl_FragColor = vec4(col, 1.0);
 }`;
@@ -357,28 +371,45 @@ void main() {
 export const skyVS = /* glsl */ `
 varying vec3 vDir;
 void main() {
-  vDir = normalize(position);
+  vDir = position;
   vec4 p = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
   gl_Position = p.xyww;
 }`;
 
-export const skyFS = /* glsl */ `
+export const skyFS = MATH + /* glsl */ `
 uniform float uTime;
 varying vec3 vDir;
 float hash13(vec3 p3) { p3 = fract(p3 * .1031); p3 += dot(p3, p3.zyx + 31.32); return fract((p3.x + p3.y) * p3.z); }
 void main() {
-  vec3 d = normalize(vDir);
+  vec3 d = safeNormalize(vDir);
   float up = clamp(d.y, -1.0, 1.0);
   vec3 zenith = vec3(0.004, 0.006, 0.016), horizon = vec3(0.03, 0.035, 0.07);
   vec3 col = mix(horizon, zenith, smoothstep(0.0, 0.55, up));
   // the city's glow on the haze: magenta to the west, cyan to the east
-  float az = atan(d.x, -d.z);
-  float band = exp(-pow(up / 0.09, 2.0));
+  float az = atan(d.x, -d.z + 1e-7);
+  float band = exp(-sq(up / 0.09));
   col += band * mix(vec3(0.16, 0.03, 0.12), vec3(0.02, 0.1, 0.14), 0.5 + 0.5 * sin(az)) * 0.9;
-  col += exp(-pow((up + 0.02) / 0.025, 2.0)) * vec3(0.05, 0.08, 0.12);
+  col += exp(-sq((up + 0.02) / 0.025)) * vec3(0.05, 0.08, 0.12);
   // stars
   vec3 s = floor(d * 380.0);
   float st = step(0.9975, hash13(s)) * smoothstep(0.05, 0.4, up);
   col += st * (0.35 + 0.65 * hash13(s + 1.7)) * (0.7 + 0.3 * sin(uTime * (1.0 + hash13(s) * 3.0))) * vec3(0.7, 0.8, 1.0);
   gl_FragColor = vec4(col, 1.0);
+}`;
+
+
+// ---------------------------------------------------------------- the composer's clean-up
+// before the bloom: anything not finite becomes black (one pixel, not a square), and nothing is
+// brighter than the bloom can carry in half floats
+export const CLEAN_VS = /* glsl */ `
+varying vec2 vUv;
+void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`;
+
+export const CLEAN_FS = MATH + /* glsl */ `
+uniform sampler2D tDiffuse;
+varying vec2 vUv;
+float clean(float v) { return nonFinite(v) ? 0.0 : clamp(v, 0.0, 64.0); }
+void main() {
+  vec4 c = texture2D(tDiffuse, vUv);
+  gl_FragColor = vec4(clean(c.r), clean(c.g), clean(c.b), nonFinite(c.a) ? 1.0 : clamp(c.a, 0.0, 1.0));
 }`;

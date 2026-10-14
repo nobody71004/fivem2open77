@@ -12,12 +12,14 @@ import * as THREE from "../../vendor/three/three.module.min.js";
 import { OrbitControls } from "../../vendor/three/OrbitControls.js";
 import { EffectComposer } from "../../vendor/three/EffectComposer.js";
 import { RenderPass } from "../../vendor/three/RenderPass.js";
+import { ShaderPass } from "../../vendor/three/ShaderPass.js";
 import { UnrealBloomPass } from "../../vendor/three/UnrealBloomPass.js";
 import { OutputPass } from "../../vendor/three/OutputPass.js";
 import { api, waitJob } from "../api.js";
 import { h, clear, toast } from "../ui.js";
 import { loadCity, view, TriGrid, BoxSet, insidePoly, polyCentroid } from "./citydata.js";
 import * as S from "./cityshaders.js";
+import { diag, diagGpu } from "../diag.js";
 
 const ROLE = {
   now: { color: 0x41f08f, tag: "NOW" },
@@ -80,7 +82,7 @@ export function cityStage(host, opts = {}) {
       if (disposed) return;
       showVeil("loading", "Raising the city", 1);
       await new Promise((r) => setTimeout(r, 30));
-      viewer = createViewer(el, data, prefs, Object.assign({}, opts, { onRebuild: () => stage.rebuild() }));
+      viewer = createViewer(el, data, prefs, Object.assign({}, opts, { onRebuild: () => stage.rebuild(), onLost: contextLost }));
       if (lastScene) viewer.update(lastScene);
       if (st.stale) toast("The game was updated since the 3D city was built: rebuild it from the city's menu if anything looks off");
       veil.classList.add("gone");
@@ -136,6 +138,22 @@ export function cityStage(host, opts = {}) {
     if (st.job) build(false);
   }
 
+  // the graphics driver took the context away (a reset, a GPU switch, too many contexts): bring the
+  // view back on a new one; three losses within a minute stop it with a way out
+  let losses = [];
+  function contextLost() {
+    if (disposed) return;
+    if (viewer) { viewer.dispose(); viewer = null; }
+    const now = Date.now();
+    losses = losses.filter((t) => now - t < 60000).concat(now);
+    if (losses.length >= 3) {
+      return showVeil("error", "The graphics driver keeps resetting the 3D view. Choose Fast in the layers menu (or turn Glow off) once it is back, "
+        + "and check that the graphics driver is up to date.");
+    }
+    showVeil("loading", "The graphics driver reset the 3D view: bringing it back", 1);
+    setTimeout(() => { if (!disposed && !viewer) boot(); }, 1200);
+  }
+
   boot();
   const stage = {
     el,
@@ -165,6 +183,23 @@ function createViewer(root, data, prefs, opts) {
   const canvas = renderer.domElement;
   canvas.className = "c3-canvas";
   root.prepend(canvas);
+  diagGpu(renderer.getContext(), "3D city");
+  // a shader the GPU will not take: in the log, with the driver's own words
+  renderer.debug.onShaderError = (gl, program, vs, fs) => {
+    const info = [gl.getProgramInfoLog(program), gl.getShaderInfoLog(vs), gl.getShaderInfoLog(fs)].filter(Boolean).join(" | ");
+    console.error("3D city shader:", info);
+    diag("shader", `3D city: ${info}`);
+  };
+  let lost = false;
+  const onLost = (e) => {
+    e.preventDefault();
+    if (disposed || lost) return;
+    lost = true;
+    console.warn("3D city: the graphics context was lost");
+    diag("webgl", "3D city: the graphics context was lost (driver reset or GPU switch); rebuilding the view");
+    if (opts.onLost) opts.onLost();
+  };
+  canvas.addEventListener("webglcontextlost", onLost);
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(55, 1, 0.3, 80000);
   camera.rotation.order = "YXZ";
@@ -469,6 +504,8 @@ function createViewer(root, data, prefs, opts) {
   const rt = new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType, samples: 4 });
   const composer = new EffectComposer(renderer, rt);
   composer.addPass(new RenderPass(scene, camera));
+  // nothing that is not a finite colour reaches the bloom (a NaN pixel would come out a black square)
+  composer.addPass(new ShaderPass({ uniforms: { tDiffuse: { value: null } }, vertexShader: S.CLEAN_VS, fragmentShader: S.CLEAN_FS }));
   const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.5, 0.38, 0.8);
   composer.addPass(bloom);
   composer.addPass(new OutputPass());
@@ -913,7 +950,7 @@ function createViewer(root, data, prefs, opts) {
     if (hoverDirty || mode !== "orbit") updateHover();
     updateLabels();
     updateHud(alt, dt);
-    if (visible && !document.hidden) {
+    if (visible && !document.hidden && !lost) {
       composer.render(dt);
       if (fullRate) adapt(dt);
     }
@@ -1211,6 +1248,8 @@ function createViewer(root, data, prefs, opts) {
     composer.dispose && composer.dispose();
     rt.dispose();
     renderer.dispose();
+    canvas.removeEventListener("webglcontextlost", onLost);
+    try { renderer.forceContextLoss(); } catch (_) { /* already gone */ }   // give the context back now, not at GC
     canvas.remove();
     hud.remove();
     labelLayer.remove();

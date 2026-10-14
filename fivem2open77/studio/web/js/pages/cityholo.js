@@ -7,20 +7,21 @@ import { api } from "../api.js";
 import { fxLevel, onFxLevel } from "../fx.js";
 import { loadCity, view } from "./citydata.js";
 import * as S from "./cityshaders.js";
+import { diag } from "../diag.js";
 
-const PAD_FS = /* glsl */ `
+const PAD_FS = S.MATH + /* glsl */ `
 uniform float uTime; varying vec2 vUv;
 void main() {
   vec2 p = vUv * 2.0 - 1.0;
   float r = length(p);
   if (r > 1.0) discard;
   float a = atan(p.y, p.x);
-  float rings = exp(-pow((r - 0.98) / 0.012, 2.0)) * 1.2 + exp(-pow((r - 0.86) / 0.006, 2.0)) * 0.6
-    + exp(-pow((r - fract(uTime * 0.18)) / 0.01, 2.0)) * 0.45 * (1.0 - fract(uTime * 0.18));
+  float rings = exp(-sq((r - 0.98) / 0.012)) * 1.2 + exp(-sq((r - 0.86) / 0.006)) * 0.6
+    + exp(-sq((r - fract(uTime * 0.18)) / 0.01)) * 0.45 * (1.0 - fract(uTime * 0.18));
   float ticks = step(0.92, r) * step(r, 0.97) * step(0.75, fract(a / 6.2831853 * 72.0));
   float sweep = smoothstep(0.0, 1.0, 1.0 - fract((a / 6.2831853) - uTime * 0.12)) * step(r, 0.86) * 0.10;
   float grid = (1.0 - smoothstep(0.0, 0.05, abs(fract(p.x * 12.0) - 0.5) * 2.0 - 0.9)) * 0.0;
-  vec3 col = vec3(0.38, 0.95, 0.93) * (rings + ticks * 0.5 + sweep) + vec3(1.0, 0.31, 0.64) * exp(-pow((r - 0.74) / 0.004, 2.0)) * 0.5;
+  vec3 col = vec3(0.38, 0.95, 0.93) * (rings + ticks * 0.5 + sweep) + vec3(1.0, 0.31, 0.64) * exp(-sq((r - 0.74) / 0.004)) * 0.5;
   col += vec3(0.1, 0.5, 0.55) * (1.0 - r) * 0.08 + grid;
   gl_FragColor = vec4(col, 1.0);
 }`;
@@ -164,11 +165,14 @@ export async function cityHologram(host, { onOpen } = {}) {
     camera.lookAt(0, -R * 0.05, 0);
     renderer.render(scene, camera);
   }
-  let raf = 0, last = 0, visible = true, disposed = false;
+  let raf = 0, last = 0, visible = true, disposed = false, lost = false;
+  // a driver reset: three.js restores the context and its resources by itself; draw nothing meanwhile
+  renderer.domElement.addEventListener("webglcontextlost", (e) => { e.preventDefault(); if (disposed) return; lost = true; diag("webgl", "home hologram: the graphics context was lost"); });
+  renderer.domElement.addEventListener("webglcontextrestored", () => { lost = false; if (!disposed && !raf) raf = requestAnimationFrame(loop); });
   function loop(now) {
     raf = 0;
     if (disposed) return;
-    if (visible && !document.hidden && now - last > 33) { draw(now); last = now; }
+    if (visible && !document.hidden && !lost && now - last > 33) { draw(now); last = now; }
     if (fxLevel() === "full" && visible) raf = requestAnimationFrame(loop);
   }
   const io = new IntersectionObserver((ents) => { visible = ents.some((x) => x.isIntersecting); if (visible && !raf) raf = requestAnimationFrame(loop); });
@@ -190,6 +194,7 @@ export async function cityHologram(host, { onOpen } = {}) {
       document.removeEventListener("visibilitychange", onVis);
       scene.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
       renderer.dispose();
+      try { renderer.forceContextLoss(); } catch (_) { /* already gone */ }   // give the context back now
       wrap.remove();
     },
   };

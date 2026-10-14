@@ -116,7 +116,7 @@ export function placePanel(root, opts) {
     h("div.card", h("div.row", h("b", "Server"), srvSel, folderSel, mapSel, conn, h("div.grow"), live3d.tabs,
       h("button.btn.small.ghost", { onclick: () => poll(true) }, "Refresh"))),
     banner,
-    h("div", { style: { display: "grid", gridTemplateColumns: "minmax(0, 1fr) 400px", gap: "14px", marginTop: "14px", alignItems: "start" } }, stage, side));
+    h("div.live-grid", stage, side));
 
   // ---------------------------------------------------------------- data
   const sid = () => srvSel.value;

@@ -116,7 +116,10 @@
 @media (prefers-reduced-motion: reduce) { .c3-glyph i { animation: none; } }
 
 /* Live maps: the stage with its view switch */
-.live-stage { position: relative; height: clamp(520px, calc(100vh - 230px), 1500px); border-radius: var(--radius); }
+.live-grid { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 14px; margin-top: 14px; align-items: start; }
+/* a narrow window: the city on top, the panel under it (side by side the city would be squeezed to nothing) */
+@media (max-width: 1100px) { .live-grid { grid-template-columns: minmax(0, 1fr); } }
+.live-stage { position: relative; min-width: 0; height: clamp(520px, calc(100vh - 230px), 1500px); border-radius: var(--radius); }
 .live-stage > .plan, .live-stage > .city { position: absolute; inset: 0; }
 .live-stage > .plan { background: #0b0c0e; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
 .live-stage .hidden { display: none; }

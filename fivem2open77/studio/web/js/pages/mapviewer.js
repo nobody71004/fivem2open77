@@ -210,6 +210,7 @@ export function mapViewerTab(root, ctx) {
     disposed = true;
     ro.disconnect();
     renderer.dispose();
+    try { renderer.forceContextLoss(); } catch (_) { /* already gone */ }
     scene.traverse((o) => {
       if (o.geometry) o.geometry.dispose();
       if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => { if (m.map) m.map.dispose(); m.dispose(); });

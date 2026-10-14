@@ -47,6 +47,7 @@ const BG_FS = `
 precision highp float;
 uniform vec2 uRes; uniform float uTime; uniform vec2 uMouse; uniform float uMouseOn; uniform float uScale;
 uniform vec4 uClicks[4]; uniform vec3 uA; uniform vec3 uB; uniform float uAnim;
+float sq(float x) { return x * x; }   // squares by hand: Direct3D's pow is NaN below zero
 float hash(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
 float noise(vec2 p) { vec2 i = floor(p), f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
   return mix(mix(hash(i), hash(i + vec2(1, 0)), u.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), u.x), u.y); }
@@ -80,7 +81,7 @@ void main() {
       vec2 d = p - c.xy;
       float r = length(d);
       float R = ct * 820.0 * uScale;
-      float w = exp(-pow((r - R) / (30.0 * uScale), 2.0)) * (1.0 - ct / 1.8) * c.w;
+      float w = exp(-sq((r - R) / (30.0 * uScale))) * (1.0 - ct / 1.8) * c.w;
       ring += w;
       q += d / max(r, 1.0) * w * 9.0 * uScale;
     }
@@ -91,8 +92,8 @@ void main() {
   float edge = 1.0 - smoothstep(0.0, 0.045, hx.x);
   vec2 md = p - uMouse;
   float dm = length(md);
-  float spot = exp(-dm * dm / (2.0 * pow(230.0 * uScale, 2.0))) * uMouseOn;
-  float near = exp(-dm * dm / (2.0 * pow(70.0 * uScale, 2.0))) * uMouseOn;
+  float spot = exp(-dm * dm / (2.0 * sq(230.0 * uScale))) * uMouseOn;
+  float near = exp(-dm * dm / (2.0 * sq(70.0 * uScale))) * uMouseOn;
   float blink = step(0.992, hash(hx.yz + floor(t * 0.7))) * uAnim;
   float fill = 1.0 - smoothstep(0.0, 0.35, 0.5 - hx.x);
   col += uA * edge * (0.018 + spot * 0.42 + ring * 0.7);
@@ -109,7 +110,7 @@ void main() {
     float gl = max(1.0 - smoothstep(0.0, fw.x * 1.4, gd.x), 1.0 - smoothstep(0.0, fw.y * 1.4, gd.y));
     float fade = smoothstep(0.0, 0.5, depth) * (1.0 - smoothstep(0.85, 1.0, depth) * 0.3);
     col += mix(uA, uB, 0.55) * gl * fade * 0.11;
-    col += uB * exp(-pow((hy - 0.34) * uRes.y / (10.0 * uScale), 2.0)) * 0.06;      // the horizon line
+    col += uB * exp(-sq((hy - 0.34) * uRes.y / (10.0 * uScale))) * 0.06;      // the horizon line
   }
   // data motes drifting up
   for (int k = 0; k < 2; k++) {
@@ -126,13 +127,13 @@ void main() {
   }
   // the scan sweeping down every 11 s
   float sy = 1.0 - fract(t / 11.0);
-  col += uA * exp(-pow((uv.y - sy) * uRes.y / (2.0 * uScale), 2.0)) * 0.05 * uAnim;
-  col += uA * exp(-pow((uv.y - sy) * uRes.y / (60.0 * uScale), 2.0)) * 0.012 * uAnim;
+  col += uA * exp(-sq((uv.y - sy) * uRes.y / (2.0 * uScale))) * 0.05 * uAnim;
+  col += uA * exp(-sq((uv.y - sy) * uRes.y / (60.0 * uScale))) * 0.012 * uAnim;
   // vignette, grain
   vec2 c = uv - 0.5;
   col *= 1.0 - 0.55 * dot(c, c) * 1.6;
   col += (hash(p + fract(t) * 100.0) - 0.5) * 0.008;
-  gl_FragColor = vec4(max(col, 0.0), 1.0);
+  gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
 }`;
 
 function background() {
