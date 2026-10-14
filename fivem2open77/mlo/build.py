@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ..gta.bounds import Collision
+from ..gta.texture import NO_TEXTURE
 from ..model.build import _Accum, compute_tangents
 from ..model.ir import SubMesh
 from . import doors as doors_mod
@@ -200,6 +201,8 @@ class MapBuilder:
             if not tname:
                 return None
             n = tname.lower()
+            if n in NO_TEXTURE:
+                return None
             t = own.get(n) or ext.get(n)
             if t is None:
                 t = self.scene.find_texture(n)          # any dictionary of the resource (names indexed)

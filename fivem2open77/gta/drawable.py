@@ -13,7 +13,7 @@ import numpy as np
 
 from .jenkhash import HashNames, joaat
 from .reader import ResourceReader
-from .texture import GtaTexture, read_texture, read_texture_dictionary
+from .texture import GtaTexture, read_texture, read_texture_dictionary, texture_name
 
 _DATA = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "gta_names.json")
 with open(_DATA, "r", encoding="utf-8") as _f:
@@ -98,7 +98,7 @@ def _read_shader(rd: ResourceReader, ptr: int, index: int) -> Shader:
                 # TextureBase: name at +0x28; may be a full Texture if embedded
                 tc = rd.at(dptr)
                 tc.skip(0x28)
-                sp.texture = rd.string_at(tc.u64())
+                sp.texture = texture_name(rd.string_at(tc.u64())) or None
         elif dtype == 1:
             if dptr:
                 sp.vector = struct.unpack_from("<4f", *_seg(rd, dptr))

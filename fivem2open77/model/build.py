@@ -20,7 +20,7 @@ import numpy as np
 
 from ..gta.drawable import quat_to_mat3
 from ..gta.frag import load_yft
-from ..gta.texture import load_ytd
+from ..gta.texture import NO_TEXTURE, load_ytd
 from ..imaging import texture_rgba
 from .colors import gta_color
 from .ir import (LOD_MASKS, Bone, LightSpec, Material, Part, SubMesh, Vehicle,
@@ -620,6 +620,8 @@ class VehicleBuilder:
         if not n:
             return None
         n = n.lower()
+        if n in NO_TEXTURE:
+            return None
         if n not in self.textures:
             alt = self.tex_loose.get(_loose(n))
             if alt:

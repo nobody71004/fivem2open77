@@ -48,6 +48,29 @@ def mip_size(fmt: int, w: int, h: int) -> int:
     return w * h * bpb
 
 
+_IMAGE_EXT = (".dds", ".png", ".tga", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
+
+# names a shader gives a sampler it does not use: no texture, and nothing missing
+NO_TEXTURE = frozenset({"none", "null", "givemechecker"})
+
+
+def texture_name(raw) -> str:
+    """A texture's name the way GTA finds it: without a `pack:/` (or any folder) prefix and without
+    a file extension -- 'pack:/tl_church_marble.dds' is found as 'tl_church_marble'.  A dictionary's
+    hash list holds joaat of exactly that (lower case), and shaders name their textures that way.
+    Dictionaries converted with OpenIV (Liberty V's are almost all like this) store the long form."""
+    n = (raw or "").strip().replace("\\", "/")
+    if "/" in n:
+        n = n.rsplit("/", 1)[1]
+    elif ":" in n:
+        n = n.rsplit(":", 1)[1]
+    low = n.lower()
+    for ext in _IMAGE_EXT:
+        if low.endswith(ext) and len(n) > len(ext):
+            return n[:-len(ext)]
+    return n
+
+
 @dataclass
 class GtaTexture:
     name: str
@@ -125,7 +148,7 @@ def read_texture(rd: ResourceReader, ptr: int) -> GtaTexture | None:
     levels = c.u8()
     c.skip(2 + 4 * 4)
     data_ptr = c.u64()
-    name = rd.string_at(name_ptr) or ""
+    name = texture_name(rd.string_at(name_ptr))
     # Read generously: the exact mip chain is computed from the format.
     total = 0
     w, h = width, height
@@ -176,7 +199,7 @@ def ytd_names(path_or_bytes, name: str = "") -> list:
         if t is None:
             continue
         t.skip(0x28)
-        n = rd.string_at(t.u64())
+        n = texture_name(rd.string_at(t.u64()))
         if n:
             out.append(n.lower())
     return out
@@ -189,4 +212,4 @@ def load_ytd(path_or_bytes, name: str = "") -> dict:
     return read_texture_dictionary(rd, 0x50000000)
 
 
-__all__ = ["GtaTexture", "load_ytd", "ytd_names", "read_texture_dictionary", "read_texture", "joaat"]
+__all__ = ["GtaTexture", "load_ytd", "ytd_names", "read_texture_dictionary", "read_texture", "texture_name", "NO_TEXTURE", "joaat"]
