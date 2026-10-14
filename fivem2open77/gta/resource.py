@@ -26,7 +26,7 @@ from . import rpf
 from .gxt2 import parse_gxt2, parse_lua_text_entries
 from .meta import (parse_carcols, parse_carvariations, parse_handling_meta,
                    parse_vehicles_meta)
-from .rsc7 import EscrowProtectedError
+from .rsc7 import GEN9_VERSIONS, EscrowProtectedError
 
 STREAM_EXTS = (".yft", ".ytd", ".ydr", ".ydd")
 META_KINDS = {
@@ -316,11 +316,37 @@ def scan_resource(path: str) -> ScannedResource:
 
     vehicles = []
     seen = set()
-    all_ytds = [f for f in stream if f.lower().endswith(".ytd")]
+    versions = {}
+
+    def gen9(f):
+        """A GTA V Enhanced (gen9) resource: FiveM streams legacy ones, and this converter reads
+        those only.  Packs ship both ("Legacy\\..." and "Enhanced\\..."): the legacy copy is used."""
+        if f not in versions:
+            try:
+                with open(f, "rb") as fh:
+                    head = fh.read(8)
+                versions[f] = int.from_bytes(head[4:8], "little") if head[:4] == b"RSC7" else None
+            except OSError:
+                versions[f] = None
+        return versions[f] in GEN9_VERSIONS
+
+    def legacy(cands):
+        """The legacy files of a list, or the list itself when there are none (its error then says
+        what the file is)."""
+        if not cands:
+            return cands
+        keep = [c for c in cands if not gen9(c)]
+        return keep or cands
+
+    legacy_names = {os.path.basename(f).lower() for f in stream if f.lower().endswith(".ytd") and not gen9(f)}
+    all_ytds = [f for f in stream if f.lower().endswith(".ytd")
+                and not (gen9(f) and os.path.basename(f).lower() in legacy_names)]
 
     def near(cands, anchor):
         """The candidate that shares the longest path with anchor (the meta that names the car):
-        a pack with both a replace folder and an add-on dlc.rpf uses the add-on's own files."""
+        a pack with both a replace folder and an add-on dlc.rpf uses the add-on's own files.  Legacy
+        files win over gen9 ones whatever the path."""
+        cands = legacy(cands)
         if not cands:
             return None
         if not anchor or len(cands) == 1:
@@ -346,7 +372,7 @@ def scan_resource(path: str) -> ScannedResource:
             chain.append(p)
             p = txd_parents.get(p)
         for t in chain:
-            group = by_name.get(t + ".ytd", []) + by_name.get(t + "+hi.ytd", [])
+            group = legacy(by_name.get(t + ".ytd", [])) + legacy(by_name.get(t + "+hi.ytd", []))
             if anchor:
                 group = sorted(group, key=lambda c: -len(os.path.commonpath(
                     [os.path.normcase(os.path.abspath(anchor)), os.path.normcase(os.path.abspath(c))])))

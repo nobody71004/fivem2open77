@@ -116,3 +116,38 @@ def test_studio_caches_are_per_converter_version(monkeypatch):
     k1 = analysis._key({"neon": {}}, "abc")
     monkeypatch.setattr(analysis, "VERSION", "9.9.9")
     assert analysis._key({"neon": {}}, "abc") != k1
+
+
+def test_legacy_files_win_over_gta_v_enhanced_copies(tmp_path):
+    """Packs ship a FiveM (legacy) and a GTA V Enhanced (gen9) copy of the car; the vehicles.meta
+    the scan meets first may be the Enhanced one, and the path nearest to it then picked the gen9
+    model the converter cannot read (the Revuelto: 'this is a GTA V Enhanced (gen9) resource')."""
+    import struct
+    root = str(tmp_path / "iKX3 - Lamborghini Revuelto SV 2027")
+    enh = _car(root, "Enhanced", "revsv")
+    leg = _car(root, "Legacy", "revsv")
+
+    def rsc(path, version):
+        open(path, "wb").write(b"RSC7" + struct.pack("<III", version, 0, 0) + b"\0" * 64)
+
+    for d, yft, ytd in ((enh, 171, 5), (leg, 162, 13)):
+        rsc(os.path.join(d, "stream", "revsv.yft"), yft)
+        rsc(os.path.join(d, "stream", "revsv_hi.yft"), yft)
+        rsc(os.path.join(d, "stream", "revsv.ytd"), ytd)
+    res = scan_resource(root)
+    try:
+        assert len(res.vehicles) == 1
+        v = res.vehicles[0]
+        assert os.path.dirname(os.path.dirname(v.yft)) == leg, v.yft
+        assert v.ytds and all(not p.startswith(enh) for p in v.ytds), v.ytds
+    finally:
+        res.cleanup()
+    # only an Enhanced copy: it is still found (and its error says what it is)
+    root2 = str(tmp_path / "only-enhanced")
+    only = _car(root2, "Enhanced", "revsv")
+    rsc(os.path.join(only, "stream", "revsv.yft"), 171)
+    res = scan_resource(root2)
+    try:
+        assert res.vehicles and res.vehicles[0].yft.startswith(only)
+    finally:
+        res.cleanup()
