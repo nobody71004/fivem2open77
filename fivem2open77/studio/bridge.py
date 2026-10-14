@@ -31,6 +31,18 @@ class BridgeError(Exception):
     pass
 
 
+def updating(max_age=600.0) -> bool:
+    """True while the setup replaces the installed app: it leaves %LOCALAPPDATA%\\fivem2open77\\updating for
+    that time (a marker older than ten minutes is a setup that did not finish)."""
+    base = os.environ.get("LOCALAPPDATA")
+    if os.name != "nt" or not base:
+        return False
+    try:
+        return time.time() - os.path.getmtime(os.path.join(base, "fivem2open77", "updating")) < max_age
+    except OSError:
+        return False
+
+
 def in_package() -> bool:
     """True inside a packaged (Microsoft Store / MSIX) app's container (Windows)."""
     if os.name != "nt":
@@ -128,7 +140,12 @@ class Bridge:
         if in_package():
             raise BridgeError("the fivem2open77 Studio is not running: open it (Start menu: fivem2open77 Studio) and try "
                               "again. This app is a Microsoft Store build, which cannot start the Studio itself.")
-        if time.time() - self.launched_at > 60:
+        held = updating()
+        if held:
+            # starting the old copy now would hold the folder the setup is replacing: the setup starts the new one
+            self.log("the Studio is being updated: waiting for the new one")
+            wait = max(wait, 300.0)
+        elif time.time() - self.launched_at > 60:
             self.launch()
         t0 = time.time()
         while time.time() - t0 < wait:
@@ -137,6 +154,12 @@ class Bridge:
                 self.port = port
                 self.log(f"the Studio answers on port {port}")
                 return port
+            if held and not updating():                 # the setup is done (or gave up) and none answers yet
+                held = False
+                if time.time() - self.launched_at > 60:
+                    time.sleep(3.0)                     # the one the setup starts comes up first
+                    if not self.find():
+                        self.launch()
             time.sleep(0.5)
         raise BridgeError("the fivem2open77 Studio did not start (see its log in the workspace's logs folder)")
 

@@ -44,10 +44,14 @@ namespace Fivem2Open77.Studio
         public static int Install(string home, bool launch, bool quiet)
         {
             string target = InstallDir;
+            // while this marker is there, an agent app's MCP bridge (1.5.3 and newer) does not start the Studio
+            // it lost when the setup closed it; it waits for the new one
+            string marker = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "fivem2open77", "updating");
             try
             {
                 if (!IsInstalled(home))
                 {
+                    try { Directory.CreateDirectory(Path.GetDirectoryName(marker)); File.WriteAllText(marker, Program.Version); } catch { }
                     using (var progress = new ProgressForm("Installing " + Program.AppName + "..."))
                     {
                         progress.Show();
@@ -66,6 +70,9 @@ namespace Fivem2Open77.Studio
                         CopyTree(home, staging, progress);
                         Swap(staging, target);
                         try { File.Delete(Path.Combine(target, "portable.txt")); } catch { }
+                        // an older bridge starts the old Studio again as soon as it loses it: that one goes too,
+                        // or it would keep the window (one per user) and the new copy could not start
+                        StopRunning(target);
                     }
                 }
                 string exe = Path.Combine(target, ExeName);
@@ -93,6 +100,10 @@ namespace Fivem2Open77.Studio
                 if (!quiet) MessageBox.Show("Installation failed:\n\n" + ex.Message + "\n\nClose the Studio and the apps that use its agent " +
                     "connection (Claude, Cursor, VS Code, Codex), then run the setup again.", Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return 1;
+            }
+            finally
+            {
+                try { File.Delete(marker); } catch { }
             }
         }
 
