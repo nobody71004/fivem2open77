@@ -18,6 +18,19 @@ const STATE_LABEL = {
 const fmt = (a) => (a ? `${(+a.x).toFixed(1)}, ${(+a.y).toFixed(1)}, ${(+a.z).toFixed(1)} · ${(+(a.yaw || 0)).toFixed(0)}°` : "-");
 const VIEW_KEY = "f2o77.live.view";
 
+// a list from the map manager: Lua's JSON has no empty array, so "no saved spots yet" arrives as
+// {} (and a list with holes as {"1": .., "3": ..}); older Studios looped over that and broke
+export const arr = (v) => (Array.isArray(v) ? v : v && typeof v === "object"
+  ? Object.keys(v).sort((a, b) => (+a) - (+b)).map((k) => v[k]) : []);
+export function normMap(m) {
+  if (m && typeof m === "object") { m.presets = arr(m.presets); m.history = arr(m.history); }
+  return m;
+}
+function normLive(r) {
+  if (r && r.status && typeof r.status === "object") r.status.maps = arr(r.status.maps).filter((m) => m && typeof m === "object").map(normMap);
+  return r;
+}
+
 // the stage of the live page: Night City in 3D, or the plan (top-down canvas)
 export function liveStage(opts = {}) {
   let want3d = true;
@@ -109,27 +122,43 @@ export function placePanel(root, opts) {
   const sid = () => srvSel.value;
   const folder = () => folderSel.value;
   const q = () => `?name=${encodeURIComponent(folder())}`;
-  const current = () => (live && live.status ? (live.status.maps || []).find((m) => m.name === mapName) : null);
+  const current = () => (live && live.status ? arr(live.status.maps).find((m) => m.name === mapName) : null);
 
   async function poll(force) {
     if (disposed) return;
     clearTimeout(timer);
     try {
-      const r = await api.get(`/servers/${sid()}/live${q()}`);
+      const r = normLive(await api.get(`/servers/${sid()}/live${q()}`));
       if (disposed) return;
       live = r;
-      if (r.ok && !mapName && (r.status.maps || []).length) mapName = r.status.maps[0].name;
+      if (r.ok && !mapName && r.status.maps.length) mapName = r.status.maps[0].name;
       if (r.ok && Date.now() - playersAt > 5000) {
         playersAt = Date.now();
-        api.get(`/servers/${sid()}/live/players${q()}`).then((p) => { players = p.players || []; draw(); }).catch(() => { players = []; });
+        api.get(`/servers/${sid()}/live/players${q()}`).then((p) => { players = arr(p && p.players).filter((x) => x && typeof x === "object"); safe(draw); }).catch(() => { players = []; });
       }
-      showState();
     } catch (e) {
       live = { ok: false, error: e.message };
-      showState();
     }
+    // drawing is not the connection: a problem showing an answer must not read as "Not connected"
+    safe(showState);
     if (!disposed) timer = setTimeout(poll, POLL_MS);
     if (force) toast("Refreshed", "ok");
+  }
+
+  let shownError = null;
+  function safe(fn) {
+    try {
+      fn();
+      if (shownError) { shownError.remove(); shownError = null; }
+    } catch (e) {
+      console.error("live maps:", e);
+      if (!shownError) {
+        shownError = h("div.banner", { style: { marginTop: "14px" } }, h("b", "Display problem"),
+          h("span", `the server answered, but this page could not show it (${e.message}); the controls may be out of date`),
+          h("div.grow"), h("button.btn.small", { onclick: () => location.reload() }, "Reload"));
+        banner.after(shownError);
+      }
+    }
   }
 
   async function op(name, body = {}, quiet = false) {
@@ -139,10 +168,10 @@ export function placePanel(root, opts) {
       const r = await api.post(`/servers/${sid()}/live/maps/${mapName}/${name}${q()}`, body);
       if (!r.ok && !quiet) toast(`${name}: ${String(r.reason || "refused").replace(/_/g, " ")}`, "err");
       if (r.map && live && live.status) {
-        const i = (live.status.maps || []).findIndex((m) => m.name === mapName);
-        if (i >= 0) live.status.maps[i] = r.map;
+        const i = arr(live.status.maps).findIndex((m) => m.name === mapName);
+        if (i >= 0) live.status.maps[i] = normMap(r.map);
       }
-      showState();
+      safe(showState);
       return r;
     } catch (e) {
       toast(e.message, "err");
@@ -180,7 +209,7 @@ export function placePanel(root, opts) {
     }
     // the map list (live page)
     if (!opts.mapName && live.ok) {
-      const names = (live.status.maps || []).map((m) => m.name);
+      const names = arr(live.status.maps).map((m) => m.name);
       if (mapSel.options.length !== names.length || [...mapSel.options].some((o, i) => o.value !== names[i])) {
         clear(mapSel).append(...names.map((n) => h("option", { value: n }, n)));
       }
@@ -253,7 +282,7 @@ export function placePanel(root, opts) {
           h("button.btn.small", { disabled: !players.length, onclick: () => op("here", { playerId: +playerSel.value }) }, "To this player"),
           h("button.btn.small", { disabled: !players.length, onclick: () => op("goto", { playerId: +playerSel.value, which: m.pending ? "pending" : "running" }) }, "Send them there"))),
       h("div.card", h("h3", "Saved spots"),
-        (m.presets || []).length ? h("table.tbl", h("tbody", m.presets.map((p) => h("tr", h("td", h("b", p.name), h("div.mono.muted", { style: { fontSize: "11.5px" } }, fmt(p.anchor))),
+        arr(m.presets).length ? h("table.tbl", h("tbody", arr(m.presets).map((p) => h("tr", h("td", h("b", p.name), h("div.mono.muted", { style: { fontSize: "11.5px" } }, fmt(p.anchor))),
           h("td", h("div.row", { style: { gap: "4px" } }, h("button.btn.small", { onclick: () => op("presetUse", { name: p.name }) }, "Use"),
             h("button.btn.small.ghost", { onclick: async () => {
               if (await confirmBox("Delete preset", `Delete the saved spot "${p.name}"?`, "Delete", "danger")) op("presetDelete", { name: p.name });
@@ -278,7 +307,7 @@ export function placePanel(root, opts) {
               }
             } }, "Apply the move")),
         h("div.help", { style: { marginTop: "6px" } }, `baker: ${live.status.baker && live.status.baker.known ? (live.status.baker.version || "running") + (live.status.baker.hook ? ", start hook" : ", no start hook") : "not seen (moves wait for it)"}`)),
-      (m.history || []).length ? h("div.card", h("h3", "Recent changes"), h("table.tbl", h("tbody", m.history.slice(0, 8).map((x) =>
+      arr(m.history).length ? h("div.card", h("h3", "Recent changes"), h("table.tbl", h("tbody", arr(m.history).slice(0, 8).map((x) =>
         h("tr", h("td.muted", x.at ? fmtAgo(x.at) : ""), h("td", x.what || ""), h("td.mono", fmt(x.anchor)), h("td.muted", x.by || "")))))) : null);
   }
 
@@ -400,7 +429,7 @@ export function placePanel(root, opts) {
     };
     const m = current();
     if (live && live.ok && live.status) {
-      for (const o of live.status.maps || []) {
+      for (const o of arr(live.status.maps)) {
         if (o.name === mapName || !o.running) continue;
         items.push({ key: `other:${o.name}`, map: o.name, name: o.display || o.name, role: "other", anchor: o.running, bounds: ownBounds(o) });
       }
@@ -411,11 +440,11 @@ export function placePanel(root, opts) {
       if (m.running) items.push({ key: `now:${m.name}`, map: m.name, name, role: "now", anchor: m.running, bounds: b });
       if (m.pending) items.push({ key: `new:${m.name}`, map: m.name, name, role: "new", anchor: m.pending, bounds: b, note: m.apply && m.apply.state ? (STATE_LABEL[m.apply.state] || m.apply.state) : "Apply to move it" });
       if (m.previous) items.push({ key: `prev:${m.name}`, map: m.name, name, role: "previous", anchor: m.previous, bounds: b });
-      for (const p of m.presets || []) if (p.anchor) items.push({ key: `preset:${m.name}:${p.name}`, map: m.name, name: p.name, role: "preset", anchor: p.anchor, bounds: b });
+      for (const p of arr(m.presets)) if (p && p.anchor) items.push({ key: `preset:${m.name}:${p.name}`, map: m.name, name: p.name, role: "preset", anchor: p.anchor, bounds: b });
     }
     return {
       focus: m ? m.name : null, items,
-      players: players.filter((p) => p.position).map((p) => ({ key: `p${p.playerId}`, name: p.name, x: +p.position.x, y: +p.position.y, z: +(p.position.z || 0) })),
+      players: arr(players).filter((p) => p && p.position).map((p) => ({ key: `p${p.playerId}`, name: p.name, x: +p.position.x, y: +p.position.y, z: +(p.position.z || 0) })),
     };
   }
 
@@ -459,13 +488,13 @@ export function placePanel(root, opts) {
     g.fillText(`grid ${st} m · N ↑`, W - 110, H - 8);
     if (!live || !live.ok || !live.status) return;
     // other maps on the server
-    for (const o of live.status.maps || []) {
+    for (const o of arr(live.status.maps)) {
       if (o.name === mapName || !o.running) continue;
       drawMap(o, o.running, { stroke: "#5b6068", dash: [3, 3], label: o.name });
     }
     if (!m) return;
-    for (const p of m.presets || []) {
-      if (!p.anchor) continue;
+    for (const p of arr(m.presets)) {
+      if (!p || !p.anchor) continue;
       const [px, py] = w2c(p.anchor.x, p.anchor.y);
       g.save(); g.fillStyle = "#8d939b"; g.translate(px, py); g.rotate(Math.PI / 4); g.fillRect(-4, -4, 8, 8); g.restore();
       g.fillStyle = "#8d939b"; g.font = "11px 'IBM Plex Sans', sans-serif"; g.fillText(p.name, px + 7, py + 4);
@@ -475,8 +504,8 @@ export function placePanel(root, opts) {
     if (m.running) drawMap(m, m.running, { stroke: "#4fb072", tile: m.pending || moving ? 0.35 : 0.9, label: "now" });
     const pend = moving || m.pending;
     if (pend) drawMap(m, pend, { stroke: "#e8b931", tile: 0.85, width: 2, fill: "rgba(232,185,49,0.05)", label: moving ? "drop to set" : "new spot" });
-    for (const p of players) {
-      if (!p.position) continue;
+    for (const p of arr(players)) {
+      if (!p || !p.position) continue;
       const [px, py] = w2c(p.position.x, p.position.y);
       g.beginPath(); g.arc(px, py, 5, 0, Math.PI * 2); g.fillStyle = "#6aa5e6"; g.fill();
       g.fillStyle = "#c9dcf2"; g.font = "12px 'IBM Plex Sans', sans-serif"; g.fillText(p.name, px + 8, py + 4);

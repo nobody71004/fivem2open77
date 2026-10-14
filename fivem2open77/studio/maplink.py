@@ -84,6 +84,45 @@ class Unreachable(LinkError):
     """The listener did not answer (server stopped or restarting, or the agent API is off)."""
 
 
+def as_list(v) -> list:
+    """A list the manager sent.  Lua's JSON has no empty array: an empty table goes out as {} (no
+    saved spots yet: "presets": {}), and a table with holes as {"1": .., "3": ..}."""
+    if isinstance(v, list):
+        return v
+    if isinstance(v, dict):
+        if all(isinstance(k, str) and k.isdigit() for k in v):
+            return [v[k] for k in sorted(v, key=int)]
+        return list(v.values())
+    return []
+
+
+MAP_LISTS = ("presets", "history")
+
+
+def normalize_map(m):
+    """A map as the manager describes it, with its lists as lists."""
+    if isinstance(m, dict):
+        for k in MAP_LISTS:
+            if k in m:
+                m[k] = as_list(m[k])
+    return m
+
+
+def normalize(value):
+    """Lists stay lists in what the manager answers (status, a map, players, an operation)."""
+    if not isinstance(value, dict):
+        return value
+    if "maps" in value:
+        value["maps"] = [normalize_map(m) for m in as_list(value["maps"]) if isinstance(m, dict)]
+    if "players" in value:
+        value["players"] = [p for p in as_list(value["players"]) if isinstance(p, dict)]
+    if isinstance(value.get("map"), dict):
+        normalize_map(value["map"])
+    if "name" in value and any(k in value for k in MAP_LISTS):
+        normalize_map(value)
+    return value
+
+
 def _parse_listen(url: str) -> tuple:
     u = urllib.parse.urlsplit(url or "http://127.0.0.1:11781")
     if u.scheme != "http" or not u.hostname:
@@ -298,22 +337,22 @@ class ManagerLink:
 
     # ------------------------------------------------------------------ API
     def status(self) -> dict:
-        return self.request("GET", "/status")[1]
+        return normalize(self.request("GET", "/status")[1])
 
     def map(self, name: str) -> dict:
-        return self.request("GET", "/maps/" + urllib.parse.quote(name))[1]
+        return normalize(self.request("GET", "/maps/" + urllib.parse.quote(name))[1])
 
     def baker(self) -> dict:
         return self.request("GET", "/baker")[1]
 
     def players(self) -> dict:
-        return self.request("GET", "/players", token=True)[1]
+        return normalize(self.request("GET", "/players", token=True)[1])
 
     def op(self, map_name: str, op_name: str, args: dict | None = None) -> dict:
         if op_name not in OPS:
             raise LinkError(f"unknown map operation {op_name}")
         status, value = self.request("POST", f"/maps/{urllib.parse.quote(map_name)}/{op_name}", args or {}, token=True)
-        return value
+        return normalize(value)
 
     def screenshot(self, player: int, url: str, options=None) -> dict:
         return self.request("POST", "/screenshot", {"playerId": player, "url": url, "options": options or {}}, token=True)[1]
