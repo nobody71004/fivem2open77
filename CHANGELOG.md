@@ -1,5 +1,41 @@
 # Changelog
 
+## Studio 1.5.1 · converter 1.4.1 (2026-10-14)
+
+### Live maps: no more black screens in the 3D city
+
+* Root cause, found on the reporting machine (RTX 5070 Laptop GPU, ANGLE on Direct3D 11, in the
+  Studio's own page): half of the 3D view was black. With *Glow* off it was clean; skipping one
+  shader at a time showed it was the map beams. A beam's fade was `pow(1.0 - y, 1.6)`, and on
+  Direct3D `pow` is `exp2(y * log2(x))`: where the texture coordinate interpolates to a hair over
+  1.0 the base is a hair below zero and the result is NaN. One NaN pixel in the HDR buffer, blurred
+  by the bloom, comes out as a black square the size of half the screen. Software rendering (the
+  cloud tests) never produced the NaN.
+* Fixed at the source and guarded: fractional powers take a clamped base, every square is a
+  multiplication (no `pow(x, 2.0)` anywhere: the city, the home hologram, the background), normals
+  are normalised so that a zero vector cannot become NaN, and the composer now cleans the HDR
+  buffer before the bloom (anything not finite becomes black, nothing brighter than the bloom can
+  carry). Checked on the same GPU with the corrected shaders: 0 % of the view black with Glow on
+  (53 % before).
+* A lost graphics context (a driver reset, a GPU switch, too many contexts) no longer leaves the
+  view black: it says so and builds the view again on a new context; three losses in a minute stop
+  with a way out (the Fast quality, Glow off). Every 3D view gives its context back when it closes
+  (the car, map, city and hologram viewers), so moving between pages never runs into the browser's
+  context limit. Checked by losing the context on purpose.
+* A narrow window put the city beside the side panel until it had no width left (a black strip):
+  under 1100 px the panel goes under the city.
+* The page's own problems go to the Studio's log now (`logs/studio-*.log`): script errors,
+  rejected promises, a lost context, a shader the GPU refused (with the driver's words) and the GPU
+  itself, so a problem on someone's machine leaves a trace (`POST /api/diag`, bounded).
+* The focus pulse is a little softer (with the bloom it washed the streets out at its peak).
+
+### Cars (converter 1.4.1)
+
+* Packs that ship a FiveM (legacy) and a GTA V Enhanced (gen9) copy of the car: the legacy files
+  are used. The vehicles.meta met first could be the Enhanced one, and the model nearest to it was
+  then the gen9 one the converter cannot read (the Revuelto SV pack: *this is a GTA V Enhanced
+  (gen9) resource*). Texture dictionaries follow the same rule.
+
 ## Studio 1.5.0 · converter 1.4.0 (2026-10-14)
 
 ### Live maps: Night City in 3D
