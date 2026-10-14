@@ -8,7 +8,7 @@ A small resource is copied into its project, as always.  A city is not: Liberty 
 * and the work happens in a job with progress, not inside the HTTP request that asked for it.
 
 What several projects read lives once in the workspace's library: a car pack (one zip, dozens of
-cars: the FiveM Civ Car Pack has 67) becomes a project per car, and the districts of a city are
+cars: the FiveM Civ Car Pack has 68) becomes a project per car, and the districts of a city are
 projects that share the city's files.
 
     <workspace>/library/<id>/entry.json   kind (cars | map), name, where it came from, how it is held,

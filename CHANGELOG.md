@@ -29,7 +29,7 @@
 
 ### Car packs
 
-* Drop a car pack on *Cars* (the FiveM Civ Car Pack 2: 67 cars in one 2 GB zip): it is held once,
+* Drop a car pack on *Cars* (the FiveM Civ Car Pack 2: 68 cars in one 2 GB zip): it is held once,
   its cars are listed with their name, make, class and folder, you tick the ones you want and each
   becomes a project of its own that reads only its own folder of the pack. One job reads them one
   after another (parts, textures, name, thumbnail); the list fills as they are done.

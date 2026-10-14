@@ -286,7 +286,7 @@ WinForms + WebView2 app that needs no runtime install). What each release change
   shockwaves).
 * **Cars**: drop a FiveM resource (.zip/.rar/.7z, a folder, or type its path). The Studio reads it
   at once, renders it and keeps it extracted while you work. A **car pack** (one download, dozens of
-  cars, like the FiveM Civ Car Pack's 67) is held once: you tick the cars you want and each becomes a
+  cars, like the FiveM Civ Car Pack's 68) is held once: you tick the cars you want and each becomes a
   project of its own; the pack builds all its cars one after another and installs them on a server
   in one bundle (one restart).
 * **Imports of any size** run as a job with progress: a folder of 1 GB or more is read where it is
