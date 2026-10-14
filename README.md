@@ -226,7 +226,9 @@ python -m fivem2open77 mlo-roads ...           Night City's road lanes for the m
   a time: `--area x,y,radius` (GTA world metres) takes only what stands there — its entities, MLOs,
   collision, and the texture dictionaries they need through `gtxd.meta` parents. Without an area a
   city-sized input stops with its biggest districts listed, ready to pass as `--area`; the Studio's
-  map options have the same *area* field with a district picker.
+  map options have the same *area* field with a district picker. Texture dictionaries converted with
+  OpenIV (names like `pack:/tl_church_marble.dds`, as in almost all of Liberty V) are read the way
+  GTA reads them.
 * **Doors** are detected from the map's own objects and can be steered with `--door-map`
   (`hinged|sliding|rolling|open|solid|remove` per object, `open|door-hinged|door-double|...` per
   doorway), so a shop front can keep its roller shutter while an apartment door swings.
@@ -276,6 +278,9 @@ WinForms + WebView2 app that needs no runtime install). What each release change
   Appearance sets it to *Full*, *Lite* (still background, no trail) or *Off*; the system's
   reduce-motion setting starts at Lite, and the 3D views keep a clean cursor. Nothing runs while the
   window is hidden, and the background drops to a few frames a second at rest and behind 3D views.
+  The window's start screen and the installer wear the same HUD (drawn natively while the server
+  starts: the lattice, the horizon grid, the emblem, a progress bar, the cursor's trail and
+  shockwaves).
 * **Cars**: drop a FiveM resource (.zip/.rar/.7z or a folder path). The Studio reads it at once,
   renders it and keeps it extracted while you work.
 * **3D**: the car exactly as the conversion assembles it (three.js), part by part; colour by part to

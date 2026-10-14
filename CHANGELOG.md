@@ -24,6 +24,14 @@
   (districts, sub-districts, the maps), layers (buildings, streets, NCART, districts, labels, grid,
   district colours, hologram buildings), glow (bloom) and a fast mode; dynamic resolution holds the
   frame rate; full screen. Works with no server configured too.
+* Fixed: Live maps said *Not connected — object is not iterable (cannot read property
+  Symbol(Symbol.iterator))* for servers whose maps have no saved spots. The map manager is Lua, and
+  Lua's JSON has no empty array: no saved spots went out as `"presets": {}`, the page looped over it
+  and the error was shown as a connection failure. The Studio now turns every list the manager sends
+  (saved spots, history, maps, players) into a list before anything uses it (the agent's
+  `live_maps`/`live_map` too), the page copes on its own as well, and a problem drawing an answer is
+  shown as a display problem, never as *Not connected*. Reproduced with the 1.4.1 page against a
+  manager answering like the real one, fixed with both layers checked separately.
 * `GET /api/citymap`, `POST /api/citymap/build`, `GET /api/citymap/citymap.{json,bin}` (cacheable by
   key). Regression tests build the cache from a synthetic 3dmap (WolvenKit-shaped JSON and glTF) and
   drive the API; the real build was checked against the game's own files (`basegame_1_engine`).
@@ -39,6 +47,14 @@
   cards tilt, buttons ripple, page titles decode, the window boots with a scan.
 * Home: Night City as a hologram on a projector pad (when the 3D city is built), turning slowly and
   leaning towards the cursor; it opens Live maps.
+* The start screen: the window no longer shows a plain "Starting..." line while the server starts
+  -- it opens on the HUD drawn natively (GDI+, about 60 fps, only while on screen): the hex lattice
+  lighting up around the cursor and rippling where you click, the horizon grid running towards you,
+  drifting motes wired to the cursor, a scan, the emblem with turning rings and pulses, the title
+  decoding, a segmented progress bar, read-outs in the corners, and the cursor's reticle, light
+  trail, sparks and shockwaves. It stays over the page until the page has loaded (no blank flash),
+  says so if the page does not load (with *Try again*), and carries *Open in browser* when the
+  Studio runs in the browser. The installer's window is the same HUD with the copy's progress.
 * Settings > Appearance: *Full*, *Lite* (still background that answers the cursor, brackets and lit
   panels) or *Off*, kept per computer; the system's reduce-motion setting starts at Lite. Bounded
   work: nothing runs while the window is hidden, the background falls to 20 fps at rest and to 8 fps
@@ -71,6 +87,14 @@
   through `gtxd.meta` parents; a city-sized input without an area stops and lists its biggest
   districts. Far collision files are read for their bounds only; the city-wide texture search is
   gone (a lazy index instead).
+* Texture dictionaries converted with OpenIV name their textures `pack:/tl_church_marble.dds`; GTA
+  finds that texture as `tl_church_marble` (the dictionary's hash list holds exactly that) and so do
+  shaders. The converter keyed the long form and found none of them: 37,181 of Liberty V's 39,065
+  textures are named so, and a district (150 m around -156, 161) came out with 594
+  textures "missing" and 85 decal pieces left out. Names are now read the way GTA reads them (no
+  `pack:/` or folder prefix, no file extension, in dictionaries and in shaders, for maps and cars):
+  the same district has 945 textures, 2 truly absent (`mh_whitewall02`, and `none`, a placeholder
+  that is now simply no texture), and every decal kept.
 * Textures that only exist in GTA V itself (which cannot be shipped) give the surface a likely colour
   from its name instead of white; untextured cut-out decal sheets are dropped.
 * The doorway check moves only the collision that can reach a doorway, all at once (a Liberty V
