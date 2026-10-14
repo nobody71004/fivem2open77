@@ -13,6 +13,7 @@ counted in ``missing`` so the report can name them; they are not converted.
 """
 from __future__ import annotations
 
+import math
 import os
 import re
 from collections import Counter
@@ -152,6 +153,38 @@ DENSITY_CELL = 32.0         # metres: the city overview's grid
 DENSITY_MAX = 40000         # cells kept (a 20 x 20 km city at 32 m has fewer)
 
 
+def core_extent(density: dict, cell: float, keep: float = 0.994) -> list | None:
+    """[x0, y0, x1, y1] around `keep` of the entities of a density grid ({(ix, iy): n}), padded."""
+    if not density:
+        return None
+    total = float(sum(density.values()))
+    cut = (1.0 - keep) / 2.0 * total
+
+    def span(axis):
+        acc = {}
+        for k, n in density.items():
+            acc[k[axis]] = acc.get(k[axis], 0) + n
+        keys = sorted(acc)
+        run, lo = 0.0, keys[0]
+        for k in keys:
+            run += acc[k]
+            if run > cut:
+                lo = k
+                break
+        run, hi = 0.0, keys[-1]
+        for k in reversed(keys):
+            run += acc[k]
+            if run > cut:
+                hi = k
+                break
+        return lo * cell, (hi + 1) * cell
+
+    x0, x1 = span(0)
+    y0, y1 = span(1)
+    pad = 0.04 * max(x1 - x0, y1 - y0, 4 * cell)
+    return [round(x0 - pad, 1), round(y0 - pad, 1), round(x1 + pad, 1), round(y1 + pad, 1)]
+
+
 def district_key(ymap: str) -> str:
     """The district a ymap belongs to by its name: bronx_e_stream3, manhatsw_strbig0_straight_ms and
     manhat02_lod all name theirs first (bronx_e, manhatsw, manhat02)."""
@@ -160,25 +193,53 @@ def district_key(ymap: str) -> str:
     return key or ymap
 
 
+def _wmedian(vals) -> float:
+    """The weighted median of [(value, weight)]."""
+    vals = sorted(vals)
+    half = sum(w for _, w in vals) / 2.0
+    run = 0.0
+    for v, w in vals:
+        run += w
+        if run >= half:
+            return v
+    return vals[-1][0]
+
+
 def districts_of(ymap_info, limit=40) -> list:
-    """ymaps grouped into districts by name (bronx_e_stream3 -> bronx_e), with their extent."""
+    """ymaps grouped into districts by name (bronx_e_stream3 -> bronx_e): where most of a district's
+    objects stand (a weighted median centre) and the radius that holds 95% of them, so a ymap of
+    the group placed far from the rest does not make the district kilometres wide."""
     groups = {}
     for info in ymap_info:
         if "bbox" not in info:
             continue
         key = district_key(info["ymap"])
-        g = groups.setdefault(key, {"name": key, "ymaps": 0, "entities": 0, "bbox": list(info["bbox"])})
+        g = groups.setdefault(key, {"name": key, "ymaps": 0, "entities": 0, "parts": []})
         g["ymaps"] += 1
         g["entities"] += info["entities"]
-        b = g["bbox"]
-        b[0], b[1] = min(b[0], info["bbox"][0]), min(b[1], info["bbox"][1])
-        b[2], b[3] = max(b[2], info["bbox"][2]), max(b[3], info["bbox"][3])
+        b = info["bbox"]
+        c = info.get("center") or [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2]
+        g["parts"].append((c, b, max(1, info["entities"])))
     out = []
     for g in groups.values():
-        b = g["bbox"]
-        cx, cy = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+        parts = g.pop("parts")
+        cx = _wmedian([(c[0], w) for c, _, w in parts])
+        cy = _wmedian([(c[1], w) for c, _, w in parts])
+        # each ymap's reach from the centre (its far corner), the radius holding 95% of the entities
+        reach = sorted((max(math.hypot(x - cx, y - cy) for x in (b[0], b[2]) for y in (b[1], b[3])), w)
+                       for _, b, w in parts)
+        total = sum(w for _, w in reach)
+        run, r = 0.0, reach[-1][0]
+        for d, w in reach:
+            run += w
+            if run >= 0.95 * total:
+                r = d
+                break
+        inside = [b for c, b, _ in parts if math.hypot(c[0] - cx, c[1] - cy) <= r + 1.0] or [b for _, b, _ in parts]
+        g["bbox"] = [round(min(b[0] for b in inside), 1), round(min(b[1] for b in inside), 1),
+                     round(max(b[2] for b in inside), 1), round(max(b[3] for b in inside), 1)]
         g["center"] = [round(cx, 1), round(cy, 1)]
-        g["radius"] = round(max(30.0, 0.5 * max(b[2] - b[0], b[3] - b[1])), 1)
+        g["radius"] = round(max(30.0, r), 1)
         out.append(g)
     out.sort(key=lambda g: -g["entities"])
     return out[:limit] if limit else out
@@ -473,7 +534,12 @@ class MapScene:
                     "vanilla_cell": bool(VANILLA_CELL.match(ymap))}
             if xy:
                 a = np.asarray(xy, np.float64)
-                info["bbox"] = [round(float(v), 1) for v in (a[:, 0].min(), a[:, 1].min(), a[:, 0].max(), a[:, 1].max())]
+                if len(a) >= 20:          # a stray entity far away does not make the ymap kilometres wide
+                    lo, hi = np.percentile(a, 1.0, axis=0), np.percentile(a, 99.0, axis=0)
+                else:
+                    lo, hi = a.min(axis=0), a.max(axis=0)
+                info["bbox"] = [round(float(v), 1) for v in (lo[0], lo[1], hi[0], hi[1])]
+                info["center"] = [round(float(v), 1) for v in np.median(a, axis=0)]
                 if not self.area:
                     cells, counts = np.unique(np.floor(a / DENSITY_CELL).astype(np.int64), axis=0, return_counts=True)
                     for (ix, iy), n in zip(cells.tolist(), counts.tolist()):
@@ -492,12 +558,15 @@ class MapScene:
         return districts_of(self.ymap_info, limit)
 
     def overview(self) -> dict:
-        """A whole city at a glance: its extent and where its objects stand (DENSITY_CELL m cells)."""
+        """A whole city at a glance: where its objects stand (DENSITY_CELL m cells) and its extent:
+        the box around 99.4% of them (Liberty V places a few entities 12 km away from the rest),
+        with the full box beside it."""
         boxes = [i["bbox"] for i in self.ymap_info if "bbox" in i]
-        ext = ([round(min(b[0] for b in boxes), 1), round(min(b[1] for b in boxes), 1),
-                round(max(b[2] for b in boxes), 1), round(max(b[3] for b in boxes), 1)] if boxes else None)
+        full = ([round(min(b[0] for b in boxes), 1), round(min(b[1] for b in boxes), 1),
+                 round(max(b[2] for b in boxes), 1), round(max(b[3] for b in boxes), 1)] if boxes else None)
         cells = sorted(([ix, iy, n] for (ix, iy), n in self.density.items()), key=lambda c: -c[2])[:DENSITY_MAX]
-        return {"extent": ext, "objects": self.object_count(), "ymaps": len(self.ymap_info),
+        return {"extent": core_extent(self.density, DENSITY_CELL) or full, "full_extent": full,
+                "objects": self.object_count(), "ymaps": len(self.ymap_info),
                 "mlo_instances": len(self.mlos), "entities": sum(i["entities"] for i in self.ymap_info),
                 "grid": {"cell": DENSITY_CELL, "cells": cells}}
 
