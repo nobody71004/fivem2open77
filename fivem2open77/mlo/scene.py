@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..gta.bounds import Collision, load_ybn, read_bound
+from ..gta.bounds import Collision, load_ybn, read_bound, ybn_bounds
 from ..gta.drawable import quat_to_mat3
 from ..gta.jenkhash import joaat
 from ..gta.metafile import MetaHash, load_meta
@@ -291,13 +291,21 @@ class MapScene:
             self._tex_index = idx
         return self._tex_index
 
+    BIG_TXD_INDEX = 600      # more dictionaries than this: no resource-wide search (a city)
+
     def find_texture(self, name: str):
-        """A texture anywhere in the resource by name (None when it is not shipped)."""
+        """A texture anywhere in the resource by name (None when it is not shipped).  A city's
+        thousands of dictionaries are not searched: there a texture comes from the archetype's
+        dictionary and its gtxd parents, as in GTA."""
+        if len(self.idx.ytd) > self.BIG_TXD_INDEX:
+            return None
         h = self.texture_index().get(name.lower())
         return self._ytd(h).get(name.lower()) if h is not None else None
 
     def find_texture_loose(self, loose: str):
         """A texture whose name matches ignoring case, spaces and punctuation, when only one does."""
+        if len(self.idx.ytd) > self.BIG_TXD_INDEX:
+            return None
         if not hasattr(self, "_loose_index"):
             li = {}
             for n, h in self.texture_index().items():
@@ -543,6 +551,16 @@ class MapScene:
             if not belongs:
                 self.skipped_files.append((os.path.basename(path), "not referenced and not named after this map"))
                 continue
+            if self.area:
+                try:
+                    bmin, bmax = ybn_bounds(path, name=os.path.basename(path))
+                    x, y, r = self.area
+                    dx = max(bmin[0] - x, 0.0, x - bmax[0])
+                    dy = max(bmin[1] - y, 0.0, y - bmax[1])
+                    if dx * dx + dy * dy > (r + 30.0) ** 2:
+                        continue                 # nowhere near the area: not even read
+                except (ResourceError, ValueError, IndexError, OSError):
+                    pass
             c = self.ybn(h)
             if c is not None and not c.empty:
                 if self.area and len(c.triangles):

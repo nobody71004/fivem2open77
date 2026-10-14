@@ -244,6 +244,17 @@ def read_bound(rd: ResourceReader, ptr: int) -> Collision:
     return out
 
 
+def ybn_bounds(path_or_bytes, name: str = ""):
+    """(min, max) of a .ybn's root bound without reading its polygons (world space for map collision)."""
+    data = path_or_bytes if isinstance(path_or_bytes, (bytes, bytearray)) else open(path_or_bytes, "rb").read()
+    rsc = read_rsc7(bytes(data), name=name or str(path_or_bytes))
+    rd = ResourceReader(rsc, name=name)
+    buf, off, _ = rd.segment(0x50000000)
+    bmax = np.array(struct.unpack_from("<3f", buf, off + 0x20))
+    bmin = np.array(struct.unpack_from("<3f", buf, off + 0x30))
+    return bmin, bmax
+
+
 def load_ybn(path_or_bytes, name: str = "") -> Collision:
     data = path_or_bytes if isinstance(path_or_bytes, (bytes, bytearray)) else open(path_or_bytes, "rb").read()
     rsc = read_rsc7(bytes(data), name=name or str(path_or_bytes))
