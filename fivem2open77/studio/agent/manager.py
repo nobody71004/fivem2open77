@@ -83,6 +83,9 @@ shows both; enable_agent_api turns the API on, effective at the next server star
 
 Your end-to-end job for a map, unless the user asks for something narrower:
 1. get_map; look_at_map when there is no look. Read the converter's warnings, the size, the interiors and parts.
+   A whole city (Liberty V: the look says city) is converted a district at a time: pick_district with one of
+   get_map's districts (a few hundred metres; each district is its own map with its own resource id), and
+   pick_district new_project=true for the next one (it reads the same files).
 2. render_map (iso and plan) and check the map looks whole: buildings, floors, roads; nothing floating or cut.
 3. Change options only when something is wrong (exclude a broken prop by its object name, entity sets, static
    doors). Keep the resource id (name) once the map is installed anywhere: a new name is a new map on servers.
@@ -132,7 +135,8 @@ Your job for a world edit, unless the user asks for something narrower:
 
 SYSTEM_STUDIO = """
 This session has no project open. list_projects shows the Studio's cars, maps and world edits (open_project
-switches to one); import_resource brings in a FiveM car or map from a path on this PC; new_world_edit starts a
+switches to one); import_resource brings in a FiveM car or map from a path on this PC (import_car_pack for a
+pack of many cars: a project per car); new_world_edit starts a
 change to Night City itself. Server questions (status, logs, the agent API, the maps on a server and moving
 them) work without a project."""
 

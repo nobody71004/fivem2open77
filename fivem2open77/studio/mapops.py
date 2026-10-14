@@ -46,6 +46,11 @@ class MapOps:
             job.log(f"reading {p.data['source'].get('original') or p.data['source']['file']} ...")
             data = look.ensure(log=job.log, check=job.check, progress=job.set_progress)
             self._after_look(p, data)
+            if data.get("city"):
+                ov = data["overview"]
+                return {"city": True, "map": data["map"], "display_name": data["display_name"],
+                        "objects": ov["objects"], "ymaps": ov["ymaps"], "districts": len(data["districts"]),
+                        "next": "pick a district (an area) to convert"}
             return {"map": data["map"], "display_name": data["display_name"], "size": data["size"],
                     "placements": data["placements"], "parts": len(data["parts"]), "warnings": data["warnings"][:20]}
 
@@ -54,6 +59,22 @@ class MapOps:
     def _after_look(self, p, data):
         """Pin the map's resource id, remember what it is, name the project after it."""
         raw = p.raw_map_options()
+        if data.get("city"):
+            # a whole city: no resource id yet (each district gets its own: <city>_<district>)
+            ov = data["overview"]
+            info = {"name": raw.get("name") or data["map"], "display_name": raw.get("display_name") or data["display_name"],
+                    "city": True, "objects": ov["objects"], "districts": len(data["districts"]),
+                    "resource": data["resource"], "size": _extent_size(ov.get("extent"))}
+            with p.lock:
+                changed = p.data.get("map") != info
+                p.data["map"] = info
+                if not p.data.get("custom_name") and p.data.get("name") != data["display_name"]:
+                    p.data["name"] = data["display_name"]
+                    changed = True
+                if changed:
+                    p.data["updated"] = time.time()
+                    p.save()
+            return
         if not raw.get("name"):
             raw["name"] = data["map"]
             p.set_map_options(raw)
@@ -114,6 +135,108 @@ class MapOps:
         return {"options": p.raw_map_options(), "normalized": norm,
                 "look_job": look_job.summary() if look_job else None}
 
+    def _city_look_file(self, p):
+        """The newest city overview in a project's cache (the look of the whole city), or None."""
+        best = None
+        for f in os.listdir(p.path("cache")):
+            if not (f.startswith("look-") and f.endswith(".json")):
+                continue
+            fp = p.path("cache", f)
+            try:
+                with open(fp, "r", encoding="utf-8") as fh:
+                    head = fh.read(64)
+            except OSError:
+                continue
+            if '"city": true' in head and (best is None or os.path.getmtime(fp) > os.path.getmtime(best)):
+                best = fp
+        return best
+
+    def map_city(self, pid) -> dict:
+        """The city overview a district project was picked from (its districts and where the city's
+        objects stand)."""
+        p = self._map(pid)
+        fp = self._city_look_file(p)
+        if not fp:
+            raise maps_mod.LookMissing("no city overview for this map (it is not a whole city, or it was never looked "
+                                       "at without an area)")
+        with open(fp, "r", encoding="utf-8") as f:
+            city = json.load(f)
+        city["taken"] = self._districts_of(p)
+        return city
+
+    def _districts_of(self, p) -> list:
+        """The districts of a city converted so far: the map projects reading the same files with an area."""
+        lib = (p.data.get("source") or {}).get("lib")
+        users = self.projects.using(lib) if lib else [p]
+        out = []
+        for q in users:
+            if q.kind != "map":
+                continue
+            try:
+                o = q.map_options()
+            except maps_mod.MapOptionsError:
+                continue
+            if o.get("area"):
+                out.append({"project": q.id, "name": o.get("name") or (q.data.get("map") or {}).get("name"),
+                            "display_name": q.data.get("name"), "area": o["area"]})
+        return out
+
+    def _name_taken(self, name, but=None):
+        """The map project (not `but`) whose resource id is `name`, or None."""
+        for s in self.projects.list():
+            if s.get("kind") != "map" or s["id"] == but:
+                continue
+            try:
+                q = self.projects.get(s["id"])
+                own = q.raw_map_options().get("name")
+                info = q.data.get("map") or {}
+            except (OSError, ValueError, ProjectError):
+                continue
+            # a city's overview project has the city's name until a district is picked: not a map yet
+            if name == own or (not own and not info.get("city") and info.get("name") == name):
+                return q
+        return None
+
+    def map_district(self, pid, area, *, name=None, display_name=None, district=None, new_project=False):
+        """Convert one district of a whole city: in this project (its area and names change), or as
+        a new project reading the same files (another district next to the ones already built)."""
+        p = self._map(pid)
+        cfile = self._city_look_file(p)
+        city = None
+        if cfile:
+            with open(cfile, "r", encoding="utf-8") as f:
+                city = json.load(f)
+        base = (city or {}).get("map") or (p.data.get("map") or {}).get("name") or "city"
+        base_disp = (city or {}).get("display_name") or p.data.get("name") or base
+        if not name:
+            name = maps_mod.district_name(base, district or f"x{int(float(area[0]))}_y{int(float(area[1]))}")
+        if not display_name:
+            display_name = maps_mod.district_display(base_disp, district or "district")
+        patch = {"area": area, "name": name, "display_name": display_name}
+        maps_mod.normalize_options(maps_mod.merge(p.raw_map_options(), patch))      # raises MapOptionsError
+        other = self._name_taken(name, but=None if new_project else p.id)
+        if other is not None:
+            raise maps_mod.MapOptionsError([f"name: {name} is already the resource id of {other.data.get('name')}: "
+                                            "each district needs its own (pick another district, or change the id)"])
+        if not new_project:
+            r = self.map_set_options(pid, patch)
+            job = self.jobs.get(r["look_job"]["id"]) if r.get("look_job") else self.map_look(pid)
+            return p, job
+        if p.importing:
+            raise ProjectError("the city is still being imported")
+        lib = self.projects.share(p)
+        s = p.data["source"]
+        keep = {k: v for k, v in p.raw_map_options().items() if k not in ("area", "name", "display_name", "place")}
+        q = self.projects.create_shared("map", lib, s.get("sub") or "", s.get("original") or "", name=display_name,
+                                        options=dict(keep, **patch), file=s.get("file"))
+        if s.get("hash"):                      # the same files: the same source key as the city's project
+            with q.lock:
+                q.data["source"]["hash"] = s["hash"]
+                q.save()
+        if cfile:                              # the city overview, to pick the next district from there too
+            shutil.copyfile(cfile, q.path("cache", os.path.basename(cfile)))
+        return q, self.map_look(q.id)
+
     def map_render(self, pid, view="plan", mode="material", size=None) -> bytes:
         return maps_mod.MapLook(self._map(pid)).render(view, mode, size)
 
@@ -129,6 +252,10 @@ class MapOps:
         from ..mlo.pipeline import MapConverter
         p = self._map(pid)
         opts = p.map_options()                           # validated before queuing
+        look = maps_mod.MapLook(p).cached(opts)
+        if look and look.get("city"):
+            raise ProjectError(f"{p.data.get('name')} is a whole city ({look['overview']['objects']:,} objects): pick a "
+                               "district to convert first (the map's Overview, or set its area in Options)")
 
         def run(job):
             n = p.next_build()
@@ -539,6 +666,12 @@ class MapOps:
 
         return self.jobs.submit("map-wait", f"Wait for {map_name} on {link.name} ({until})", run,
                                 meta={"server": sid, "map": map_name})
+
+
+def _extent_size(ext):
+    if not ext:
+        return None
+    return [round(ext[2] - ext[0], 1), round(ext[3] - ext[1], 1), 0.0]
 
 
 _ARG_KEYS = {

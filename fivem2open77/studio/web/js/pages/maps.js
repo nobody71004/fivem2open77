@@ -1,69 +1,60 @@
-// Maps: every map project, and importing a FiveM map / MLO.
-import { api, uploadFile, waitJob } from "../api.js";
+// Maps: every map project, and importing a FiveM map / MLO (or a whole city: Liberty V is converted
+// a district at a time).
+import { api } from "../api.js";
 import { store, refreshState } from "../store.js";
-import { h, clear, toast, fmtAgo, fmtBytes, pill, logLines, icon } from "../ui.js";
+import { h, clear, toast, fmtAgo, fmtBytes, icon } from "../ui.js";
+import { importZone, jobCard, follow, sourceBody, desktop } from "../imports.js";
 
 export function mapsPage(root) {
   const list = h("div");
   const status = h("div");
-  const fileInput = h("input", { type: "file", accept: ".zip,.rar,.7z", class: "hidden", onchange: () => {
-    if (fileInput.files[0]) importFile(fileInput.files[0]);
-    fileInput.value = "";
-  } });
-  const pathInput = h("input", { type: "text", placeholder: "or a folder / archive on this PC, e.g. C:\\Users\\me\\Downloads\\MyMLO.rar", style: { flex: 1, minWidth: "260px" } });
-  const drop = h("div.dropzone",
-    h("div.big", icon("upload")),
-    h("div", h("b", "Drop a FiveM map or MLO here"), " (.zip, .rar, .7z) or ",
-      h("a", { href: "#", onclick: (e) => { e.preventDefault(); fileInput.click(); } }, "choose a file")),
-    h("div.help", { style: { marginTop: "6px" } }, "Resources with .ymap / .ytyp / .ydr / .ybn files. Escrow-protected (.fxap) resources cannot be converted."),
-    h("div.row", { style: { marginTop: "12px", justifyContent: "center" } }, pathInput,
-      h("button.btn", { onclick: () => pathInput.value.trim() && importPath(pathInput.value.trim()) }, "Import path")),
-    fileInput);
-  for (const ev of ["dragenter", "dragover"]) drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("over"); });
-  for (const ev of ["dragleave", "drop"]) drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("over"); });
-  drop.addEventListener("drop", (e) => {
-    const f = e.dataTransfer.files[0];
-    if (f) importFile(f);
+  const drop = importZone({
+    what: "a FiveM map or MLO",
+    help: "Resources with .ymap / .ytyp / .ydr / .ybn files, up to a whole city (it is converted a district at a time). "
+      + "A big folder is read where it is and a big archive is extracted once. Escrow-protected (.fxap) resources cannot be converted.",
+    placeholder: "or a folder / archive on this PC, e.g. C:\\Users\\me\\Downloads\\libertyv",
+    onSource: start,
   });
 
-  async function importFile(file) {
-    const bar = h("div.progress", h("div", { style: { width: "0%" } }));
-    clear(status).append(h("div.card", h("div.row", h("b", `Uploading ${file.name}`), h("span.muted", fmtBytes(file.size))), bar));
+  async function start(src) {
+    const card = jobCard("Importing", null);
+    clear(status).append(card.el);
+    let pid = null;
     try {
-      const up = await uploadFile(`/uploads?name=${encodeURIComponent(file.name)}`, file, (p) => { bar.firstChild.style.width = `${(p * 100).toFixed(0)}%`; });
-      await create({ upload_id: up.upload_id, kind: "map" });
+      const body = await sourceBody(src, card);
+      card.title(`Importing ${src.path || src.file.name}`);
+      const r = await api.post("/projects", Object.assign(body, { kind: "map" }));
+      pid = r.project.id;
+      let j = await follow(card, r.job.id);
+      if (j.state !== "done") return failed(card, pid, j, "This map could not be imported");
+      const res = j.result || {};
+      if (res.how === "link") {
+        card.extra.append(h("p.help", h("b", "Read where it is: "), `the project reads ${src.path} directly (${fmtBytes(res.bytes)}, `
+          + `${(res.files || 0).toLocaleString()} files, nothing copied). Keep the folder there.`));
+      } else if (res.how === "extract") {
+        card.extra.append(h("p.help", `Extracted once into the Studio (${fmtBytes(res.bytes)} archive).`));
+      }
+      card.title("Looking at the map");
+      j = await follow(card, res.next_job);
+      if (j.state !== "done") return failed(card, pid, j, "This map could not be read");
+      card.finish("done");
+      if (j.result && j.result.city) toast(`${j.result.display_name} is a whole city: pick a district to convert`, "ok");
+      else toast("Map imported", "ok");
+      location.hash = `#/map/${pid}/overview`;
     } catch (e) {
-      clear(status).append(h("div.card.err", e.message));
+      card.finish("failed");
+      card.extra.append(h("div.err", { style: { marginTop: "8px" } }, e.message));
+      if (pid) load();
     }
   }
 
-  async function importPath(path) {
-    clear(status).append(h("div.card", "Copying ", h("code", path), "..."));
-    try { await create({ path, kind: "map" }); } catch (e) { clear(status).append(h("div.card.err", e.message)); }
-  }
-
-  async function create(body) {
-    const r = await api.post("/projects", body);
-    const pid = r.project.id;
-    const logBox = h("div.log", { style: { maxHeight: "160px" } });
-    const bar = h("div.progress.indef", h("div"));
-    const step = h("span.muted", "reading the map");
-    clear(status).append(h("div.card", h("div.row", h("b", "Looking at the map..."), step, h("div.grow"), pill("running")),
-      h("p.help", "The converter reads every map file, builds the parts and draws previews (about a minute for a big MLO)."), bar,
-      h("div", { style: { height: "8px" } }), logBox));
-    const j = await waitJob(r.job.id, (jj) => {
-      clear(logBox).append(...logLines(jj.allLines));
-      logBox.scrollTop = logBox.scrollHeight;
-      if (jj.step) step.textContent = jj.step;
-      if (jj.progress != null) { bar.className = "progress"; bar.firstChild.style.width = `${jj.progress * 100}%`; }
-    });
-    if (j.state !== "done") {
-      clear(status).append(h("div.card", h("b.err", "This map could not be read: "), j.error || j.state,
-        h("div.row", { style: { marginTop: "10px" } }, h("button.btn", { onclick: () => { location.hash = `#/map/${pid}`; } }, "Open anyway"))));
-      return;
-    }
-    toast("Map imported", "ok");
-    location.hash = `#/map/${pid}/overview`;
+  function failed(card, pid, j, what) {
+    card.finish(j.state);
+    card.extra.append(h("div", { style: { marginTop: "8px" } }, h("b.err", `${what}: `), j.error || j.state),
+      h("div.row", { style: { marginTop: "10px" } },
+        h("button.btn", { onclick: () => { location.hash = `#/map/${pid}`; } }, "Open anyway"),
+        h("button.btn.ghost", { onclick: async () => { await api.del(`/projects/${pid}`); clear(status); load(); } }, "Delete it")));
+    load();
   }
 
   async function load() {
@@ -79,14 +70,19 @@ export function mapsPage(root) {
     for (const p of maps) {
       const lb = p.last_build;
       const m = p.map || {};
-      const thumb = h("div.thumb", p.thumb ? "" : "—");
+      const thumb = h("div.thumb", p.thumb ? "" : (m.city ? icon("map") : "—"));
       if (p.thumb) thumb.style.backgroundImage = `url(/api/projects/${p.id}/thumb.png?t=${Math.floor((p.updated || 0))})`;
       const dep = p.deployments && p.deployments.length ? p.deployments[p.deployments.length - 1] : null;
+      const state = p.import === "importing" ? h("span.pill.run", "importing")
+        : p.import === "failed" ? h("span.pill.err", "import failed")
+          : m.city ? h("span.pill.warn", "pick a district")
+            : lb ? (lb.ok ? h("span.pill.ok", `build ${lb.n}`) : h("span.pill.err", `build ${lb.n} failed`)) : h("span.pill", "not built");
       body.append(h("tr.link", { onclick: () => { location.hash = `#/map/${p.id}/overview`; } },
         h("td.thumbcell", thumb),
-        h("td", h("div.title", p.name || "(unnamed)"), h("div.sub", m.name ? h("code", m.name) : (p.source || ""))),
+        h("td", h("div.title", p.name || "(unnamed)"), h("div.sub", m.city ? `a whole city: ${(m.objects || 0).toLocaleString()} objects, ${m.districts} districts`
+          : m.name ? h("code", m.name) : (p.source || ""))),
         h("td.num", m.size ? `${Math.round(m.size[0])} × ${Math.round(m.size[1])} m` : "—"),
-        h("td", lb ? (lb.ok ? h("span.pill.ok", `build ${lb.n}`) : h("span.pill.err", `build ${lb.n} failed`)) : h("span.pill", "not built")),
+        h("td", state),
         h("td.muted", dep ? `${dep.server} · ${fmtAgo(dep.time)}` : "—"),
         h("td.muted.num", fmtAgo(p.updated))));
     }
@@ -112,6 +108,9 @@ export function mapsPage(root) {
     h("button.btn.ghost.icon-only", { onclick: load, title: "Refresh" }, icon("refresh"))),
     h("p.muted", { style: { maxWidth: "820px" } }, "FiveM maps and MLOs become baked Cyberpunk sectors with collision, doors that open and glass, plus the in-game map manager (F9) that moves them."),
     setup, drop, status, h("div", { style: { height: "16px" } }), list);
+  if (!desktop) {
+    drop.append(h("div.help", { style: { marginTop: "8px" } }, "In a browser a folder cannot be dropped: type its path. The Studio's own window takes folders too."));
+  }
   load().then(setupBanner).catch((e) => toast(e.message, "err"));
   return {};
 }

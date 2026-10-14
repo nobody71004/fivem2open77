@@ -414,6 +414,8 @@ def test_display_names():
     labels = {joaat("biome"): "Biome"}
     assert display_name_of(_Src("biome", _Info("biome", "Biome"), labels, "Mercedes-Benz Biome Concept"))[0] == \
         "Mercedes-Benz Biome Concept"
+    # a car of a pack read from its own resource folder: the folder is the model id, not a better name
+    assert display_name_of(_Src("ikx3_c63se24", _Info("C63SE", ""), {}, "ikx3 c63se24"))[0] == "C63SE"
 
 
 # ----------------------------------------------------------------------------- seats, exits, hull

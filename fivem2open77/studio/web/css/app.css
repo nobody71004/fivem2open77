@@ -489,3 +489,15 @@ input[type=checkbox]:disabled { opacity: .45; cursor: default; }
 .srv-world code { font-size: 11.5px; }
 .we-dep { display: flex; align-items: center; gap: 8px; padding: 3px 0; min-width: 0; flex-wrap: wrap; }
 .we-dep .muted { font-size: 12px; }
+
+/* a whole city: the district picker (citypick.js) */
+.city-split { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); align-items: start; }
+.city-canvas { display: block; width: min(100%, 72vh); height: auto; aspect-ratio: 1 / 1; border-radius: 4px; cursor: crosshair; margin-left: auto; margin-right: auto;
+  background: #04070d; box-shadow: inset 0 0 0 1px var(--line); margin-top: 8px; }
+.modal.wide { max-height: 92vh; }
+@media (max-width: 1100px) { .city-split { grid-template-columns: minmax(0, 1fr); } }
+
+/* car packs (projects.js) */
+.pack-card .title { font-weight: 600; }
+.pack-card > .row svg.icon { width: 18px; height: 18px; color: var(--accent); }
+.job-card .progress { margin-top: 6px; }

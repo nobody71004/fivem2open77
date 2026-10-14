@@ -50,8 +50,10 @@ def _add_dir(tar, src, arc):
                 tar.addfile(info, f)
 
 
-def make_bundle(out_path: str, *, build_out: str | None = None, include_hub=False, loaders_dir: str | None = None) -> dict:
-    """build_out: a build's out/ folder (<car>/ and <car>_chime/).  Returns {path, resources}."""
+def make_bundle(out_path: str, *, build_out: str | None = None, include_hub=False, loaders_dir: str | None = None,
+                build_outs=None) -> dict:
+    """build_out: a build's out/ folder (<car>/ and <car>_chime/); build_outs: several (a car
+    pack: one bundle, one restart).  Returns {path, resources}."""
     resources = []
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     with tarfile.open(out_path, "w:gz", format=tarfile.PAX_FORMAT) as tar:
@@ -61,10 +63,10 @@ def make_bundle(out_path: str, *, build_out: str | None = None, include_hub=Fals
                 if os.path.isfile(os.path.join(d, "open77.lua")):
                     _add_dir(tar, d, f"resources/assets/loaders/{name}")
                     resources.append(name)
-        if build_out:
-            for name in sorted(os.listdir(build_out)):
-                d = os.path.join(build_out, name)
-                if os.path.isfile(os.path.join(d, "open77.lua")):
+        for out in ([build_out] if build_out else []) + list(build_outs or []):
+            for name in sorted(os.listdir(out)):
+                d = os.path.join(out, name)
+                if os.path.isfile(os.path.join(d, "open77.lua")) and name not in resources:
                     _add_dir(tar, d, f"resources/assets/vehicles/{name}")
                     resources.append(name)
         if include_hub:

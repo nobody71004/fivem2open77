@@ -28,6 +28,7 @@ import time
 from ..pipeline import VERSION
 
 LOOK_VERSION = 4               # bump when the look's contents change (4: doorways)
+CITY_RADIUS = 400.0            # a district's default radius (m): what one build of a city holds well
 MODEL_IDLE = 600               # seconds a planned map model stays in memory
 
 DEFAULTS = {
@@ -338,19 +339,30 @@ class MapLook:
             return got
 
     def ensure(self, log=print, check=None, progress=None) -> dict:
-        """The look for the current options: cached, or planned, rendered and saved now."""
+        """The look for the current options: cached, or planned, rendered and saved now.  A whole
+        city is not planned: its look is the city overview (the districts to pick one from)."""
         from ..imaging import png_bytes
         from ..mlo import preview as mp
+        from ..mlo.pipeline import WholeCityError
         opts = self.project.map_options()
         have = self.cached(opts)
         key = self.key(opts)
+        if have is not None and have.get("city"):
+            return have
         if have is not None and all(os.path.isfile(self._path(f"{key}-{m}-{v}.png")) for m, v in RENDERS) \
                 and os.path.isfile(self._path(f"{key}.glb")):
             return have
         t0 = time.time()
         if progress:
             progress(0.05, "reading the FiveM map")
-        scene, model, coords, res_name = self.model(opts, log=log, check=check)
+        try:
+            scene, model, coords, res_name = self.model(opts, log=log, check=check)
+        except WholeCityError as e:
+            look = city_look(e, key, time.time() - t0)
+            mp.write_json(look, self._path(f"look-{key}.json"))
+            log(f"{e.resource} is a whole city: {look['overview']['objects']:,} objects in {look['overview']['ymaps']:,} "
+                f"ymaps, {len(look['districts'])} districts. Pick a district to convert ({time.time() - t0:.0f} s)")
+            return look
         log(f"scene and parts ready ({time.time() - t0:.0f} s)")
         look = mp.summary(scene, model, coords, res_name)
         look["key"] = key
@@ -407,6 +419,8 @@ class MapLook:
         look = self.cached(opts)
         if look is None:
             raise LookMissing("the map has not been looked at yet: run the look first")
+        if look.get("city"):
+            raise LookMissing("this is a whole city: pick a district first (Overview)")
         scene, model, coords, res = self.model(opts)
         t, c = mp.map_triangles(model, mode)
         if view in ("plan", "tile"):
@@ -425,6 +439,32 @@ class MapLook:
 
 class LookMissing(ValueError):
     pass
+
+
+def city_look(e, key: str, seconds: float) -> dict:
+    """The look of a whole city: what to pick a district from (mlo.pipeline.WholeCityError)."""
+    return {"city": True, "key": key, "time": time.time(), "seconds": round(seconds, 1), "map": e.name,  # "city" first
+            "display_name": e.display_name, "resource": e.resource, "message": str(e), "districts": e.districts,
+            "overview": e.overview, "warnings": [], "radius": CITY_RADIUS}
+
+
+def district_name(city: str, district: str) -> str:
+    """The resource id of one district of a city: <city>_<district>, as the server knows it."""
+    c = re.sub(r"[^a-z0-9_]+", "_", (city or "city").lower()).strip("_") or "city"
+    d = re.sub(r"[^a-z0-9_]+", "_", (district or "district").lower()).strip("_") or "district"
+    if d.startswith(c):
+        d = d[len(c):].strip("_") or "district"
+    name = f"{c}_{d}"
+    if not name[0].isalpha():
+        name = "m_" + name
+    name = re.sub(r"_+", "_", name)[:48].rstrip("_")
+    return name if NAME_RX.match(name) else (name + "_map")[:48]
+
+
+def district_display(city_display: str, district: str) -> str:
+    words = re.sub(r"[_-]+", " ", district or "").strip()
+    words = words.title() if words == words.lower() else words
+    return f"{city_display} {words}".strip()[:80]
 
 
 # ----------------------------------------------------------------------------- builds

@@ -58,6 +58,10 @@ class VehicleSource:
     labels: dict = field(default_factory=dict)   # text label hash -> display text
     pack_name: str = ""                          # name of the download (folder or archive)
     mods: list = field(default_factory=list)     # [(meta.VisibleMod, yft path)] of the car's mod kits
+    meta: str | None = None                      # the vehicles.meta that lists the car
+    # the other texture dictionaries of the car's resource: read only for a texture the car's own
+    # dictionaries lack (a pack has dozens of cars' worth of them)
+    ytd_extra: list = field(default_factory=list)
 
 
 @dataclass
@@ -342,6 +346,28 @@ def scan_resource(path: str) -> ScannedResource:
     all_ytds = [f for f in stream if f.lower().endswith(".ytd")
                 and not (gen9(f) and os.path.basename(f).lower() in legacy_names)]
 
+    man_dirs = {os.path.normcase(os.path.dirname(os.path.abspath(m))) for m in manifests}
+    res_cache = {}
+
+    def resource_dir(f):
+        """The nearest folder with a manifest above f (None outside them, or when the input is one
+        resource: then every file is the car's)."""
+        if len(man_dirs) < 2:
+            return None
+        d = os.path.normcase(os.path.dirname(os.path.abspath(f)))
+        if d not in res_cache:
+            walk, found = d, None
+            while True:
+                if walk in man_dirs:
+                    found = walk
+                    break
+                up = os.path.dirname(walk)
+                if up == walk:
+                    break
+                walk = up
+            res_cache[d] = found
+        return res_cache[d]
+
     def near(cands, anchor):
         """The candidate that shares the longest path with anchor (the meta that names the car):
         a pack with both a replace folder and an add-on dlc.rpf uses the add-on's own files.  Legacy
@@ -379,10 +405,10 @@ def scan_resource(path: str) -> ScannedResource:
             for f in group:
                 if f not in ytds:
                     ytds.append(f)
-        # any other ytd in the same resource can hold textures the model references
-        for f in all_ytds:
-            if f not in ytds:
-                ytds.append(f)
+        # any other ytd of the car's resource can hold textures the model references: kept aside
+        # and read only for a texture the car's own dictionaries lack
+        own = resource_dir(yft)
+        extra = [f for f in all_ytds if f not in ytds and resource_dir(f) == own]
         handling = handlings.get((info.handling_id if info else model).lower())
         res_dir = os.path.dirname(os.path.dirname(yft)) if os.path.basename(os.path.dirname(yft)).lower() == "stream" else os.path.dirname(yft)
         variation = variations.get(m)
@@ -396,7 +422,8 @@ def scan_resource(path: str) -> ScannedResource:
                 seen_mods.add(key)
                 mods.append((mod, path))
         v = VehicleSource(model=model, yft=yft, yft_lod=yft_lod, ytds=ytds, info=info, handling=handling,
-                          variation=variation, resource_dir=res_dir, labels=labels, pack_name=pack_name, mods=mods)
+                          variation=variation, resource_dir=res_dir, labels=labels, pack_name=pack_name, mods=mods,
+                          meta=anchor, ytd_extra=extra)
         if info is None:
             v.warnings.append("no vehicles.meta entry; using defaults")
         if handling is None:

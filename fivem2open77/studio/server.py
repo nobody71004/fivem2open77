@@ -257,13 +257,14 @@ class Handler(BaseHTTPRequestHandler):
                     break
                 self.wfile.write(chunk)
 
-    def raw_body(self):
+    def raw_body(self, limit=64 << 30):
         self._body_read = True
         n = int(self.headers.get("Content-Length") or 0)
         if n <= 0:
-            raise HttpError(400, "empty upload")
-        if n > 4 * 1024 * 1024 * 1024:
-            raise HttpError(413, "upload too large")
+            raise HttpError(400, "empty upload (a folder cannot be uploaded: type its path instead)")
+        if n > limit:
+            raise HttpError(413, f"upload too large ({n / 1073741824:.1f} GB): type the file's path instead, "
+                                 "the Studio reads it where it is")
         return self.rfile, n
 
 
@@ -384,9 +385,57 @@ def api_ncwe_import(h, q, pid):
 @route("POST", r"/api/uploads")
 def api_upload(h, q):
     stream, n = h.raw_body()
+    from .sources import need_space
+    need_space(h.studio.uploads_dir, n, f"the upload of {q.get('name', 'the file')}")    # before reading a byte
     info = h.studio.save_upload(q.get("name", "upload"), stream, n)
     info.pop("path", None)
     h.json(info)
+
+
+# ---------------------------------------------------------------- car packs (studio/sources.py)
+@route("GET", r"/api/packs")
+def api_packs(h, q):
+    h.json(h.studio.packs())
+
+
+@route("POST", r"/api/packs")
+def api_pack_create(h, q):
+    b = h.body_json()
+    e, job = h.studio.create_pack(path=b.get("path"), upload_id=b.get("upload_id"), name=b.get("name"))
+    h.json({"pack": e, "job": job.summary()})
+
+
+@route("GET", r"/api/packs/([a-f0-9]{12})")
+def api_pack(h, q, lid):
+    h.json(h.studio.pack(lid))
+
+
+@route("POST", r"/api/packs/([a-f0-9]{12})/import")
+def api_pack_import(h, q, lid):
+    b = h.body_json()
+    made, job = h.studio.import_pack_cars(lid, b.get("models"))
+    h.json({"projects": [p.summary() for p in made], "job": job.summary() if job else None})
+
+
+@route("POST", r"/api/packs/([a-f0-9]{12})/build")
+def api_pack_build(h, q, lid):
+    b = h.body_json()
+    h.json(h.studio.pack_build(lid, only_unbuilt=bool(b.get("only_unbuilt"))).summary())
+
+
+@route("POST", r"/api/packs/([a-f0-9]{12})/deploy")
+def api_pack_deploy(h, q, lid):
+    b = h.body_json()
+    if not b.get("server"):
+        raise HttpError(400, "server required")
+    h.json(h.studio.pack_deploy(lid, b["server"], names=b.get("names"), mode=b.get("mode"),
+                                include_hub=bool(b.get("include_hub"))).summary())
+
+
+@route("DELETE", r"/api/packs/([a-f0-9]{12})")
+def api_pack_delete(h, q, lid):
+    h.studio.delete_pack(lid, with_projects=q.get("projects") in ("1", "true", "yes"))
+    h.json({"ok": True})
 
 
 @route("GET", r"/api/projects")
@@ -427,8 +476,7 @@ def api_project_patch(h, q, pid):
 
 @route("DELETE", r"/api/projects/([a-f0-9]{12})")
 def api_project_delete(h, q, pid):
-    h.studio.analyzer.forget(pid)
-    h.studio.projects.delete(pid)
+    h.studio.delete_project(pid)
     h.json({"ok": True})
 
 
@@ -533,6 +581,20 @@ def api_map_options_validate(h, q, pid):
         h.json({"ok": True, "normalized": normalize_options(h.body_json())})
     except MapOptionsError as e:
         h.json({"ok": False, "errors": e.errors})
+
+
+@route("GET", r"/api/projects/([a-f0-9]{12})/map/city")
+def api_map_city(h, q, pid):
+    h.json(h.studio.map_city(pid))
+
+
+@route("POST", r"/api/projects/([a-f0-9]{12})/map/district")
+def api_map_district(h, q, pid):
+    """One district of a whole city: here, or as a new project reading the same files."""
+    b = h.body_json()
+    p, job = h.studio.map_district(pid, b.get("area"), name=b.get("name"), display_name=b.get("display_name"),
+                                   district=b.get("district"), new_project=bool(b.get("new_project")))
+    h.json({"project": p.summary(), "job": job.summary() if job else None})
 
 
 @route("POST", r"/api/projects/([a-f0-9]{12})/map/look")

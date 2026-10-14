@@ -30,6 +30,19 @@ class MapInputError(Exception):
     pass
 
 
+class WholeCityError(MapInputError):
+    """A whole city (Liberty V): converted a district at a time.  Carries what to pick one from:
+    the districts (ymaps grouped by name, biggest first) and where the objects stand."""
+
+    def __init__(self, message, *, resource, name, display_name, districts, overview):
+        super().__init__(message)
+        self.resource = resource
+        self.name = name
+        self.display_name = display_name
+        self.districts = districts
+        self.overview = overview
+
+
 def find_map_files(path: str):
     """-> (root, stream files, coords or None, resource name, tmpdir)."""
     tmpdir = None
@@ -122,15 +135,18 @@ class MapConverter:
         area = _parse_vec(o.get("area"), 3, 3, "--area") if o.get("area") else None
         if area and area[2] <= 0:
             raise MapInputError("--area: the radius must be more than 0")
-        scene = MapScene(stream, entity_sets=o.get("entity_sets", "default"), log=self.log, area=area)
-        objects = len(scene.instances) + sum(len(m.children) for m in scene.mlos)
-        if not area and objects > HUGE_MAP:
+        scene = MapScene(stream, entity_sets=o.get("entity_sets", "default"), log=self.log, area=area,
+                         city_limit=None if area else HUGE_MAP)
+        objects = scene.object_count()
+        if not area and (scene.city or objects > HUGE_MAP):
             top = scene.districts(8)
-            raise MapInputError(
+            raise WholeCityError(
                 f"{res_name} is a whole city ({objects} objects in {len(scene.ymap_info)} ymaps): convert it a "
                 f"district at a time with an area (x,y,radius in GTA metres). Biggest districts: " + "; ".join(
                     f"{d['name']} ({d['entities']} objects) {d['center'][0]:.0f},{d['center'][1]:.0f},{min(d['radius'], 400):.0f}"
-                    for d in top))
+                    for d in top),
+                resource=res_name, name=name, display_name=display, districts=scene.districts(0),
+                overview=scene.overview())
         if area and not objects:
             raise MapInputError(f"nothing of {res_name} stands within {area[2]:.0f} m of {area[0]:.0f},{area[1]:.0f} "
                                 "(GTA world metres); pick an area from the map's districts")

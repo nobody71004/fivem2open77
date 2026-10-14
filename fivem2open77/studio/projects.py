@@ -6,7 +6,9 @@
         map.json            a map's conversion options (see studio/maps.py)
         world.json          a world edit: its resource name, the area it is about, the edit list and
                             the undo history (see studio/worldops.py; no input/ folder)
-        input/<file|dir>    copy of the FiveM resource
+        input/<file|dir>    copy of the FiveM resource; a big one (a city, a car pack) is in the
+                            workspace's library instead (source.lib, studio/sources.py), shared
+                            by the projects that read it
         assets/             files the profile points at (door chime...)
         cache/              inspect-<hash>.json, preview-<hash>.glb, render-<hash>-<view>.png, thumb.png
                             (maps: look-<key>.json, <key>.glb, <key>-<mode>-<view>.png)
@@ -60,9 +62,10 @@ KINDS = ("car", "map", "world")
 
 
 class Project:
-    def __init__(self, root: str):
+    def __init__(self, root: str, store=None):
         self.dir = root
         self.id = os.path.basename(root)
+        self.store = store
         self.lock = threading.RLock()
         with open(os.path.join(root, "project.json"), "r", encoding="utf-8") as f:
             self.data = json.load(f)
@@ -73,9 +76,29 @@ class Project:
 
     @property
     def source(self) -> str:
-        if not self.data.get("source"):
+        """Where the FiveM resource is read: input/<file>, or its folder in the library."""
+        s = self.data.get("source")
+        if not s:
             raise ProjectError("a world edit has no FiveM source")
-        return self.path("input", self.data["source"]["file"])
+        if s.get("state") == "importing":
+            raise ProjectError(f"{self.data.get('name') or 'this project'} is still being imported: wait for the import job")
+        if s.get("state") == "failed":
+            raise ProjectError(f"the import did not finish ({s.get('error') or 'see its job'}): delete this project "
+                               "and import it again")
+        if s.get("lib"):
+            lib = getattr(self.store, "library", None)
+            if lib is None:
+                raise ProjectError("this project reads the Studio's library, which is not open")
+            from .sources import SourceError
+            try:
+                return lib.source(s["lib"], s.get("sub") or "")
+            except SourceError as e:
+                raise ProjectError(str(e)) from e
+        return self.path("input", *str(s["file"]).split("/"))
+
+    @property
+    def importing(self) -> bool:
+        return (self.data.get("source") or {}).get("state") == "importing"
 
     @property
     def kind(self) -> str:
@@ -201,16 +224,19 @@ class Project:
     def summary(self) -> dict:
         d = self.data
         thumb = self.path("cache", "thumb.png")
+        src = d.get("source") or {}
         return {"id": self.id, "kind": self.kind, "name": d.get("name"), "created": d.get("created"),
-                "updated": d.get("updated"), "source": (d.get("source") or {}).get("original"), "models": d.get("models"),
+                "updated": d.get("updated"), "source": src.get("original"), "models": d.get("models"),
+                "import": src.get("state"), "import_error": src.get("error"), "lib": src.get("lib"), "pack": d.get("pack"),
                 "car": d.get("car"), "map": d.get("map"), "world": d.get("world"), "builds": len(d.get("builds", [])),
                 "last_build": self.latest_build(ok_only=False), "thumb": os.path.isfile(thumb),
                 "deployments": d.get("deployments", [])[-5:]}
 
 
 class ProjectStore:
-    def __init__(self, root: str):
+    def __init__(self, root: str, library=None):
         self.root = root
+        self.library = library          # sources.Library: the files several projects share
         os.makedirs(root, exist_ok=True)
         self._cache = {}
         self.lock = threading.Lock()
@@ -235,7 +261,7 @@ class ProjectStore:
         with self.lock:
             p = self._cache.get(pid)
             if p is None:
-                p = self._cache[pid] = Project(d)
+                p = self._cache[pid] = Project(d, self)
             return p
 
     def create(self, source: str, name: str | None = None, original: str | None = None, move=False,
@@ -274,6 +300,101 @@ class ProjectStore:
                 json.dump({}, f)
         return self.get(pid)
 
+    # ---- imports in a job (studio/app.py): the project exists at once, its files arrive later
+    def _new(self, kind: str, name: str | None, source: dict, profile: dict | None = None,
+             options: dict | None = None) -> Project:
+        if kind not in ("car", "map"):
+            raise ProjectError("kind: car or map")
+        pid = uuid.uuid4().hex[:12]
+        d = os.path.join(self.root, pid)
+        for sub in ("input", "assets", "cache", "builds"):
+            os.makedirs(os.path.join(d, sub))
+        shown = name or os.path.splitext(os.path.basename(str(source.get("file") or "resource")))[0]
+        data = {"id": pid, "kind": kind, "name": shown, "created": time.time(), "updated": time.time(),
+                "source": source, "builds": [], "build_counter": 0, "deployments": []}
+        if name:
+            data["custom_name"] = True
+        with open(os.path.join(d, "project.json"), "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        if kind == "car":
+            profile_mod.save(profile or {}, os.path.join(d, "profile.json"))
+        else:
+            with open(os.path.join(d, "map.json"), "w", encoding="utf-8") as f:
+                json.dump(options or {}, f, indent=2)
+        return self.get(pid)
+
+    def create_pending(self, kind: str, original: str, name: str | None = None) -> Project:
+        """A project whose files are still coming (finish_import / fail_import)."""
+        base = os.path.basename(os.path.normpath(original)) or "resource"
+        return self._new(kind, name, {"file": base, "original": original, "state": "importing"})
+
+    def finish_import(self, p: Project, *, file: str | None = None, lib: str | None = None, sub: str = ""):
+        with p.lock:
+            s = p.data["source"]
+            if lib:
+                s.update(lib=lib, sub=sub)
+            if file:
+                s["file"] = file
+            s.pop("state", None)
+            s.pop("error", None)
+            p.data["updated"] = time.time()
+            p.save()
+        h = _file_hash(p.source)
+        with p.lock:
+            p.data["source"]["hash"] = h
+            p.save()
+
+    def fail_import(self, p: Project, error: str):
+        with p.lock:
+            p.data["source"].update(state="failed", error=str(error)[:500])
+            p.data["updated"] = time.time()
+            p.save()
+
+    def create_shared(self, kind: str, lib: str, sub: str, original: str, *, name: str | None = None,
+                      profile: dict | None = None, options: dict | None = None, file: str | None = None) -> Project:
+        """A project reading a library entry (one car of a pack, one district of a city)."""
+        src = {"file": file or (sub.rsplit("/", 1)[-1] if sub else os.path.basename(os.path.normpath(original))),
+               "original": original, "lib": lib, "sub": sub}
+        p = self._new(kind, name, src, profile=profile, options=options)
+        try:
+            h = _file_hash(p.source)
+        except (OSError, ProjectError):
+            h = ""
+        with p.lock:
+            p.data["source"]["hash"] = h
+            p.save()
+        return p
+
+    def using(self, lib: str) -> list:
+        """The projects that read a library entry."""
+        out = []
+        for name in sorted(os.listdir(self.root)):
+            if not _ID.match(name):
+                continue
+            try:
+                p = self.get(name)
+            except (OSError, ValueError, ProjectError):
+                continue
+            if (p.data.get("source") or {}).get("lib") == lib:
+                out.append(p)
+        return out
+
+    def share(self, p: Project) -> str:
+        """The library entry p's files are in: moved there from its input/ first if need be (so
+        another project can read them too)."""
+        s = p.data.get("source") or {}
+        if s.get("lib"):
+            return s["lib"]
+        if self.library is None:
+            raise ProjectError("the Studio's library is not open")
+        src = p.source
+        e = self.library.adopt(p.kind, p.data.get("name") or s.get("file") or "resource",
+                               s.get("original") or src, src)
+        with p.lock:
+            s.update(lib=e["id"], sub="")
+            p.save()
+        return e["id"]
+
     def create_world(self, name: str, display: str, center=None) -> Project:
         """A world edit project: no FiveM source, an edit list (world.json)."""
         pid = uuid.uuid4().hex[:12]
@@ -290,11 +411,15 @@ class ProjectStore:
             json.dump(w, f, indent=1)
         return self.get(pid)
 
-    def delete(self, pid: str):
+    def delete(self, pid: str) -> str | None:
+        """Remove a project; returns the library entry it read (the caller drops it when no other
+        project reads it)."""
         p = self.get(pid)
+        lib = (p.data.get("source") or {}).get("lib")
         with self.lock:
             self._cache.pop(pid, None)
         shutil.rmtree(p.dir, ignore_errors=True)
+        return lib
 
 
 def copy_profile(p: dict) -> dict:

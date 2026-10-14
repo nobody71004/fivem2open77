@@ -61,6 +61,14 @@ def _target(ctx, args, need_map=True):
 def _compact_look(look):
     if not look:
         return None
+    if look.get("city"):
+        ov = look.get("overview") or {}
+        return {"city": True, "map": look["map"], "display_name": look["display_name"], "objects": ov.get("objects"),
+                "ymaps": ov.get("ymaps"), "extent_gta": ov.get("extent"),
+                "districts": [{"name": d["name"], "objects": d["entities"], "center": d["center"],
+                               "radius": min(d["radius"], 400.0)} for d in look["districts"][:30]],
+                "next": "a whole city is converted a district at a time: pick_district with a district's center and "
+                        "radius (or set_map_options area=[x, y, radius] plus a name), then the look runs for it"}
     return {"map": look["map"], "display_name": look["display_name"], "size_m": look["size"],
             "visual_bounds_local": look["visual_bounds"], "spawn_local": look.get("spawn_local"),
             "anchor_gta": look["anchor_gta"], "fivem_spawn": look.get("coords"),
@@ -121,12 +129,62 @@ def t_import(ctx, args):
     ctx.session.attach_job(job)
     ctx.session.switch_project(p.id)
     try:
-        ctx.wait_job(job, 1800)
+        ctx.wait_job(job, 3600)                     # the files: copied, extracted or linked
     except ToolError as e:
-        return text({"project": p.id, "kind": kind, "imported": True, "first_look": f"failed: {e}"})
+        return text({"project": p.id, "kind": kind, "imported": False, "error": str(e)})
+    nxt = ctx.studio.jobs.get((job.result or {}).get("next_job") or "")
+    if nxt is not None:                             # then the first look (map) or inspection (car)
+        ctx.session.attach_job(nxt)
+        try:
+            ctx.wait_job(nxt, 3600)
+        except ToolError as e:
+            return text({"project": p.id, "kind": kind, "imported": True, "first_look": f"failed: {e}"})
     p = ctx.studio.projects.get(p.id)
-    return text({"project": p.id, "kind": kind, "name": p.data.get("name"), "imported": True,
-                 "next": "get_map" if kind == "map" else "inspect_car"})
+    out = {"project": p.id, "kind": kind, "name": p.data.get("name"), "imported": True,
+           "how": (job.result or {}).get("how"), "next": "get_map" if kind == "map" else "inspect_car"}
+    if kind == "map" and (p.data.get("map") or {}).get("city"):
+        out["city"] = True
+        out["next"] = "a whole city: get_map lists its districts; pick_district converts one"
+    if kind == "car" and len(p.data.get("models") or []) > 1:
+        out["models"] = p.data["models"]
+        out["note"] = "this resource holds several cars: update_profile model=<one of models> picks the one converted"
+    return text(out)
+
+
+def t_import_pack(ctx, args):
+    """A car pack (one download, many cars): imported once, then a project per car picked."""
+    path = str(args.get("path") or "").strip()
+    lid = str(args.get("pack") or "").strip()
+    models = args.get("models")
+    if args.get("all"):
+        models = "all"
+    if not lid:
+        if not path or not os.path.exists(path):
+            raise ToolError(f"path: a car pack (folder or .zip/.rar/.7z) on this PC, or pack: the id of one imported before")
+        e, job = ctx.studio.create_pack(path=path)
+        ctx.session.attach_job(job)
+        ctx.wait_job(job, 3600)
+        lid = e["id"]
+    pack = ctx.studio.pack(lid)
+    out = {"pack": lid, "name": pack["name"],
+           "cars": [{"model": c["model"], "name": c["display"], "class": c["class"], "project": (c["projects"] or [None])[0]}
+                    for c in pack["cars"]]}
+    if not models:
+        out["next"] = "import_car_pack pack=<id> with models=[...] (or all=true) makes a project per car"
+        return text(out)
+    made, job = ctx.studio.import_pack_cars(lid, models)
+    if job is not None:
+        ctx.session.attach_job(job)
+        ctx.wait_job(job, 7200)
+        out["read"] = job.result
+    out["projects"] = [{"project": q.id, "model": q.raw_profile().get("model"), "name": ctx.studio.projects.get(q.id).data.get("name")}
+                       for q in made]
+    if len(made) == 1:
+        ctx.session.switch_project(made[0].id)
+        out["note"] = "the session now works on that car"
+    else:
+        out["note"] = "open_project switches to one of them; the Cars page builds or installs the whole pack"
+    return text(out)
 
 
 # ----------------------------------------------------------------------------- map project
@@ -139,6 +197,33 @@ def t_get_map(ctx, args):
                             for b in st["builds"][:5]],
                  "build_stale": st.get("build_stale") or "the last build matches the project's NCWE imports",
                  "deployments": st["deployments"][-5:], "local_game": st["game"]})
+
+
+def t_pick_district(ctx, args):
+    p = _map_project(ctx)
+    st = ctx.studio.map_state(p.id)
+    look = st.get("look") or {}
+    area = args.get("area")
+    district = args.get("district")
+    if district and not area:
+        city = look if look.get("city") else None
+        if city is None:
+            raise ToolError("this map has no city overview with districts: look_at_map first, or give an area")
+        d = next((x for x in city["districts"] if x["name"].lower() == str(district).lower()), None)
+        if d is None:
+            raise ToolError(f"no district '{district}' (get_map lists them)")
+        area = [d["center"][0], d["center"][1], min(d["radius"], 400.0)]
+    if not area:
+        raise ToolError("area [x, y, radius] (GTA metres) or district (a name from get_map)")
+    q, job = ctx.studio.map_district(p.id, area, name=args.get("name"), display_name=args.get("display_name"),
+                                     district=district, new_project=bool(args.get("new_project")))
+    ctx.session.attach_job(job)
+    if q.id != p.id:
+        ctx.session.switch_project(q.id)
+    ctx.wait_job(job, 1800)
+    out = _compact_look(ctx.studio.map_state(q.id)["look"]) or {}
+    out["project"] = q.id
+    return text(out)
 
 
 def t_look(ctx, args):
@@ -420,11 +505,22 @@ def registry() -> dict:
         Tool("import_resource", "Import a FiveM resource from a folder or a .zip/.rar/.7z on this PC as a new car or map project and "
              "look at it (a map takes about a minute). The session switches to the new project.",
              _obj({"path": {"type": "string"}, "kind": {"type": "string", "enum": ["car", "map"]}}, ["path", "kind"]), "change", t_import),
+        Tool("import_car_pack", "Import a car pack (one folder or .zip/.rar/.7z with many FiveM cars, like a 'civ car pack') once, "
+             "list its cars, and make a project per car: models=[...] picks them, all=true takes every car. Without models "
+             "it only lists them; pack= reuses a pack imported before.",
+             _obj({"path": {"type": "string"}, "pack": {"type": "string"}, "models": {"type": "array", "items": {"type": "string"}},
+                   "all": {"type": "boolean"}}), "change", t_import_pack),
         Tool("enable_agent_api", "Turn the map manager's agent API (the server's HTTP handler listener, loopback only) on or off on a "
              "server's folders. It takes effect at the next server start; restart=true restarts now when nobody is online.",
              _obj({"server": {"type": "string"}, "names": {"type": "array", "items": {"type": "string"}},
                    "enable": {"type": "boolean"}, "restart": {"type": "boolean"}}, ["server"]), "deploy", t_agent_api),
         # ------------------------------------------------------------ map project
+        Tool("pick_district", "A whole city (Liberty V) is converted a district at a time: pick one by name (district, from "
+             "get_map) or by area [x, y, radius] in GTA metres, in this project or (new_project=true) as a new project "
+             "reading the same files. The look runs for that district.",
+             _obj({"district": {"type": "string"}, "area": {"type": "array", "items": {"type": "number"}},
+                   "name": {"type": "string"}, "display_name": {"type": "string"}, "new_project": {"type": "boolean"}}),
+             "change", t_pick_district),
         Tool("get_map", "The open map project: options (the spot it is baked at, names, what is included), the look (size, "
              "interiors, parts, doors, glass, the converter's warnings, the map's object names), builds and installs.",
              _obj(), "read", t_get_map),
@@ -521,10 +617,10 @@ def registry() -> dict:
     return {t.name: t for t in tools}
 
 
-STUDIO_TOOLS = ("list_projects", "open_project", "import_resource", "enable_agent_api")
+STUDIO_TOOLS = ("list_projects", "open_project", "import_resource", "import_car_pack", "enable_agent_api")
 LIVE_TOOLS = ("live_maps", "live_map", "list_players", "ground_height", "set_map_spot", "map_preset", "apply_map_move",
               "cancel_map_move", "wait_map_move", "send_player_to_map")
 CITY_TOOLS = ("city_map_status", "build_city_map")     # Live maps' 3D city (this computer, not a server)
-MAP_TOOLS = ("get_map", "look_at_map", "render_map", "set_map_options", "build_map", "map_build_report",
+MAP_TOOLS = ("get_map", "look_at_map", "pick_district", "render_map", "set_map_options", "build_map", "map_build_report",
              "install_map_in_game", "deploy_map", "ncwe_assets_list", "ncwe_assets_import", "ncwe_assets_verify",
              "ncwe_import_map")

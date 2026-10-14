@@ -20,7 +20,7 @@ import numpy as np
 
 from ..gta.drawable import quat_to_mat3
 from ..gta.frag import load_yft
-from ..gta.texture import NO_TEXTURE, load_ytd
+from ..gta.texture import NO_TEXTURE, load_ytd, ytd_names
 from ..imaging import texture_rgba
 from .colors import gta_color
 from .ir import (LOD_MASKS, Bone, LightSpec, Material, Part, SubMesh, Vehicle,
@@ -137,8 +137,9 @@ def display_name_of(src):
     if make_txt and make.lower() not in disp.lower() and make.upper() != model.upper():
         disp = f"{make} {disp}"
     pack = (getattr(src, "pack_name", "") or "").strip()
+    # (a car's own resource folder, "ikx3_c63se24", is its model id: that says nothing more)
     if pack and len(disp.split()) == 1 and disp.lower() in pack.lower() and len(pack) > len(disp) \
-            and len(pack) <= 48:
+            and len(pack) <= 48 and re.sub(r"[^a-z0-9]", "", pack.lower()) != re.sub(r"[^a-z0-9]", "", model.lower()):
         disp = pack
     return disp, make
 
@@ -269,6 +270,11 @@ class VehicleBuilder:
                     self.textures.setdefault(k, v)
             except Exception as e:  # noqa: BLE001
                 self.warnings.append(f"cannot read texture dictionary {path}: {e}")
+        # the resource's other dictionaries: looked up by name when a texture is not in the car's own
+        self._extra = [p for p in (getattr(self.src, "ytd_extra", None) or []) if p not in self.src.ytds]
+        self._extra_index = None
+        self._extra_loose = None
+        self._extra_loaded = set()
         # loose name index: packs misspell texture names in their shaders ("lightsBW" for the
         # dictionary's "lights BW"); a match that ignores case, spaces and punctuation is used when it
         # is unambiguous
@@ -623,7 +629,11 @@ class VehicleBuilder:
         if n in NO_TEXTURE:
             return None
         if n not in self.textures:
+            self._extra_texture(n)
+        if n not in self.textures:
             alt = self.tex_loose.get(_loose(n))
+            if not alt and self._extra_texture(n, loose=True):
+                alt = self.tex_loose.get(_loose(n))
             if alt:
                 self.renamed_textures[n] = alt
                 n = alt
@@ -635,6 +645,44 @@ class VehicleBuilder:
         else:
             self.missing_textures.add(n)
         return None
+
+    def _extra_texture(self, n, loose=False) -> bool:
+        """Load the dictionary of the car's resource that has texture n (by its exact name, or with
+        loose=True ignoring case, spaces and punctuation when only one texture matches).  The names
+        are read once without the pixels; only a dictionary that has the texture is loaded."""
+        if not getattr(self, "_extra", None):
+            return False
+        if self._extra_index is None:
+            idx, li = {}, {}
+            for path in self._extra:
+                try:
+                    names = ytd_names(path, name=path)
+                except Exception as e:  # noqa: BLE001
+                    self.warnings.append(f"cannot read texture dictionary {path}: {e}")
+                    continue
+                for k in names:
+                    idx.setdefault(k, path)
+                    lk = _loose(k)
+                    li[lk] = None if lk in li and li[lk] != (k, path) else (k, path)
+            self._extra_index, self._extra_loose = idx, li
+        path = self._extra_index.get(n)
+        if path is None and loose:
+            hit = self._extra_loose.get(_loose(n))
+            path = hit[1] if hit else None
+        if path is None or path in self._extra_loaded:
+            return False
+        self._extra_loaded.add(path)
+        try:
+            got = load_ytd(path, name=path)
+        except Exception as e:  # noqa: BLE001
+            self.warnings.append(f"cannot read texture dictionary {path}: {e}")
+            return False
+        for k, v in got.items():
+            if k not in self.textures:
+                self.textures[k] = v
+                lk = _loose(k)
+                self.tex_loose[lk] = None if lk in self.tex_loose and self.tex_loose[lk] != k else k
+        return True
 
     # ------------------------------------------------------- texture looks
     def _image(self, name, max_size=256):

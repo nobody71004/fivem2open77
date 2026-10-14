@@ -19,10 +19,11 @@ from . import deploy as deploy_mod
 from . import fleet as fleet_mod
 from . import qa as qa_mod
 from .analysis import Analyzer
-from .jobs import EventBus, JobManager
+from .jobs import EventBus, JobCancelled, JobManager
 from .mapops import MapOps
 from .maplink import LinkPool
 from .projects import ProjectError, ProjectStore
+from . import sources as sources_mod
 from .secrets import SecretStore
 from .settings import Settings
 from .tools import Toolbox
@@ -40,7 +41,9 @@ class Studio(MapOps, WorldOps):
         self.secrets = SecretStore(os.path.join(self.workspace, "secrets.json"))
         self.bus = EventBus()
         self.jobs = JobManager(self.bus)
-        self.projects = ProjectStore(os.path.join(self.workspace, "projects"))
+        self.library = sources_mod.Library(os.path.join(self.workspace, "library"))
+        self.projects = ProjectStore(os.path.join(self.workspace, "projects"), library=self.library)
+        self._recover_imports()
         self.analyzer = Analyzer()
         self.uploads_dir = os.path.join(self.workspace, "uploads")
         os.makedirs(self.uploads_dir, exist_ok=True)
@@ -128,25 +131,298 @@ class Studio(MapOps, WorldOps):
             raise ValueError("upload not found")
         return os.path.join(d, files[0])
 
+    def _source_of(self, path, upload_id) -> tuple:
+        """(source path, uploaded, shown name) of an import, checked."""
+        if upload_id:
+            src = self.upload_path(upload_id)
+            return src, True, os.path.basename(src)
+        if path:
+            src = sources_mod.check_source(path)
+            return src, False, src
+        raise ValueError("path or upload_id")
+
+    def _drop_upload(self, src, uploaded):
+        if uploaded:
+            shutil.rmtree(os.path.dirname(src), ignore_errors=True)
+
     def create_project(self, *, path: str | None = None, upload_id: str | None = None, name=None, kind="car",
                        display=None, center=None):
+        """A car or map project from a FiveM resource.  The project is there at once; its files come
+        in a job (copied, a big archive extracted once, a big folder read where it is), which then
+        starts the first look (map) or inspection (car): the job's result names that next job."""
         if kind == "world":
             return self.create_world_project(name=name, display=display, center=center), None
         if kind not in ("car", "map"):
             raise ValueError("kind: car, map or world")
-        if upload_id:
-            src = self.upload_path(upload_id)
-            p = self.projects.create(src, name=name, original=os.path.basename(src), move=True, kind=kind)
-            shutil.rmtree(os.path.dirname(src), ignore_errors=True)
-        elif path:
-            p = self.projects.create(path, name=name, original=path, kind=kind)
-        else:
-            raise ValueError("path or upload_id")
-        if kind == "map":
-            return p, self.map_look(p.id)
+        src, uploaded, original = self._source_of(path, upload_id)
+        p = self.projects.create_pending(kind, original, name=name)
+
+        def run(job):
+            try:
+                how, size, files = sources_mod.plan(src, uploaded)
+                job.log(f"{original}: {sources_mod.fmt_bytes(size)} in {files:,} file(s)")
+                tb = self.toolbox()
+                if how in ("link", "extract"):
+                    # big: held once in the library (a city's districts are projects that share it)
+                    e = self.library.create(kind, p.data["name"], original)      # (a pack is kind "cars")
+                    job.meta["library"] = e["id"]
+                    job.log("a big folder: the project reads it where it is, nothing is copied (keep it there)"
+                            if how == "link" else "a big archive: extracted once into the Studio's library")
+                    job.set_progress(0.0, "linking" if how == "link" else "extracting")
+                    try:
+                        self.library.fill(e, src, how, log=job.log, progress=job.set_progress, check=job.check,
+                                          sevenzip=getattr(tb, "sevenzip", None))
+                    except BaseException:
+                        self.library.delete(e["id"])
+                        raise
+                    e["state"] = "ready"
+                    self.library.save(e)
+                    self.projects.finish_import(p, lib=e["id"])
+                else:
+                    job.set_progress(0.0, "copying")
+                    got = sources_mod.take_in(src, p.path("input"), how, log=job.log, progress=job.set_progress,
+                                              check=job.check, sevenzip=getattr(tb, "sevenzip", None))
+                    self.projects.finish_import(p, file=os.path.relpath(got, p.path("input")).replace(os.sep, "/"))
+            except BaseException as e:
+                self.projects.fail_import(p, "cancelled" if isinstance(e, JobCancelled) else (str(e) or e.__class__.__name__))
+                raise
+            finally:
+                self._drop_upload(src, uploaded)
+            job.set_progress(1.0, "imported")
+            job.log(f"imported ({how})")
+            nxt = self.map_look(p.id) if kind == "map" else self._inspect_job(p)
+            job.meta["next"] = nxt.id
+            return {"project": p.id, "how": how, "bytes": size, "files": files, "next_job": nxt.id}
+
+        return p, self.jobs.submit("import", f"Import {os.path.basename(original)}", run, project=p.id)
+
+    def _inspect_job(self, p):
         # look inside at once: models, car name, thumbnail
-        job = self.jobs.submit("inspect", f"Inspect {p.data['name']}", lambda job: self._first_look(p, job), project=p.id)
-        return p, job
+        return self.jobs.submit("inspect", f"Inspect {p.data['name']}", lambda job: self._first_look(p, job), project=p.id)
+
+    def _recover_imports(self):
+        """Imports the Studio was closed in the middle of, and library entries nobody reads."""
+        in_use = set()
+        for name in os.listdir(self.projects.root):
+            try:
+                p = self.projects.get(name)
+            except (OSError, ValueError, ProjectError):
+                continue
+            src = p.data.get("source") or {}
+            if src.get("lib"):
+                in_use.add(src["lib"])
+            if src.get("state") == "importing":
+                self.projects.fail_import(p, "the Studio was closed during the import")
+        for e in self.library.list():
+            # a pack whose cars were never picked stays a week; a map nobody reads, a day
+            fresh = time.time() - float(e.get("created") or 0) < 7 * 86400
+            if e.get("kind") == "cars" and e.get("state") == "ready" and fresh:
+                in_use.add(e["id"])
+        try:
+            self.library.prune(in_use)
+        except OSError:
+            pass
+
+    def delete_project(self, pid):
+        self.analyzer.forget(pid)
+        lib = self.projects.delete(pid)
+        if lib and not self.projects.using(lib):
+            try:
+                e = self.library.get(lib)
+            except sources_mod.SourceError:
+                return
+            # a pack stays for its other cars (deleted with the pack); one car's is gone with it
+            if e.get("kind") != "cars" or len(e.get("cars") or []) <= 1:
+                self.library.delete(lib)
+
+    # ------------------------------------------------------------------ car packs
+    def _pack_view(self, e: dict) -> dict:
+        projects = self.projects.using(e["id"])
+        by_model = {}
+        for q in projects:
+            m = (q.raw_profile().get("model") or "").lower()
+            by_model.setdefault(m, []).append(q.id)
+        cars = []
+        for c in e.get("cars") or []:
+            cars.append(dict(c, projects=by_model.get(c["model"].lower(), [])))
+        return {k: e.get(k) for k in ("id", "name", "original", "created", "state", "how", "linked", "error")} | {
+            "cars": cars, "projects": [q.id for q in projects]}
+
+    def packs(self) -> list:
+        return [self._pack_view(e) for e in self.library.list("cars")]
+
+    def pack(self, lid) -> dict:
+        e = self.library.get(lid)
+        if e.get("kind") != "cars":
+            raise sources_mod.SourceError("no such pack")
+        return self._pack_view(e)
+
+    def create_pack(self, *, path=None, upload_id=None, name=None):
+        """A car pack (or one car) into the library, then the list of its cars: the job's result.
+        The cars become projects with import_pack_cars (the ones the user picks)."""
+        src, uploaded, original = self._source_of(path, upload_id)
+        stem = os.path.splitext(os.path.basename(os.path.normpath(original)))[0]
+        e = self.library.create("cars", name or re.sub(r"\s*\(\d+\)$", "", stem), original)
+
+        def run(job):
+            try:
+                how, size, files = sources_mod.plan(src, uploaded)
+                job.log(f"{original}: {sources_mod.fmt_bytes(size)} in {files:,} file(s)")
+                if how == "link":
+                    job.log("a big folder: the cars are read where it is, nothing is copied (keep it there)")
+                job.set_progress(0.0, "linking" if how == "link" else ("copying" if os.path.isdir(src) else "extracting"))
+                tb = self.toolbox()
+                self.library.fill(e, src, how, log=job.log, progress=job.set_progress, check=job.check,
+                                  sevenzip=getattr(tb, "sevenzip", None))
+                job.set_progress(0.9, "finding the cars")
+                folder = self.library.folder(e["id"], e)
+                cars = sources_mod.scan_cars(folder, log=job.log)
+                if not cars:
+                    raise sources_mod.SourceError("no cars found in it (a car is a vehicles.meta entry with its .yft)")
+                e.update(cars=cars, state="ready")
+                self.library.save(e)
+                job.log(f"{len(cars)} car(s): " + ", ".join(c["display"] for c in cars[:12]) + (" ..." if len(cars) > 12 else ""))
+                return self._pack_view(e)
+            except BaseException as ex:
+                e.update(state="failed", error="cancelled" if isinstance(ex, JobCancelled) else (str(ex) or ex.__class__.__name__))
+                try:
+                    self.library.save(e)
+                except OSError:
+                    pass
+                raise
+            finally:
+                self._drop_upload(src, uploaded)
+
+        job = self.jobs.submit("pack", f"Import {os.path.basename(original)}", run, meta={"pack": e["id"]})
+        return e, job
+
+    def import_pack_cars(self, lid, models=None):
+        """A project per car of the pack (all of them, or `models`); one job reads them one after
+        another (name, parts, thumbnail).  Cars that already have a project are skipped."""
+        e = self.library.get(lid)
+        if e.get("kind") != "cars" or e.get("state") != "ready":
+            raise sources_mod.SourceError("this pack is not ready (still importing, or its import failed)")
+        view = self._pack_view(e)
+        want = None if models in (None, "all") else {str(m).lower() for m in models}
+        chosen = [c for c in view["cars"] if (want is None or c["model"].lower() in want) and not c["projects"]]
+        if want is not None:
+            unknown = want - {c["model"].lower() for c in view["cars"]}
+            if unknown:
+                raise ValueError(f"not in this pack: {', '.join(sorted(unknown))}")
+        made = []
+        for c in chosen:
+            q = self.projects.create_shared("car", lid, c.get("sub") or "", e.get("original") or "", profile={"model": c["model"]},
+                                            file=(c.get("sub") or "").rsplit("/", 1)[-1] or c["model"])
+            with q.lock:
+                q.data["name"] = c["display"] or c["model"]
+                q.data["models"] = [c["model"]]
+                q.data["pack"] = {"id": lid, "name": e.get("name")}
+                q.save()
+            made.append(q)
+        if not made:
+            return [], None
+
+        def run(job):
+            ok = failed = 0
+            for i, q in enumerate(made):
+                job.check()
+                job.set_progress(i / len(made), f"{q.data['name']} ({i + 1} of {len(made)})")
+                try:
+                    self._first_look(q, job)
+                    ok += 1
+                except JobCancelled:
+                    raise
+                except Exception as ex:  # noqa: BLE001 - one car does not stop the pack
+                    failed += 1
+                    job.log(f"{q.data['name']}: could not be read: {ex}")
+                finally:
+                    self.analyzer.forget(q.id)       # 60 cars do not stay in memory
+            job.log(f"{ok} car(s) read" + (f", {failed} could not be read (open them to see why)" if failed else ""))
+            return {"read": ok, "failed": failed, "projects": [q.id for q in made]}
+
+        job = self.jobs.submit("pack-inspect", f"Read {len(made)} car(s) of {e.get('name')}", run, meta={"pack": lid})
+        return made, job
+
+    def delete_pack(self, lid, with_projects=False):
+        e = self.library.get(lid)
+        users = self.projects.using(lid)
+        if users and not with_projects:
+            raise ValueError(f"{len(users)} project(s) read this pack: delete them with it, or delete them first")
+        for q in users:
+            self.analyzer.forget(q.id)
+            self.projects.delete(q.id)
+        self.library.delete(e["id"])
+
+    def pack_build(self, lid, only_unbuilt=False):
+        """Build the pack's cars one after another (each is a build job of its own)."""
+        users = self.projects.using(lid)
+        if only_unbuilt:
+            users = [q for q in users if not q.latest_build()]
+        if not users:
+            raise ValueError("no cars to build" + (" (every car has a build)" if only_unbuilt else ""))
+        name = self.library.get(lid).get("name")
+
+        def run(job):
+            done, failed = [], []
+            for i, q in enumerate(users):
+                job.check()
+                job.set_progress(i / len(users), f"{q.data['name']} ({i + 1} of {len(users)})")
+                try:
+                    bj = self.build(q.id)
+                except Exception as ex:  # noqa: BLE001 - a bad profile: the next car
+                    failed.append(q.data["name"])
+                    job.log(f"{q.data['name']}: {ex}")
+                    continue
+                job.on_cancel.append(bj.cancel)
+                self.jobs.wait(bj)
+                if bj.state == "done":
+                    done.append(q.data["name"])
+                    job.log(f"{q.data['name']}: build #{(bj.result or {}).get('n')} done")
+                elif bj.state == "cancelled":
+                    job.check()
+                    failed.append(q.data["name"])
+                else:
+                    failed.append(q.data["name"])
+                    job.log(f"{q.data['name']}: failed: {bj.error}")
+            job.log(f"{len(done)} built" + (f", {len(failed)} failed: {', '.join(failed[:10])}" if failed else ""))
+            if not done:
+                raise RuntimeError("no car of the pack was built (see the log)")
+            return {"built": done, "failed": failed}
+
+        return self.jobs.submit("pack-build", f"Build {len(users)} car(s) of {name}", run, meta={"pack": lid})
+
+    def pack_deploy(self, lid, sid, *, names=None, mode=None, include_hub=False):
+        """Every built car of the pack to a server in one bundle (one restart)."""
+        server = self._server(sid)
+        mode = mode or self.settings.get()["deploy"]["mode"]
+        if mode not in ("stage", "restart", "files"):
+            raise ValueError("mode: stage, restart or files")
+        built = [(q, q.latest_build()) for q in self.projects.using(lid)]
+        built = [(q, b) for q, b in built if b]
+        if not built:
+            raise ProjectError("no car of this pack has a successful build: build them first")
+        name = self.library.get(lid).get("name")
+
+        def run(job):
+            tmp = tempfile.mkdtemp(prefix="f2o77-pack-")
+            try:
+                outs = [os.path.join(q.build_dir(b["n"]), "out") for q, b in built]
+                bundle = deploy_mod.make_bundle(os.path.join(tmp, "bundle.tgz"), build_outs=outs, include_hub=include_hub)
+                job.log(f"bundle: {len(bundle['resources'])} resources ({bundle['bytes'] / 1048576:.1f} MiB)")
+                res = deploy_mod.deploy(server, self.secrets, bundle["path"], mode=mode, names=names, log=job.log)
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
+            for q, b in built:
+                entry = {"time": time.time(), "server": sid, "names": res["names"], "mode": mode, "build": b["n"],
+                         "version": b.get("version"), "staged": len(res["staged"]), "live": len(res["live"]), "pack": lid}
+                with q.lock:
+                    q.data.setdefault("deployments", []).append(entry)
+                    q.data["deployments"] = q.data["deployments"][-50:]
+                    q.save()
+            return dict(res, cars=len(built))
+
+        return self.jobs.submit("deploy", f"Deploy {len(built)} car(s) of {name} to {server['label']} ({mode})", run,
+                                meta={"pack": lid, "server": sid})
 
     def _first_look(self, p, job):
         job.log("reading the FiveM resource...")

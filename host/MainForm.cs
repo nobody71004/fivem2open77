@@ -1,9 +1,12 @@
 // The Studio window: WebView2 showing the local Studio server, behind the HUD start screen until
 // the page has loaded.  Falls back to the default browser when the WebView2 runtime is missing.
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Microsoft.Web.WebView2.Core;
@@ -110,6 +113,9 @@ namespace Fivem2Open77.Studio
                     }
                 };
                 core.DocumentTitleChanged += (s, e) => { Text = string.IsNullOrEmpty(core.DocumentTitle) ? Program.AppName : core.DocumentTitle; };
+                // a dropped file or folder: the page asks where it is on disk, so a 6.9 GB city is read
+                // where it is instead of uploaded (and a folder can be dropped at all)
+                core.WebMessageReceived += (s, e) => OnWebMessage(core, origin, e);
                 web.Source = new Uri(backend.Url);
             }
             catch (WebView2RuntimeNotFoundException)
@@ -121,6 +127,51 @@ namespace Fivem2Open77.Studio
                 if (r == DialogResult.Yes) OpenExternal("https://go.microsoft.com/fwlink/p/?LinkId=2124703");
                 BrowserMode();
             }
+        }
+
+        static void OnWebMessage(CoreWebView2 core, string origin, CoreWebView2WebMessageReceivedEventArgs e)
+        {
+            try
+            {
+                if (e.Source == null || !e.Source.StartsWith(origin + "/", StringComparison.OrdinalIgnoreCase)) return;
+                string json = e.WebMessageAsJson ?? "";
+                if (json.IndexOf("\"f2o77-paths\"", StringComparison.Ordinal) < 0) return;
+                var id = Regex.Match(json, "\"id\"\\s*:\\s*(\\d{1,9})");
+                if (!id.Success) return;
+                var paths = new List<string>();
+                var objs = e.AdditionalObjects;
+                if (objs != null)
+                {
+                    foreach (var o in objs)
+                    {
+                        string p = null;
+                        if (o is CoreWebView2File f) p = f.Path;
+                        else if (o is CoreWebView2FileSystemHandle fh) p = fh.Path;
+                        if (!string.IsNullOrEmpty(p) && !paths.Contains(p)) paths.Add(p);
+                    }
+                }
+                var sb = new StringBuilder("{\"type\":\"f2o77-paths\",\"id\":").Append(id.Groups[1].Value).Append(",\"paths\":[");
+                for (int i = 0; i < paths.Count; i++)
+                {
+                    if (i > 0) sb.Append(',');
+                    sb.Append(JsonString(paths[i]));
+                }
+                sb.Append("]}");
+                core.PostWebMessageAsJson(sb.ToString());
+            }
+            catch { }
+        }
+
+        static string JsonString(string s)
+        {
+            var sb = new StringBuilder("\"");
+            foreach (char c in s)
+            {
+                if (c == '"' || c == '\\') sb.Append('\\').Append(c);
+                else if (c < 0x20) sb.Append("\\u").Append(((int)c).ToString("x4"));
+                else sb.Append(c);
+            }
+            return sb.Append('"').ToString();
         }
 
         void BrowserMode()

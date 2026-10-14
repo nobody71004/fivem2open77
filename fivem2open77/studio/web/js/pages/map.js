@@ -5,6 +5,7 @@ import { h, clear, put, toast, modal, confirmBox, prompt, fmtBytes, fmtTime, fmt
 import { mapViewerTab } from "./mapviewer.js";
 import { placePanel } from "./place.js";
 import { agentTab } from "./agent.js";
+import { cityPicker } from "./citypick.js";
 
 const TABS = [["overview", "Overview"], ["3d", "3D"], ["doors", "Doors"], ["options", "Options"],
   ["assets", "NCWE assets"], ["build", "Build"],
@@ -85,8 +86,9 @@ export function mapPage(root, args) {
     setCrumbs([["Maps", "#/maps"], [p.name || "(unnamed)", `#/map/${pid}/overview`], [label]]);
     clear(head).append(
       h("div", h("h1", p.name || "(unnamed)"),
-        h("div.row.meta", { style: { gap: "12px", marginTop: "2px" } }, m.name ? h("code", m.name) : null,
-          m.size ? h("span", `${Math.round(m.size[0])} × ${Math.round(m.size[1])} × ${Math.round(m.size[2])} m`) : null,
+        h("div.row.meta", { style: { gap: "12px", marginTop: "2px" } }, m.city ? h("span.pill.warn", "a whole city") : (m.name ? h("code", m.name) : null),
+          m.city ? h("span", `${(m.objects || 0).toLocaleString()} objects · ${m.districts} districts`) : null,
+          !m.city && m.size ? h("span", `${Math.round(m.size[0])} × ${Math.round(m.size[1])} × ${Math.round(m.size[2])} m`) : null,
           m.placements ? h("span", `${m.placements} placements`) : null, h("span.faint", p.source))),
       h("div.grow"),
       h("div.toolbar",
@@ -105,11 +107,18 @@ export function mapPage(root, args) {
         h("button.btn.primary", { onclick: () => startMapBuild(ctx) }, icon("build"), "Build")));
   }
 
+  const fn = { overview, "3d": viewer3d, doors: doorsTab, options: optionsTab, assets: assetsTab, build: buildTab, game: gameTab,
+    deploy: deployTab, place: placeTab, agent: agentTab }[tab] || overview;
+  ctx.rerender = async () => {
+    await ctx.reload();
+    ctx.disposers.forEach((d) => d());
+    ctx.disposers = [];
+    clear(body);
+    fn(body, ctx);
+  };
   (async () => {
     try {
       await ctx.reload();
-      const fn = { overview, "3d": viewer3d, doors: doorsTab, options: optionsTab, assets: assetsTab, build: buildTab, game: gameTab,
-        deploy: deployTab, place: placeTab, agent: agentTab }[tab] || overview;
       clear(body);
       fn(body, ctx);
     } catch (e) {
@@ -156,8 +165,24 @@ export function staleBanner(ctx, stale) {
 function fact(label, value) { return h("div.fact", h("span", label), h("b", value ?? "-")); }
 const fmtSpot = (a) => (a ? `${Number(a.x).toFixed(1)}, ${Number(a.y).toFixed(1)}, ${Number(a.z).toFixed(1)}  yaw ${Number(a.yaw || 0).toFixed(0)}°` : "-");
 
-// Run fn once the look is there; meanwhile show the look job (or offer to start one).
+// Run fn once the look is there; meanwhile show the look job (or offer to start one).  A whole city
+// has no parts yet: everything but the overview waits for a district.
 function withLook(root, ctx, fn) {
+  if (ctx.look && ctx.look.city) {
+    root.append(h("div.card", h("h3", `${ctx.look.display_name} is a whole city`),
+      h("p.muted", "A city is converted a district at a time: pick the district on the Overview first; this tab then shows it."),
+      h("a.btn.primary", { href: `#/map/${ctx.pid}/overview` }, "Pick a district")));
+    return null;
+  }
+  if (ctx.project && ctx.project.import === "importing") {
+    root.append(h("div.card", h("h3", "Still importing"), h("p.muted", "The map's files are still coming in: see the import job on the Maps page or in Jobs.")));
+    return null;
+  }
+  if (ctx.project && ctx.project.import === "failed") {
+    root.append(h("div.card", h("h3.err", "The import did not finish"), h("p.muted", ctx.project.import_error || ""),
+      h("p.help", "Delete this project and import the map again.")));
+    return null;
+  }
   if (ctx.look) return fn();
   const running = (ctx.state.jobs || []).find((j) => j.kind === "look");
   const bar = h("div.progress.indef", h("div"));
@@ -198,8 +223,38 @@ function withLook(root, ctx, fn) {
   }
 }
 
+// ------------------------------------------------------------------ a whole city
+function cityOverview(root, ctx) {
+  const L = ctx.look;
+  const ov = L.overview || {};
+  const ext = ov.extent;
+  root.append(h("div.card", h("div.row", h("h3", { style: { margin: 0 } }, `${L.display_name}: a whole city`), h("div.grow"),
+    h("span.muted", `${(ov.objects || 0).toLocaleString()} objects · ${(ov.ymaps || 0).toLocaleString()} ymaps · ${(L.districts || []).length} districts`
+      + (ext ? ` · ${((ext[2] - ext[0]) / 1000).toFixed(1)} × ${((ext[3] - ext[1]) / 1000).toFixed(1)} km` : ""))),
+  h("p.help", "Too big to convert in one go: a city becomes maps of a few hundred metres each (districts), built and installed one by one. "
+    + "Pick the first one below; later districts become projects of their own that read the same files (nothing is copied again).")),
+  cityPicker({ pid: ctx.pid, city: L, current: null, newProject: false, onDone: () => ctx.rerender() }));
+}
+
+async function anotherDistrict(ctx, area) {
+  let city;
+  try {
+    city = await api.get(`/projects/${ctx.pid}/map/city`);
+  } catch (e) {
+    return toast(e.message, "err");
+  }
+  const holder = h("div", { style: { width: "min(1180px, 92vw)" } });
+  const back = h("div.modal-back", { onclick: (e) => { if (e.target === back) back.remove(); } },
+    h("div.modal.wide", { style: { maxWidth: "1240px", width: "min(1240px, 96vw)" } }, h("div.row", h("h2", { style: { margin: 0 } }, `Another district of ${city.display_name}`),
+      h("div.grow"), h("button.btn.ghost", { onclick: () => back.remove() }, "Close")), holder));
+  holder.append(cityPicker({ pid: ctx.pid, city, current: area, newProject: true,
+    onDone: (pid) => { back.remove(); toast("New district project ready", "ok"); location.hash = `#/map/${pid}/overview`; } }));
+  document.getElementById("modal-root").append(back);
+}
+
 // ------------------------------------------------------------------ overview
 function overview(root, ctx) {
+  if (ctx.look && ctx.look.city) return cityOverview(root, ctx);
   withLook(root, ctx, () => {
     const L = ctx.look;
     const st = ctx.state;
@@ -246,6 +301,11 @@ function overview(root, ctx) {
             fact("Glass slabs", Object.values(L.glass || {}).reduce((a, b) => a + b, 0)),
             fact("Triangles", `${(L.triangles_placed / 1e6).toFixed(2)} M`), fact("Colliders", L.colliders.toLocaleString()),
             fact("Textures", L.textures), fact("Materials", L.materials))),
+        opts.area ? h("div.card", h("h3", "One district of a city"),
+          h("p.help", `This map is the area within ${Math.round(opts.area[2])} m of ${opts.area[0]}, ${opts.area[1]} (GTA metres) of its resource. `
+            + "Another district becomes a project of its own, reading the same files."),
+          h("div.row", h("a.btn.small", { href: `#/map/${ctx.pid}/options` }, "Change the area"),
+            h("button.btn.small.cyan", { onclick: () => anotherDistrict(ctx, null) }, "Convert another district..."))) : null,
         spotCard(ctx),
         h("div.card", h("h3", "Progress"),
           steps.map(([label, ok]) => h("div.row", h("span", { class: ok ? "ok" : "faint" }, ok ? "✔" : "○"), label)),
@@ -396,7 +456,7 @@ function doorsTab(root, ctx) {
 
 // ------------------------------------------------------------------ options
 function districtPicker(L, onPick) {
-  const ds = (L && L.scene && L.scene.districts) || [];
+  const ds = (L && (L.city ? L.districts : L.scene && L.scene.districts)) || [];
   if (ds.length < 2) return null;
   const sel = h("select", h("option", { value: "" }, "pick a district..."),
     ds.map((dd, i) => h("option", { value: String(i) }, `${dd.name} (${dd.entities.toLocaleString()} objects)`)));
@@ -689,6 +749,7 @@ export function assetsTab(root, ctx) {
 
 // ------------------------------------------------------------------ build
 function buildTab(root, ctx) {
+  if (ctx.look && ctx.look.city) return withLook(root, ctx, () => null);
   const live = h("div");
   const hist = h("tbody");
   const detail = h("div");
@@ -783,6 +844,7 @@ function buildTab(root, ctx) {
 
 // ------------------------------------------------------------------ the local game
 function gameTab(root, ctx) {
+  if (ctx.look && ctx.look.city) return withLook(root, ctx, () => null);
   const g = ctx.state.game || {};
   const builds = (ctx.state.builds || []).filter((b) => b.ok);
   const out = h("div");
@@ -816,6 +878,7 @@ function gameTab(root, ctx) {
 
 // ------------------------------------------------------------------ servers
 function deployTab(root, ctx) {
+  if (ctx.look && ctx.look.city) return withLook(root, ctx, () => null);
   const servers = store.state.settings.servers;
   const builds = (ctx.state.builds || []).filter((b) => b.ok);
   if (!servers.length) {
@@ -941,6 +1004,10 @@ export function serverMapCard(s, sid, mapName, { onChange, runJob, pid, extra } 
 // ------------------------------------------------------------------ placement
 function placeTab(root, ctx) {
   const m = ctx.project.map || {};
+  if (m.city) {
+    withLook(root, ctx, () => null);
+    return;
+  }
   if (!m.name) {
     root.append(h("div.card", h("h3", "Not looked at yet"), h("p.muted", "The map needs its name first: open Overview.")));
     return;

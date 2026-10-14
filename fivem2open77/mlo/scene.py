@@ -148,15 +148,55 @@ def index_stream(files) -> StreamIndex:
     return idx
 
 
+DENSITY_CELL = 32.0         # metres: the city overview's grid
+DENSITY_MAX = 40000         # cells kept (a 20 x 20 km city at 32 m has fewer)
+
+
+def district_key(ymap: str) -> str:
+    """The district a ymap belongs to by its name: bronx_e_stream3, manhatsw_strbig0_straight_ms and
+    manhat02_lod all name theirs first (bronx_e, manhatsw, manhat02)."""
+    key = re.sub(r"(_strbig|_stream|_slod|_lod|_milo_|_interior|_occl|_critical).*$", "", ymap)
+    key = re.sub(r"(_\d+)+$", "", key)
+    return key or ymap
+
+
+def districts_of(ymap_info, limit=40) -> list:
+    """ymaps grouped into districts by name (bronx_e_stream3 -> bronx_e), with their extent."""
+    groups = {}
+    for info in ymap_info:
+        if "bbox" not in info:
+            continue
+        key = district_key(info["ymap"])
+        g = groups.setdefault(key, {"name": key, "ymaps": 0, "entities": 0, "bbox": list(info["bbox"])})
+        g["ymaps"] += 1
+        g["entities"] += info["entities"]
+        b = g["bbox"]
+        b[0], b[1] = min(b[0], info["bbox"][0]), min(b[1], info["bbox"][1])
+        b[2], b[3] = max(b[2], info["bbox"][2]), max(b[3], info["bbox"][3])
+    out = []
+    for g in groups.values():
+        b = g["bbox"]
+        cx, cy = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+        g["center"] = [round(cx, 1), round(cy, 1)]
+        g["radius"] = round(max(30.0, 0.5 * max(b[2] - b[0], b[3] - b[1])), 1)
+        out.append(g)
+    out.sort(key=lambda g: -g["entities"])
+    return out[:limit] if limit else out
+
+
 class MapScene:
     """Everything the converter needs from a FiveM map resource."""
 
-    def __init__(self, stream_files, entity_sets="default", log=print, area=None):
+    def __init__(self, stream_files, entity_sets="default", log=print, area=None, city_limit=None):
         """area: (x, y, radius) in GTA world metres -- only what stands there is kept (a whole city
-        such as Liberty V is converted district by district)."""
+        such as Liberty V is converted district by district).  city_limit: past this many objects
+        (and no area) the map is a city: its collision is not read (the converter stops and lists the
+        districts to pick from), and self.city is True."""
         self.log = log
         self.area = tuple(float(v) for v in area) if area else None
         self.out_of_area = 0
+        self.city = False
+        self.density = {}                  # (ix, iy) of DENSITY_CELL m cells -> entities (the city overview)
         self.gtxd_files = [f for f in stream_files if "gtxd" in os.path.basename(f).lower()
                            and os.path.splitext(f)[1].lower() in (".meta", ".xml")]
         self.idx = index_stream([f for f in stream_files if f not in self.gtxd_files])
@@ -183,7 +223,15 @@ class MapScene:
         self._load_gtxd()
         self._load_types()
         self._load_maps()
-        self._load_world_collision()
+        if city_limit and not self.area and self.object_count() > city_limit:
+            self.city = True               # a whole city: its collision is read district by district
+            self.log(f"{self.object_count()} objects in {len(self.ymap_info)} ymaps: a whole city (pick a district)")
+        else:
+            self._load_world_collision()
+
+    def object_count(self) -> int:
+        """The objects the conversion would place (custom entities and MLO children)."""
+        return len(self.instances) + sum(len(m.children) for m in self.mlos)
 
     # ------------------------------------------------------------------ names
     def name_of(self, h: int) -> str:
@@ -426,6 +474,10 @@ class MapScene:
             if xy:
                 a = np.asarray(xy, np.float64)
                 info["bbox"] = [round(float(v), 1) for v in (a[:, 0].min(), a[:, 1].min(), a[:, 0].max(), a[:, 1].max())]
+                if not self.area:
+                    cells, counts = np.unique(np.floor(a / DENSITY_CELL).astype(np.int64), axis=0, return_counts=True)
+                    for (ix, iy), n in zip(cells.tolist(), counts.tolist()):
+                        self.density[(ix, iy)] = self.density.get((ix, iy), 0) + n
             self.ymap_info.append(info)
 
     def in_area(self, pos, margin=0.0) -> bool:
@@ -437,26 +489,17 @@ class MapScene:
     def districts(self, limit=40) -> list:
         """The map's ymaps grouped into districts by name (bronx_e_stream3 -> bronx_e), with their
         extent and size: what to pick an area from when the map is a whole city."""
-        groups = {}
-        for info in self.ymap_info:
-            if "bbox" not in info:
-                continue
-            key = re.sub(r"(_strbig\d*|_stream\d*|_lod|_slod\d*|_milo_.*|_interior.*|_\d+)+$", "", info["ymap"]) or info["ymap"]
-            g = groups.setdefault(key, {"name": key, "ymaps": 0, "entities": 0, "bbox": list(info["bbox"])})
-            g["ymaps"] += 1
-            g["entities"] += info["entities"]
-            b = g["bbox"]
-            b[0], b[1] = min(b[0], info["bbox"][0]), min(b[1], info["bbox"][1])
-            b[2], b[3] = max(b[2], info["bbox"][2]), max(b[3], info["bbox"][3])
-        out = []
-        for g in groups.values():
-            b = g["bbox"]
-            cx, cy = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
-            g["center"] = [round(cx, 1), round(cy, 1)]
-            g["radius"] = round(max(30.0, 0.5 * max(b[2] - b[0], b[3] - b[1])), 1)
-            out.append(g)
-        out.sort(key=lambda g: -g["entities"])
-        return out[:limit]
+        return districts_of(self.ymap_info, limit)
+
+    def overview(self) -> dict:
+        """A whole city at a glance: its extent and where its objects stand (DENSITY_CELL m cells)."""
+        boxes = [i["bbox"] for i in self.ymap_info if "bbox" in i]
+        ext = ([round(min(b[0] for b in boxes), 1), round(min(b[1] for b in boxes), 1),
+                round(max(b[2] for b in boxes), 1), round(max(b[3] for b in boxes), 1)] if boxes else None)
+        cells = sorted(([ix, iy, n] for (ix, iy), n in self.density.items()), key=lambda c: -c[2])[:DENSITY_MAX]
+        return {"extent": ext, "objects": self.object_count(), "ymaps": len(self.ymap_info),
+                "mlo_instances": len(self.mlos), "entities": sum(i["entities"] for i in self.ymap_info),
+                "grid": {"cell": DENSITY_CELL, "cells": cells}}
 
     def _add_mlo(self, e, ymap):
         h = int(e.get("archetypeName") or 0)
