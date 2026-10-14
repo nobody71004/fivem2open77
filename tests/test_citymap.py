@@ -58,7 +58,7 @@ def _scene_json():
         # the roads are turned half way round on z, as in the game's entity
         _comp("entMeshComponent", "3dmap_roads", q=_q(0, 0, 1, 0), mesh="3dmap_roads.mesh"),
         _comp("entMeshComponent", "3dmap_roads_seethrough", q=_q(0, 0, 1, 0), mesh="3dmap_roads.mesh", app="SeeThrough"),
-        _comp("entMeshComponent", "watson_data", pos=(-2000, 1800, 0), mesh="3dmap_triangle_soup.mesh"),
+        _comp("entMeshComponent", "watson_data", pos=(-2000, 1800, 0), mesh="3dmap_triangle_soup.mesh", app="watson"),
         _comp("entMeshComponent", "obelisk", pos=(100, 50, 3), q=_q(0, 0, k, k), mesh="3dmap_obelisk.mesh", parent=_bind(2, "watson_data")),
         _comp("entMeshComponent", "HACK", mesh="box.w2mesh", layer="0"),
         _comp("entPhysicalMeshComponent", "coll_buildings", mesh="3dmap_coll_buildings.mesh"),
@@ -110,11 +110,86 @@ def _fixture(root):
     _glb(os.path.join(glb, "3dmap_triangle_soup.glb"), [[0, 0, 0], [1, 0, 0], [0, 1, 0]], [[0, 1, 2]])
     with open(os.path.join(js, "3dmap_view.ent.json"), "w") as f:
         json.dump(_scene_json(), f)
+    # the map screen's blocks: the soup's material, the point cloud and the grey map (-fb xbm buffers)
+    buf = os.path.join(root, "buf")
+    os.makedirs(buf)
+    with open(os.path.join(js, "3dmap_triangle_soup.mesh.json"), "w") as f:
+        json.dump(_soup_json(), f)
+    with open(os.path.join(js, "watson_data.xbm.json"), "w") as f:
+        json.dump(_xbm_json(3 * SIDE, SIDE, "TCM_None", "TRF_DeepColor"), f)
+    with open(os.path.join(js, "c_watson_m.xbm.json"), "w") as f:
+        json.dump(_xbm_json(8, 8, "TCM_QualityR", "TRF_TrueColor"), f)
+    with open(os.path.join(buf, "watson_data.xbm.0.buffer"), "wb") as f:
+        f.write(_cloud([((0.5, 0.5, 0.1), (0, 0, 0, 1), (0.2, 0.4, 0.8)), ((0.25, 0.75, 0.3), (0, 0, 0, 1), (0.1, 0.1, 0.4))]).tobytes())
+    with open(os.path.join(buf, "c_watson_m.xbm.0.buffer"), "wb") as f:
+        f.write(_bc4_flat(8, 200) + b"\0" * 8)
     k = math.sqrt(0.5)
     with open(os.path.join(js, "3dmap_coll_buildings.mesh.json"), "w") as f:
         json.dump(_coll_json([((-1900, 1850, 40), (10, 20, 40), (0, 0, 0, 1)), ((5, 5, 5), (0.001, 0.001, 0.001), (0, 0, 0, 1)),
                               ((-1950, 1900, 30), (5, 30, 8), (k, 0, 0, k))]), f)
     return raw, glb, js
+
+
+# ----------------------------------------------------------------------------- the map screen's blocks
+SIDE = 4                                  # a 4 x 12 point-cloud texture: 16 slots, two blocks in use
+
+
+def _soup_json(tmin=(-100, -200, -10), tmax=(100, 200, 90), cube=50.0):
+    vals = [{"$type": "Float", "PointCloudTextureHeight": SIDE},
+            {"$type": "rRef:ITexture", "WorldPosTex": {"DepotPath": {"$type": "ResourcePath", "$storage": "string",
+                                                                     "$value": "base\\fx\\textures\\3dmap\\static\\watson_data.xbm"}}},
+            {"$type": "Vector4", "TransMin": {"$type": "Vector4", "X": tmin[0], "Y": tmin[1], "Z": tmin[2], "W": 0}},
+            {"$type": "Vector4", "TransMax": {"$type": "Vector4", "X": tmax[0], "Y": tmax[1], "Z": tmax[2], "W": 1}},
+            {"$type": "Float", "CubeSize": cube},
+            {"$type": "rRef:ITexture", "BaseColor": {"DepotPath": {"$type": "ResourcePath", "$storage": "string",
+                                                                   "$value": "base\\fx\\textures\\3dmap\\static\\c_watson_m.xbm"}}},
+            {"$type": "Float", "EdgeThickness": 0.0005}, {"$type": "Float", "EdgeSharpnessPower": 50}]
+    return {"Data": {"RootChunk": {"$type": "CMesh",
+                                   "materialEntries": [{"$type": "CMeshMaterialEntry", "name": _cname("watson"), "index": 0, "isLocalInstance": 1}],
+                                   "localMaterialBuffer": {"materials": [{"$type": "CMaterialInstance", "values": vals}]}}}}
+
+
+def _cloud(blocks):
+    """[(position 0..1 xyz, quaternion xyzw, size 0..1 xyz)] -> the uint16 (SIDE, 3*SIDE, 4) texture."""
+    a = np.zeros((SIDE, 3 * SIDE, 4), np.uint16)
+    for i, (p, q, sz) in enumerate(blocks):
+        r, c = divmod(i, SIDE)
+        a[r, c] = [*(np.rint(np.array(p) * 65535)), 65535]
+        a[r, SIDE + c] = np.rint((np.array(q) + 1.0) / 2.0 * 65535)
+        a[r, 2 * SIDE + c] = [*(np.rint(np.array(sz) * 65535)), 65535]
+    return a
+
+
+def _xbm_json(w, h, comp, fmt):
+    return {"Data": {"RootChunk": {"$type": "CBitmapTexture", "width": w, "height": h,
+                                   "setup": {"$type": "STextureGroupSetup", "compression": comp, "rawFormat": fmt}}}}
+
+
+def _bc4_flat(n, value):
+    """An n x n BC4 texture of one grey (each 4x4 block: both ends `value`, every index 0)."""
+    return bytes([value, value, 0, 0, 0, 0, 0, 0]) * ((n // 4) * (n // 4))
+
+
+def test_material_params_and_block_decoding():
+    params = C.material_params(_soup_json())
+    w = params["watson"]
+    assert w["PointCloudTextureHeight"] == SIDE and w["CubeSize"] == 50.0 and w["TransMin"][:3] == [-100, -200, -10]
+    assert w["WorldPosTex"].endswith("watson_data.xbm") and w["BaseColor"].endswith("c_watson_m.xbm")
+    k = math.sqrt(0.5)
+    tex = _cloud([((0.5, 0.5, 0.1), (0, 0, 0, 1), (0.2, 0.4, 0.8)),          # at the centre of the range
+                  ((1.0, 0.0, 0.5), (0, 0, k, k), (0.1, 0.1, 0.1))])        # a corner, turned 90 degrees on z
+    b = C.decode_cubes(tex, SIDE, [-100, -200, -10], [100, 200, 90], 50.0, t=[1000, 2000, 0])
+    assert b.shape == (2, 10)
+    assert np.allclose(b[0, :3], [1000, 2000, 0], atol=0.01) and np.allclose(b[0, 3:6], [5, 10, 20], atol=0.01)
+    assert np.allclose(b[0, 6:], [0, 0, 0, 1], atol=1e-4)
+    assert np.allclose(b[1, :3], [1100, 1800, 40], atol=0.01) and np.allclose(b[1, 3:6], [2.5, 2.5, 2.5], atol=0.01)
+    assert np.allclose(np.abs(b[1, 8:]), [k, k], atol=1e-4)
+    # a component turned half way round: the blocks go round with it
+    r = C.quat_matrix((0, 0, 1, 0))
+    b2 = C.decode_cubes(tex, SIDE, [-100, -200, -10], [100, 200, 90], 50.0, r=r, t=[0, 0, 0])
+    assert np.allclose(b2[1, :3], [-100, 200, 40], atol=0.01)
+    rq = C.quat_matrix(b2[1, 6:]) @ np.array([1.0, 0, 0])
+    assert np.allclose(rq, [0, -1, 0], atol=1e-4)                # 90 + 180 degrees
 
 
 def test_scene_transforms_and_districts():
@@ -139,8 +214,19 @@ def test_assemble_layers_buildings_and_binary():
     try:
         raw, glb, js = _fixture(root)
         logs = []
-        meta, data = C.assemble(raw, glb, js, log=logs.append)
+        meta, data = C.assemble(raw, glb, js, log=logs.append, buf_dir=os.path.join(root, "buf"))
         assert set(meta["layers"]) == {"terrain", "roads", "landmarks"}, meta["layers"].keys()
+        cu = meta["cubes"]
+        assert cu["count"] == 2 and meta["stats"]["blocks"] == 2 and [d["id"] for d in cu["districts"]] == ["watson"]
+        cb = np.frombuffer(data, np.float32, cu["data"][1], cu["data"][0]).reshape(-1, 10)
+        # watson_data stands at (-2000, 1800): the first block in the middle of its range
+        assert np.allclose(cb[0, :3], [-2000, 1800, 0], atol=0.02) and np.allclose(cb[0, 3:6], [5, 10, 20], atol=0.01)
+        shade = np.frombuffer(data, np.uint8, cu["shade"][1], cu["shade"][0])
+        assert list(shade) == [200, 200]                             # the grey map under each block
+        dm = cu["districts"][0]
+        assert dm["mask"]["w"] == 8 and dm["mask_min"] == [-2100, 1600] and dm["mask_max"] == [-1900, 2000]
+        mask = np.frombuffer(data, np.uint8, dm["mask"]["data"][1], dm["mask"]["data"][0])
+        assert mask.size == 64 and mask.min() == mask.max() == 200
         assert len(data) == meta["bytes"] and len(data) % 16 == 0
         t = meta["layers"]["terrain"]
         assert t["vertices"] == 4 and t["triangles"] == 2          # welded, the collapsed triangle dropped
@@ -183,15 +269,22 @@ def test_build_writes_the_cache_with_a_fake_wolvenkit():
             def run(self, args, timeout=0, check=True):
                 self.calls.append(args)
                 assert args[0] == "uncook" and "--mesh-export-type" in args and "MeshOnly" in args
+                assert args[args.index("-fb") + 1] == "xbm"                 # the textures' pixel buffers
                 out, exp = args[args.index("-o") + 1], args[args.index("-or") + 1]
                 d = os.path.join(out, *C.FOLDER.split("\\"))
                 e = os.path.join(exp, *C.FOLDER.split("\\"))
-                os.makedirs(d, exist_ok=True)
-                os.makedirs(e, exist_ok=True)
-                for fn in ("3dmap_view.ent", "3dmap_coll_buildings.mesh", "3dmap_terrain.mesh"):
+                td = os.path.join(out, *C.TEXTURES.split("\\"))
+                te = os.path.join(exp, *C.TEXTURES.split("\\"))
+                for x in (d, e, td, te):
+                    os.makedirs(x, exist_ok=True)
+                for fn in ("3dmap_view.ent", "3dmap_coll_buildings.mesh", "3dmap_terrain.mesh", "3dmap_triangle_soup.mesh"):
                     open(os.path.join(d, fn), "wb").close()
+                for fn in ("watson_data.xbm", "c_watson_m.xbm"):
+                    open(os.path.join(td, fn), "wb").close()
                 for fn in os.listdir(sglb):
                     shutil.copy(os.path.join(sglb, fn), e)
+                for fn in os.listdir(os.path.join(src, "buf")):
+                    shutil.copy(os.path.join(src, "buf", fn), te)
                 return "[ 0: Error ] - Failed to export materials ... (ignored)"
 
             def serialize(self, folder, out):
@@ -203,7 +296,9 @@ def test_build_writes_the_cache_with_a_fake_wolvenkit():
         out = os.path.join(root, "cache")
         st = C.build(wk, game, out, os.path.join(root, "tmp"), log=lambda *a: None)
         assert st["ready"] and st["stats"]["terrain"] == 2 and os.path.isfile(os.path.join(out, "citymap.bin"))
-        assert wk.calls[1] == ["serialize", ["3dmap_coll_buildings.mesh", "3dmap_view.ent"]]
+        assert st["stats"]["blocks"] == 2 and st["version"] == C.VERSION and not st["upgrade"]
+        assert wk.calls[1] == ["serialize", ["3dmap_coll_buildings.mesh", "3dmap_triangle_soup.mesh", "3dmap_view.ent",
+                                             "c_watson_m.xbm", "watson_data.xbm"]]
         assert os.listdir(os.path.join(root, "tmp")) == []          # the work folder is gone
         assert not C.status(out, game).get("stale")
         later = time.time() + 100

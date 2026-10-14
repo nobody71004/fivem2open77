@@ -6,6 +6,16 @@ colours), the water, a few landmarks, ~10,000 building volumes (the box collider
 collision meshes: what the map's cursor hits) and the district outlines (trigger areas of
 3dmap_view.ent, the entity that also places every part).
 
+The buildings the map screen *shows* are finer than its colliders: each district is a point cloud
+of oriented blocks, ~257,000 for the city, kept in a 16-bit RGBA texture
+(base\\fx\\textures\\3dmap\\static\\<district>_data.xbm, three square tiles side by side: the
+blocks' positions, their rotations as quaternions, their sizes) that the triangle soup mesh
+(3dmap_triangle_soup.mesh, material 3d_map_cubes.mt) turns into boxes on the GPU.  Its material
+instance per district gives the decoding: TransMin / TransMax (the position range, relative to the
+component), CubeSize (the size range), the tile size (PointCloudTextureHeight) and BaseColor, a
+top-down grey map of the district (<district>_m.xbm) the blocks take their shade from.  ``cubes``
+decodes them into the same oriented boxes as the colliders.
+
 ``build`` reads them out of the player's own game with WolvenKit -- the meshes exported to glTF
 (``uncook``), the entity and the collision meshes serialized to JSON -- puts every part where the
 entity puts it, in Night City's world coordinates (metres, x east, y north, z up, the frame of every
@@ -28,9 +38,12 @@ import numpy as np
 
 from ..cp77.glbread import accessor, read_glb
 
-VERSION = 1
+VERSION = 2                           # 2: the map screen's own building blocks (cubes)
+READABLE = (1, 2)                     # older caches still open (without the blocks)
 FOLDER = "base\\entities\\cameras\\3dmap"
-REGEX = r"^base\\entities\\cameras\\3dmap\\[^\\]+\.(mesh|ent)$"
+TEXTURES = "base\\fx\\textures\\3dmap\\static"
+REGEX = r"^(base\\entities\\cameras\\3dmap\\[^\\]+\.(mesh|ent)|base\\fx\\textures\\3dmap\\static\\[^\\]+\.xbm)$"
+SOUP = "3dmap_triangle_soup"
 VIEW = "3dmap_view.ent"
 FIXED = 131072.0                      # WorldPosition FixedPoint: 1/131072 m
 WELD = 200.0                          # vertices closer than 5 mm are one
@@ -318,6 +331,143 @@ def building_boxes(mesh_json: dict, r=None, t=None) -> np.ndarray:
     return np.array(out, np.float64).reshape(-1, 10)
 
 
+# ---------------------------------------------------------------------- the map screen's blocks
+def material_params(mesh_json: dict) -> dict:
+    """{material name: {parameter: value}} of a mesh's local material instances (textures as depot
+    paths, vectors as [x, y, z, w])."""
+    handles = _Handles(mesh_json)
+    root = mesh_json.get("Data", {}).get("RootChunk", mesh_json)
+    insts = ((root.get("localMaterialBuffer") or {}).get("materials") or root.get("preloadLocalMaterialInstances")
+             or [])
+    by_index = {int(e.get("index", -1)): _name(e.get("name")) for e in root.get("materialEntries") or []
+                if e.get("isLocalInstance", True)}
+    out = {}
+    for i, m in enumerate(insts):
+        m = handles.get(m) or (m if isinstance(m, dict) else {})
+        vals = {}
+        for v in m.get("values") or []:
+            for k, x in v.items():
+                if k == "$type":
+                    continue
+                if isinstance(x, dict) and "DepotPath" in x:
+                    x = _name(x.get("DepotPath"))
+                elif isinstance(x, dict) and "X" in x:
+                    x = [float(x.get("X", 0)), float(x.get("Y", 0)), float(x.get("Z", 0)), float(x.get("W", 0))]
+                vals[k] = x
+        out[by_index.get(i, str(i))] = vals
+    return out
+
+
+def decode_cubes(data: np.ndarray, side: int, tmin, tmax, cube_size, r=None, t=None) -> np.ndarray:
+    """A district's point-cloud texture (side x 3*side RGBA16: positions | quaternions | sizes) ->
+    (N, 10) float64 boxes [cx cy cz hx hy hz qx qy qz qw] in world space (half extents, as the
+    colliders).  A texel whose position alpha is 0 is padding."""
+    r = np.eye(3) if r is None else np.asarray(r, np.float64)
+    t = np.zeros(3) if t is None else np.asarray(t, np.float64)
+    a = np.asarray(data, np.uint16).reshape(side, 3 * side, 4).astype(np.float64)
+    pos, rot, size = (a[:, k * side:(k + 1) * side].reshape(-1, 4) for k in range(3))
+    keep = (pos[:, 3] > 0) & (size[:, :3].max(1) > 0)
+    pos, rot, size = pos[keep], rot[keep], size[keep]
+    lo, hi = np.asarray(tmin, np.float64)[:3], np.asarray(tmax, np.float64)[:3]
+    local = lo + pos[:, :3] / 65535.0 * (hi - lo)
+    cen = local @ r.T + t
+    q = rot / 65535.0 * 2.0 - 1.0                           # (x, y, z, w), signed
+    q /= np.maximum(np.linalg.norm(q, axis=1, keepdims=True), 1e-9)
+    if not np.allclose(r, np.eye(3)):                       # the component turned: turn the blocks with it
+        cq = np.array(matrix_quat(r))
+        q = _qmul(np.broadcast_to(cq, q.shape), q)
+    half = size[:, :3] / 65535.0 * float(cube_size) / 2.0
+    return np.concatenate([cen, half, q], 1)
+
+
+def _qmul(a, b):
+    ax, ay, az, aw = a[:, 0], a[:, 1], a[:, 2], a[:, 3]
+    bx, by, bz, bw = b[:, 0], b[:, 1], b[:, 2], b[:, 3]
+    return np.stack([aw * bx + ax * bw + ay * bz - az * by, aw * by - ax * bz + ay * bw + az * bx,
+                     aw * bz + ax * by - ay * bx + az * bw, aw * bw - ax * bx - ay * by - az * bz], 1)
+
+
+def _texture(json_dir: str, buf_dir: str, depot: str):
+    """(setup dict, buffer bytes) of a texture WolvenKit exported with -fb xbm, or (None, None)."""
+    stem = os.path.basename(depot.replace("\\", "/"))
+    jp = os.path.join(json_dir, stem + ".json")
+    bp = os.path.join(buf_dir, stem + ".0.buffer")
+    if not (os.path.isfile(jp) and os.path.isfile(bp)):
+        return None, None
+    with open(jp, encoding="utf-8") as f:
+        root = json.load(f).get("Data", {}).get("RootChunk", {})
+    with open(bp, "rb") as f:
+        return root, f.read()
+
+
+def _grey(root: dict, raw: bytes):
+    """A BaseColor map (BC4 grey, the top mip) -> uint8 (n, n), or None."""
+    from ..imaging import decode
+    from ..gta.texture import FMT_ATI1
+    w, h = int(root.get("width") or 0), int(root.get("height") or 0)
+    comp = str((root.get("setup") or {}).get("compression") or "")
+    if not w or not h:
+        return None
+    if comp in ("TCM_QualityR", "TCM_DXTAlpha", "TCM_Normal"):          # BC4 (one channel)
+        img = decode(FMT_ATI1, w, h, raw[:max(1, (w + 3) // 4) * max(1, (h + 3) // 4) * 8])
+        return None if img is None else img[..., 0].copy()
+    if comp == "TCM_None" and len(raw) >= w * h:
+        return np.frombuffer(raw[:w * h], np.uint8).reshape(h, w).copy()
+    return None
+
+
+def cubes(scene: "Scene", soup_json: dict, json_dir: str, buf_dir: str, log=print) -> list:
+    """The map screen's building blocks, district by district -> [{id, boxes (N, 10), shade (N,)
+    uint8, mask (uint8 n x n or None), mask_min, mask_max, edge}]."""
+    params = material_params(soup_json)
+    out = []
+    for name, c in scene.components.items():
+        if c.get("$type") != "entMeshComponent" or SOUP not in _name((c.get("mesh") or {}).get("DepotPath")).lower():
+            continue
+        app = _name(c.get("meshAppearance")) or "default"
+        p = params.get(app)
+        if not p or not p.get("WorldPosTex"):
+            log(f"citymap: {name}: no material for appearance {app}")
+            continue
+        side = int(p.get("PointCloudTextureHeight") or 0)
+        root, raw = _texture(json_dir, buf_dir, p["WorldPosTex"])
+        if root is None:
+            log(f"citymap: {name}: {p['WorldPosTex']} was not read")
+            continue
+        fmt = str((root.get("setup") or {}).get("rawFormat") or "")
+        w, h = int(root.get("width") or 0), int(root.get("height") or 0)
+        if fmt != "TRF_DeepColor" or w != 3 * h or h != side or len(raw) < w * h * 8:
+            log(f"citymap: {name}: unexpected point cloud {w}x{h} {fmt} ({len(raw)} bytes): left out")
+            continue
+        if "TransMin" not in p or "TransMax" not in p or not p.get("CubeSize"):
+            log(f"citymap: {name}: no position range in its material: left out")
+            continue
+        r, t = scene.world(name)
+        boxes = decode_cubes(np.frombuffer(raw[:w * h * 8], np.uint16), side, p["TransMin"], p["TransMax"],
+                             p["CubeSize"], r, t)
+        # the shade under each block: the district's BaseColor map, top-down over the position range
+        lo = np.asarray(p["TransMin"][:2], np.float64) + t[:2]
+        hi = np.asarray(p["TransMax"][:2], np.float64) + t[:2]
+        mask = None
+        if p.get("BaseColor"):
+            mr, mraw = _texture(json_dir, buf_dir, p["BaseColor"])
+            mask = _grey(mr, mraw) if mr is not None else None
+        if mask is not None:
+            n_v, n_u = mask.shape
+            u = np.clip(((boxes[:, 0] - lo[0]) / (hi[0] - lo[0]) * n_u).astype(np.int64), 0, n_u - 1)
+            v = np.clip(((boxes[:, 1] - lo[1]) / (hi[1] - lo[1]) * n_v).astype(np.int64), 0, n_v - 1)
+            shade = mask[v, u]
+        else:
+            shade = np.full(len(boxes), 160, np.uint8)
+        district = re.sub(r"_data\d*$", "", name)
+        out.append({"id": district, "boxes": boxes, "shade": shade.astype(np.uint8), "mask": mask,
+                    "mask_min": [round(float(lo[0]), 2), round(float(lo[1]), 2)],
+                    "mask_max": [round(float(hi[0]), 2), round(float(hi[1]), 2)],
+                    "edge": [float(p.get("EdgeThickness") or 0.0005), float(p.get("EdgeSharpnessPower") or 50)]})
+        log(f"citymap: {district}: {len(boxes)} blocks")
+    return out
+
+
 # ---------------------------------------------------------------------- the cache
 def cache_dir(workspace: str) -> str:
     return os.path.join(workspace, "citymap")
@@ -330,7 +480,7 @@ def read_meta(out_dir: str):
             meta = json.load(f)
     except (OSError, ValueError):
         return None
-    if meta.get("version") != VERSION or not os.path.isfile(os.path.join(out_dir, "citymap.bin")):
+    if meta.get("version") not in READABLE or not os.path.isfile(os.path.join(out_dir, "citymap.bin")):
         return None
     return meta
 
@@ -356,7 +506,8 @@ def status(out_dir: str, game_dir: str | None = None) -> dict:
     if not meta:
         return {"ready": False}
     st = {"ready": True, "key": meta.get("key"), "built": meta.get("built"), "stats": meta.get("stats"),
-          "bytes": os.path.getsize(os.path.join(out_dir, "citymap.bin"))}
+          "bytes": os.path.getsize(os.path.join(out_dir, "citymap.bin")), "version": meta.get("version"),
+          "upgrade": meta.get("version") != VERSION}      # built by an older Studio: a rebuild adds detail
     if game_dir and meta.get("game_stamp"):
         now = game_stamp(game_dir)
         st["stale"] = bool(now and now != meta["game_stamp"])
@@ -379,8 +530,9 @@ class _Writer:
         return [off, int(np.asarray(arr).size)]
 
 
-def assemble(raw_dir: str, glb_dir: str, json_dir: str, log=print) -> tuple:
-    """WolvenKit's output (raw files, glTF exports, JSON) -> (meta dict, binary bytes)."""
+def assemble(raw_dir: str, glb_dir: str, json_dir: str, log=print, buf_dir: str | None = None) -> tuple:
+    """WolvenKit's output (raw files, glTF exports, JSON; buf_dir: the textures' pixel buffers) ->
+    (meta dict, binary bytes)."""
     ent = os.path.join(json_dir, VIEW + ".json")
     if not os.path.isfile(ent):
         raise CityMapError(f"{VIEW} was not read from the game")
@@ -464,6 +616,29 @@ def assemble(raw_dir: str, glb_dir: str, json_dir: str, log=print) -> tuple:
                              "min": [round(float(v), 1) for v in (b[:, :3] - ext).min(0)],
                              "max": [round(float(v), 1) for v in (b[:, :3] + ext).max(0)]}
         stats["buildings"] = int(len(b))
+    soup = os.path.join(json_dir, SOUP + ".mesh.json")
+    if buf_dir and os.path.isfile(soup):
+        with open(soup, encoding="utf-8") as f:
+            blocks = cubes(scene, json.load(f), json_dir, buf_dir, log=log)
+        if blocks:
+            allb = np.concatenate([d["boxes"] for d in blocks])
+            shade = np.concatenate([d["shade"] for d in blocks])
+            entry = {"count": int(len(allb)), "stride": 10, "layout": "cx cy cz hx hy hz qx qy qz qw",
+                     "data": w.add(allb.astype(np.float32)), "shade": w.add(shade.astype(np.uint8)), "districts": []}
+            start = 0
+            for d in blocks:
+                e = {"id": d["id"], "start": start, "count": int(len(d["boxes"])), "edge": d["edge"],
+                     "mask_min": d["mask_min"], "mask_max": d["mask_max"]}
+                if d["mask"] is not None:
+                    e["mask"] = {"w": int(d["mask"].shape[1]), "h": int(d["mask"].shape[0]),
+                                 "data": w.add(np.ascontiguousarray(d["mask"], np.uint8))}
+                entry["districts"].append(e)
+                start += len(d["boxes"])
+            ext = np.abs(allb[:, 3:6]).max(1, keepdims=True)
+            entry["min"] = [round(float(v), 1) for v in (allb[:, :3] - ext).min(0)]
+            entry["max"] = [round(float(v), 1) for v in (allb[:, :3] + ext).max(0)]
+            meta["cubes"] = entry
+            stats["blocks"] = int(len(allb))
     if boxes:
         lo, hi = np.array(meta["buildings"]["min"]), np.array(meta["buildings"]["max"])
         city = (lo, hi)
@@ -491,8 +666,9 @@ def build(wk, game_dir: str, out_dir: str, scratch: str, log=print, progress=Non
     try:
         step(0.05, "exporting the 3D map from the game")
         # -o gets the files as they are in the archives, -or the exports (glTF for meshes)
+        # (-fb xbm: the map's textures as their pixel buffers, next to the glTF exports)
         out = wk.run(["uncook", *archives, "-o", raw, "-or", glb, "-gp", game_dir, "-r", REGEX,
-                      "--mesh-export-type", "MeshOnly", "--mesh-export-lod-filter"], timeout=3600, check=False)
+                      "--mesh-export-type", "MeshOnly", "--mesh-export-lod-filter", "-fb", "xbm"], timeout=3600, check=False)
         folder = FOLDER.replace("\\", os.sep)
         rdir, gdir = os.path.join(raw, folder), os.path.join(glb, folder)
         if not os.path.isfile(os.path.join(rdir, VIEW)):
@@ -502,11 +678,19 @@ def build(wk, game_dir: str, out_dir: str, scratch: str, log=print, progress=Non
         log(f"citymap: {len(os.listdir(rdir))} files read, {n_glb} exported")
         step(0.55, "reading the districts and buildings")
         for fn in os.listdir(rdir):
-            if fn == VIEW or re.match(r"^3dmap_coll_buildings\d*\.mesh$", fn):
+            if fn == VIEW or fn == SOUP + ".mesh" or re.match(r"^3dmap_coll_buildings\d*\.mesh$", fn):
                 shutil.copyfile(os.path.join(rdir, fn), os.path.join(src, fn))
+        tdir = os.path.join(raw, TEXTURES.replace("\\", os.sep))
+        tbuf = os.path.join(glb, TEXTURES.replace("\\", os.sep))
+        if os.path.isdir(tdir):                    # the blocks' textures: their setup (size, format)
+            for fn in os.listdir(tdir):
+                if fn.endswith(".xbm"):
+                    shutil.copyfile(os.path.join(tdir, fn), os.path.join(src, fn))
+        else:
+            log("citymap: the map's block textures were not found: the city gets its collider boxes only")
         wk.serialize(src, js)
         step(0.75, "building the city")
-        meta, data = assemble(rdir, gdir, js, log=log)
+        meta, data = assemble(rdir, gdir, js, log=log, buf_dir=tbuf if os.path.isdir(tbuf) else None)
         meta["built"] = time.strftime("%Y-%m-%dT%H:%M:%S")
         meta["game_stamp"] = game_stamp(game_dir)
         meta["key"] = f"{int(time.time())}"

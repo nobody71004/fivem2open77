@@ -76,12 +76,26 @@ void main() {
 }`;
 
 export const terrainFS = FHEAD + LIB + /* glsl */ `
-uniform float uGrid;
+uniform float uGrid; uniform float uLook;
 varying vec3 vG; varying vec3 vN; varying float vDist;
 void main() {
   #include <logdepthbuf_fragment>
   vec3 n = safeNormalize(vN);
   float h = vG.z;
+  if (uLook > 0.5) {
+    // the map screen: a cool grey ground, its relief in soft light, the hills a shade lighter
+    vec3 g = mix(vec3(0.0075, 0.0105, 0.0135), vec3(0.020, 0.026, 0.031), smoothstep(-20.0, 380.0, h));
+    float lit = max(dot(n, normalize(vec3(-0.3, 0.45, 0.84))), 0.0);
+    g *= 0.55 + 0.75 * lit;
+    g += vec3(0.010, 0.016, 0.019) * smoothstep(0.3, 0.9, 1.0 - n.z);
+    g *= mix(0.5, 1.0, smoothstep(-10.0, -1.0, h));
+    float g2 = gridLine(vG.xy, 1000.0, 1.0);
+    g += vec3(0.02, 0.05, 0.06) * g2 * 0.35 * uGrid;
+    g += vec3(0.25, 0.95, 1.0) * pulseAt(vG.xy) * 0.6;
+    g += vec3(0.3, 1.0, 0.9) * cursorAt(vG.xy);
+    gl_FragColor = vec4(fogged(g, vDist), 1.0);
+    return;
+  }
   vec3 col = mix(vec3(0.0025, 0.005, 0.011), vec3(0.009, 0.019, 0.03), smoothstep(-25.0, 420.0, h));
   float diff = max(dot(n, normalize(vec3(-0.38, 0.42, 0.82))), 0.0);
   col *= 0.5 + 0.95 * diff;
@@ -101,9 +115,17 @@ void main() {
 }`;
 
 export const waterFS = FHEAD + LIB + /* glsl */ `
+uniform float uLook;
 varying vec3 vG; varying vec3 vN; varying float vDist;
 void main() {
   #include <logdepthbuf_fragment>
+  if (uLook > 0.5) {
+    vec3 w = vec3(0.0018, 0.0034, 0.0055);
+    w += vec3(0.0, 0.012, 0.018) * gridLine(vG.xy, 500.0, 0.8) * 0.4;
+    w += vec3(0.25, 0.95, 1.0) * pulseAt(vG.xy) * 0.6;
+    gl_FragColor = vec4(fogged(w, vDist), 1.0);
+    return;
+  }
   vec3 col = vec3(0.004, 0.012, 0.03);
   // drifting scan lines and a sparse glint grid
   float s = abs(fract((vG.y + vG.x * 0.25) / 18.0 - uTime * 0.035) - 0.5);
@@ -135,11 +157,19 @@ void main() {
 }`;
 
 export const roadFS = FHEAD + LIB + /* glsl */ `
-uniform vec3 uColor; uniform vec3 uColor2; uniform float uIntensity;
+uniform vec3 uColor; uniform vec3 uColor2; uniform float uIntensity; uniform float uLook;
 varying vec3 vG; varying float vDist; varying vec4 vC;
 void main() {
   #include <logdepthbuf_fragment>
   float major = smoothstep(0.5, 0.9, vC.r) * (1.0 - smoothstep(0.2, 0.5, vC.g));
+  if (uLook > 0.5) {
+    // the map screen's streets: pale lines over the ground, the highways a little brighter
+    vec3 c = mix(vec3(0.030, 0.042, 0.050), vec3(0.070, 0.090, 0.098), major) * uIntensity * 3.2;
+    c *= mix(0.55, 1.0, smoothstep(30.0, 500.0, vDist)) * (1.0 - 0.4 * smoothstep(2500.0, 12000.0, vDist));
+    c += vec3(0.4, 1.0, 1.0) * pulseAt(vG.xy) * 0.6;
+    gl_FragColor = vec4(c, 1.0);
+    return;
+  }
   vec3 base = mix(uColor, uColor2, major);
   // traffic: light packets running through the streets
   float lane = sin((vG.x + vG.y) * 0.045 - uTime * 2.6) * sin((vG.x - vG.y) * 0.037 + uTime * 1.9);
@@ -154,12 +184,17 @@ void main() {
 }`;
 
 export const metroFS = FHEAD + LIB + /* glsl */ `
-uniform float uIntensity;
+uniform float uIntensity; uniform float uLook;
 varying vec3 vG; varying float vDist; varying vec4 vC;
 void main() {
   #include <logdepthbuf_fragment>
   // NCART lines keep the game's colours (red, green, blue in the data)
   vec3 c = vC.r > 0.5 ? vec3(1.0, 0.14, 0.38) : (vC.g > 0.5 ? vec3(0.22, 1.0, 0.5) : vec3(0.2, 0.62, 1.0));
+  if (uLook > 0.5) {               // the map screen: the lines in their colours, quietly
+    vec3 q = c * 0.16 * (1.0 - 0.5 * smoothstep(3000.0, 14000.0, vDist));
+    gl_FragColor = vec4(fogged(q, vDist), 1.0);
+    return;
+  }
   float train = smoothstep(0.93, 1.0, sin((vG.x * 0.8 + vG.y * 0.6) * 0.02 - uTime * 3.2));
   vec3 col = c * uIntensity * (0.85 + 0.15 * sin(uTime * 3.0)) + vec3(1.0) * train * 0.9;
   col *= 1.0 - smoothstep(9000.0, 22000.0, vDist);
@@ -168,12 +203,18 @@ void main() {
 
 // ---------------------------------------------------------------- solid holograms (cliffs, landmarks)
 export const solidFS = FHEAD + LIB + /* glsl */ `
-uniform vec3 uColor; uniform vec3 uRim;
+uniform vec3 uColor; uniform vec3 uRim; uniform float uLook;
 varying vec3 vG; varying vec3 vN; varying float vDist;
 void main() {
   #include <logdepthbuf_fragment>
   vec3 n = safeNormalize(vN);
   float diff = max(dot(n, normalize(vec3(-0.38, 0.42, 0.82))), 0.0);
+  if (uLook > 0.5) {               // landmarks and cliffs in the blocks' slate
+    vec3 c = vec3(0.030, 0.050, 0.064) * (0.45 + 0.9 * diff) + vec3(0.02, 0.04, 0.05) * smoothstep(0.6, 0.95, n.z);
+    c += vec3(0.25, 0.95, 1.0) * pulseAt(vG.xy) * 0.6;
+    gl_FragColor = vec4(fogged(c, vDist), 1.0);
+    return;
+  }
   vec3 col = uColor * (0.25 + 0.6 * diff);
   float scan = 1.0 - smoothstep(0.0, 0.15 + fwidth(vG.z) * 0.6, abs(fract(vG.z / 4.0) - 0.5));
   col += uRim * scan * 0.18 * (1.0 - smoothstep(300.0, 2500.0, vDist));
@@ -261,6 +302,69 @@ void main() {
     col *= 1.25;
   }
   gl_FragColor = vec4(col, a);
+}`;
+
+// ---------------------------------------------------------------- the map screen's blocks (citymap v2)
+// The same boxes as the buildings, plus the shade of each block (the district's grey map under it).
+export const cubeVS = VHEAD + /* glsl */ `
+attribute vec3 aSize; attribute vec3 aTint; attribute float aSeed; attribute float aId; attribute float aShade;
+varying vec3 vL; varying vec3 vS; varying vec3 vNl; varying vec3 vG; varying vec3 vW; varying vec3 vNw;
+varying float vDist; varying float vSeed; varying float vId; varying vec3 vTint; varying float vShade;
+void main() {
+  vL = position; vS = aSize; vNl = normal; vSeed = aSeed; vId = aId; vTint = aTint; vShade = aShade;
+  vec4 gp = instanceMatrix * vec4(position, 1.0);
+  vG = gp.xyz;
+  vec4 wp = modelMatrix * gp;
+  vW = wp.xyz;
+  vNw = safeNormalize(mat3(modelMatrix) * mat3(instanceMatrix) * normal);
+  vDist = distance(wp.xyz, cameraPosition);
+  gl_Position = projectionMatrix * viewMatrix * wp;
+  #include <logdepthbuf_vertex>
+}`;
+
+// the game's own look: grey-blue blocks shaded by the district's map, roofs carrying its detail,
+// thin bright outlines (EdgeThickness / EdgeSharpnessPower in 3d_map_cubes.mt)
+export const cubeFS = FHEAD + LIB + /* glsl */ `
+uniform float uHover; uniform sampler2D uMask; uniform float uHasMask; uniform vec2 uMaskMin; uniform vec2 uMaskMax;
+uniform float uEdge; uniform float uTint;
+varying vec3 vL; varying vec3 vS; varying vec3 vNl; varying vec3 vG; varying vec3 vW; varying vec3 vNw;
+varying float vDist; varying float vSeed; varying float vId; varying vec3 vTint; varying float vShade;
+void main() {
+  #include <logdepthbuf_fragment>
+  vec3 m = (vL + 0.5) * vS;
+  vec3 an = abs(vNl);
+  vec2 uv; vec2 sz;
+  if (an.z > 0.5) { uv = m.xy; sz = vS.xy; }
+  else if (an.x > 0.5) { uv = m.yz; sz = vS.yz; }
+  else { uv = m.xz; sz = vS.xz; }
+  vec2 fw = max(fwidth(uv), vec2(1e-4));
+  vec2 e2 = min(uv, sz - uv);
+  vec2 el = 1.0 - smoothstep(fw * (0.5 + uEdge), fw * (1.6 + uEdge), e2);
+  // an outline only where the face is a few pixels big: far away a block is a speck, not a frame
+  vec2 px = sz / fw;
+  float edge = max(el.x, el.y) * smoothstep(5.0, 16.0, min(px.x, px.y));
+  float top = step(0.5, vNl.z);
+  float side = 1.0 - step(0.5, an.z);
+  float g = vShade;
+  if (uHasMask > 0.5 && top > 0.5) {
+    vec2 t = (vG.xy - uMaskMin) / max(uMaskMax - uMaskMin, vec2(1e-3));
+    g = texture2D(uMask, clamp(t, 0.0, 1.0)).r;
+  }
+  float k = clamp((g - 0.45) / 0.38, 0.0, 1.0);
+  // (linear colours, after ACES: these are slate blues on screen)
+  vec3 base = mix(vec3(0.010, 0.019, 0.026), vec3(0.070, 0.108, 0.132), k);
+  base = mix(base, base * (0.6 + 0.8 * vTint), uTint * 0.35);
+  float vf = side > 0.5 ? clamp(uv.y / max(sz.y, 1.0), 0.0, 1.0) : 1.0;
+  vec3 col = base * (top > 0.5 ? 1.5 : (an.x > 0.5 ? 0.72 : 0.55)) * mix(0.45, 1.0, vf);
+  col += vec3(0.006, 0.014, 0.018) * smoothstep(60.0, 420.0, vG.z) * top;
+  // from afar the blocks merge into the city's pale mass, as on the map screen zoomed out
+  col += vec3(0.018, 0.029, 0.036) * smoothstep(1200.0, 9000.0, vDist) * (0.45 + k) * (0.6 + 0.4 * top);
+  float farE = mix(1.0, 0.5, smoothstep(1800.0, 12000.0, vDist));
+  vec3 ec = mix(vec3(0.07, 0.24, 0.29), vec3(0.13, 0.42, 0.50), top);
+  col += ec * edge * (0.4 + 0.6 * vf) * farE;
+  col += vec3(0.3, 1.0, 1.0) * pulseAt(vG.xy) * (0.3 + 0.7 * edge);
+  if (abs(vId - uHover) < 0.5) col += vec3(0.5, 0.95, 1.0) * (0.05 + edge * 0.9);
+  gl_FragColor = vec4(fogged(col, vDist), 1.0);
 }`;
 
 // ---------------------------------------------------------------- glowing lines (districts, footprints)
@@ -377,12 +481,17 @@ void main() {
 }`;
 
 export const skyFS = MATH + /* glsl */ `
-uniform float uTime;
+uniform float uTime; uniform float uLook;
 varying vec3 vDir;
 float hash13(vec3 p3) { p3 = fract(p3 * .1031); p3 += dot(p3, p3.zyx + 31.32); return fract((p3.x + p3.y) * p3.z); }
 void main() {
   vec3 d = safeNormalize(vDir);
   float up = clamp(d.y, -1.0, 1.0);
+  if (uLook > 0.5) {               // the map screen hangs the city in a dark, even haze
+    vec3 c = mix(vec3(0.010, 0.014, 0.020), vec3(0.003, 0.004, 0.007), smoothstep(-0.05, 0.6, up));
+    gl_FragColor = vec4(c, 1.0);
+    return;
+  }
   vec3 zenith = vec3(0.004, 0.006, 0.016), horizon = vec3(0.03, 0.035, 0.07);
   vec3 col = mix(horizon, zenith, smoothstep(0.0, 0.55, up));
   // the city's glow on the haze: magenta to the west, cyan to the east

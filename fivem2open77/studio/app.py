@@ -29,7 +29,7 @@ from .settings import Settings
 from .tools import Toolbox
 from .worldops import WorldOps
 
-APP_VERSION = "1.5.2"
+APP_VERSION = "1.5.3"
 
 
 def _stamp(path) -> list:

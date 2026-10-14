@@ -11,7 +11,7 @@
     <RootNamespace>Fivem2Open77.Studio</RootNamespace>
     <ApplicationIcon>app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>1.5.2</Version>
+    <Version>1.5.3</Version>
     <Company>fivem2open77</Company>
     <Product>fivem2open77 Studio</Product>
     <Description>FiveM cars and MLOs for Open77, with AI-assisted world editing</Description>

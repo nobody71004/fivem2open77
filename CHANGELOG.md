@@ -1,5 +1,31 @@
 # Changelog
 
+## Studio 1.5.3 · converter 1.4.2 (2026-10-14)
+
+### Live maps: Night City as the game's own map screen draws it
+
+* **The map screen's buildings, block for block.** The game's 3D map does not draw its buildings
+  from the ~10,000 boxes its cursor hits (what the 3D city had): each district is a point cloud of
+  oriented blocks, kept in a 16-bit texture (`base\fx\textures\3dmap\static\<district>_data.xbm`:
+  three tiles side by side, the blocks' positions, their rotations and their sizes) that the
+  map's triangle soup turns into boxes on the GPU, decoded with its material's ranges (TransMin,
+  TransMax, CubeSize). The Studio now reads them the same way: **255,220 blocks** for the city
+  (Watson 42,062, Heywood 41,683, City Center 41,291, Westbrook 38,544, Santo Domingo 38,006,
+  Pacifica 23,022, Dogtown 21,882, the spaceport 8,730), each shaded by its district's own top-down
+  grey map (`*_m.xbm`, the map's BaseColor), the roofs carrying its detail. Walking and the cursor
+  use the blocks too.
+* **The game's look**: the city in the map screen's slate blues, roofs lighter than the walls, thin
+  outlines on the faces big enough to show them (the material's EdgeThickness), the city's pale
+  mass from afar, quiet streets and NCART lines in their colours. *Neon* (the Studio's look) is a
+  click away in the layers menu, with the same blocks.
+* **The map screen's angles**: *Top*, *Map* (tilting as you zoom, like the game: a plan far out,
+  the streets close in), *Iso* (35°, on a diagonal) and *Low* (14°), turned in 45° steps (`,` `.`),
+  *North up* (`N`), through a *wide*, *normal*, *long* or *flat* (no perspective) lens. Keys
+  T / M / I / L in orbit mode; the angle and the lens are remembered.
+* A 3D city built by an older Studio still opens, with a note: one click rebuilds it from the game
+  (about a minute) with the blocks. The cache grows from about 8 MB to about 21 MB; it stays on
+  this computer.
+
 ## Studio 1.5.2 · converter 1.4.2 (2026-10-14)
 
 ### Liberty V (and any big map) imports

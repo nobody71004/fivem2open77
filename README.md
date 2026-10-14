@@ -303,9 +303,12 @@ WinForms + WebView2 app that needs no runtime install). What each release change
   objects that clash with the map, then ship that as a world edit.
 * **Live maps in 3D**: the maps on a server, shown on Night City in 3D — the game's own world-map
   model (the one on its map screen): terrain, streets and kerbs, the NCART lines in their colours,
-  water, landmarks, about 10,000 buildings and the 23 districts. The Studio reads it out of your
-  installed game once (about a minute, with WolvenKit) and keeps it on this computer (about 8 MB;
-  never uploaded or shipped). Every map shows where it stands, its new spot, the previous one and
+  water, landmarks, the map screen's own ~255,000 building blocks (the point clouds its 3D map draws
+  the districts from, each block shaded by its district's map) and the 23 districts. It looks like
+  the map screen (or the Studio's neon look) from the map screen's angles: *Top*, *Map* (tilting as
+  you zoom, like the game), *Iso* and *Low*, turned in 45° steps or north up, through a wide, normal,
+  long or flat (no perspective) lens. The Studio reads it out of your installed game once (about a
+  minute, with WolvenKit) and keeps it on this computer (about 21 MB; never uploaded or shipped). Every map shows where it stands, its new spot, the previous one and
   the saved spots, with the players online, as light beams, footprints and labels. Three ways to
   move: *Orbit* like a map, *Fly* (mouse look, WASD, Space/E up, C/Q down, Shift fast, wheel for
   speed) or *Walk* the streets (gravity, jumps, buildings in the way, roofs to stand on). *Set the

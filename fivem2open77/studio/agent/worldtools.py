@@ -270,9 +270,10 @@ def registry() -> dict:
         Tool("city_map_status", "The 3D city of Live maps (the game's own world-map model, read from the game once): "
              "built or not, when, its parts (terrain, streets, NCART, buildings, districts) and whether a game patch made "
              "it stale.", _obj(), "read", t_city_map_status),
-        Tool("build_city_map", "Read the game's 3D world map (terrain, streets, NCART lines, ~10,000 buildings, the "
-             "districts) into the Studio for Live maps' 3D city: once, about a minute. again=true reads it again "
-             "(after a game update).", _obj({"again": {"type": "boolean"}}), "read", t_build_city_map),
+        Tool("build_city_map", "Read the game's 3D world map (terrain, streets, NCART lines, the map screen's ~255,000 "
+             "building blocks, the districts) into the Studio for Live maps' 3D city: once, about a minute. again=true "
+             "reads it again (after a game update, or when city_map_status says upgrade: built by an older Studio).",
+             _obj({"again": {"type": "boolean"}}), "read", t_build_city_map),
         Tool("world_find", "Night City's own objects around a point, nearest first: meshes, instanced meshes (each "
              "instance is an `element`), terrain, collision (actors are elements), entities, decals, lights... Each: "
              "sector + index (+ element) to edit it, its resource, place and yaw. kinds filters, text matches name or "

@@ -1,7 +1,9 @@
 // Night City in 3D, for Live maps: the game's own world-map model (read once from the player's
 // game into the Studio's cache, see world/citymap.py) -- terrain, streets, NCART lines, water,
-// landmarks, ~10,000 buildings and the districts -- with the live maps, their spots and the
-// players on it.  Orbit it like a map, fly through it, or walk the streets.
+// landmarks, the map screen's ~255,000 building blocks and the districts -- with the live maps,
+// their spots and the players on it.  It looks like the game's map screen (or the Studio's neon
+// look), from the angles the map screen has (top, map, iso, low; turned and through a long or a
+// wide lens).  Orbit it like a map, fly through it, or walk the streets.
 //
 // cityStage(host, opts) -> { el, update(scene), dispose() }
 //   scene: { focus, items: [{ key, name, role, anchor: {x, y, z, yaw}, bounds: [[x0, y0, z0], [x1, y1, z1]], note }],
@@ -38,16 +40,23 @@ const DISTRICT_COLORS = {
 const BADLANDS = 0x3fb6c9;
 const MODES = { orbit: "Orbit", fly: "Fly", walk: "Walk" };
 const HELP = {
-  orbit: [["drag", "turn"], ["right drag", "pan"], ["wheel", "zoom"], ["WASD", "move"], ["double-click", "go there"], ["2 / 3", "fly / walk"]],
+  orbit: [["drag", "turn"], ["right drag", "pan"], ["wheel", "zoom"], ["WASD", "move"], ["T M I L", "top / map / iso / low"], [", .", "turn"], ["N", "north up"],
+    ["double-click", "go there"], ["2 / 3", "fly / walk"]],
   fly: [["click", "mouse look"], ["WASD", "fly"], ["Space / E", "up"], ["C / Q", "down"], ["Shift", "fast"], ["Alt", "slow"], ["wheel", "speed"], ["Esc", "free the mouse"]],
   walk: [["click", "mouse look"], ["WASD", "walk"], ["Shift", "run"], ["Space", "jump (twice: double)"], ["2", "fly from here"], ["Esc", "free the mouse"]],
 };
 const PREFS_KEY = "f2o77.city3d";
 const EYE = 1.72, RADIUS = 0.35, STEP = 0.75, GRAVITY = 19.6;
 
+const LOOKS = { game: "The game's map screen", neon: "Neon" };
+// the map screen's angles: pitch above the horizon (degrees); iso also turns the view
+const VIEWS = { top: { label: "Top", pitch: 89.4, key: "T" }, map: { label: "Map", pitch: 58, key: "M" },
+  iso: { label: "Iso", pitch: 35.3, yaw: 45, key: "I" }, low: { label: "Low", pitch: 14, key: "L" } };
+const LENSES = { 75: "Wide lens", 55: "Normal lens", 30: "Long lens", 12: "Flat (no perspective)" };
+
 function loadPrefs() {
-  const d = { buildings: true, roads: true, metro: true, districts: true, labels: true, grid: true, glow: true, holo: false,
-    tint: true, quality: "high", mode: "orbit", speed: 70 };
+  const d = { buildings: true, roads: true, metro: true, districts: true, labels: true, grid: false, glow: true, holo: false,
+    tint: false, quality: "high", mode: "orbit", speed: 70, look: "game", lens: 55, autotilt: true };
   try { return Object.assign(d, JSON.parse(localStorage.getItem(PREFS_KEY) || "{}")); } catch (_) { return d; }
 }
 function savePrefs(p) { try { localStorage.setItem(PREFS_KEY, JSON.stringify(p)); } catch (_) { /* private mode */ } }
@@ -82,7 +91,7 @@ export function cityStage(host, opts = {}) {
       if (disposed) return;
       showVeil("loading", "Raising the city", 1);
       await new Promise((r) => setTimeout(r, 30));
-      viewer = createViewer(el, data, prefs, Object.assign({}, opts, { onRebuild: () => stage.rebuild(), onLost: contextLost }));
+      viewer = createViewer(el, data, prefs, Object.assign({}, opts, { onRebuild: () => stage.rebuild(), onLost: contextLost, upgrade: !!st.upgrade }));
       if (lastScene) viewer.update(lastScene);
       if (st.stale) toast("The game was updated since the 3D city was built: rebuild it from the city's menu if anything looks off");
       veil.classList.add("gone");
@@ -112,7 +121,7 @@ export function cityStage(host, opts = {}) {
       h("div.c3-glyph", h("i"), h("i"), h("i")),
       h("div.c3-veil-title", "NIGHT CITY // 3D"),
       h("div.c3-veil-text", "The Studio reads the game's own 3D map -- the one on the map screen: terrain, streets, NCART lines, ",
-        "about 10,000 buildings and the districts -- out of your Cyberpunk 2077 install, once (about a minute), and keeps it here. ",
+        "its ~255,000 building blocks and the districts -- out of your Cyberpunk 2077 install, once (about a minute), and keeps it here. ",
         "Nothing is uploaded."),
       can ? btn : h("div.c3-veil-text.warn", !st.game ? "Cyberpunk 2077 was not found: set its folder in Settings > Tools." : "WolvenKit CLI was not found: set it up in Settings > Tools.",
         " ", h("a", { href: "#/settings" }, "Open Settings")),
@@ -201,7 +210,7 @@ function createViewer(root, data, prefs, opts) {
   };
   canvas.addEventListener("webglcontextlost", onLost);
   const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(55, 1, 0.3, 80000);
+  const camera = new THREE.PerspectiveCamera(Number(prefs.lens) || 55, 1, 0.3, 400000);
   camera.rotation.order = "YXZ";
   const city = new THREE.Group();
   city.rotation.x = -Math.PI / 2;               // children are in Night City's frame
@@ -210,7 +219,7 @@ function createViewer(root, data, prefs, opts) {
   const U = {
     uTime: { value: 0 }, uFogColor: { value: new THREE.Color(0x04060d) }, uFogDensity: { value: 0.000085 },
     uPulse: { value: new THREE.Vector4(0, 0, -100, 0) }, uCursor: { value: new THREE.Vector3(0, 0, 0) },
-    uPxScale: { value: 0.001 },
+    uPxScale: { value: 0.001 }, uLook: { value: prefs.look === "game" ? 1 : 0 },
   };
   const mat = (vs, fs, extra = {}, more = {}) => new THREE.ShaderMaterial(Object.assign({
     vertexShader: vs, fragmentShader: fs, uniforms: Object.assign({}, U, extra),
@@ -219,7 +228,7 @@ function createViewer(root, data, prefs, opts) {
 
   // sky
   const sky = new THREE.Mesh(new THREE.SphereGeometry(1, 48, 24), new THREE.ShaderMaterial({
-    vertexShader: S.skyVS, fragmentShader: S.skyFS, uniforms: { uTime: U.uTime }, side: THREE.BackSide, depthWrite: false, depthTest: false,
+    vertexShader: S.skyVS, fragmentShader: S.skyFS, uniforms: { uTime: U.uTime, uLook: U.uLook }, side: THREE.BackSide, depthWrite: false, depthTest: false,
   }));
   sky.renderOrder = -1000;
   sky.frustumCulled = false;
@@ -252,6 +261,7 @@ function createViewer(root, data, prefs, opts) {
   const terrainMat = mat(S.terrainVS, S.terrainFS, { uGrid: { value: prefs.grid ? 1 : 0 } });
   add("terrain", layerGeo("terrain", true), terrainMat);
   add("water", layerGeo("water", true), mat(S.terrainVS, S.waterFS), 1);
+  // (uLook is in U: every material of the city follows the look)
   add("cliffs", layerGeo("cliffs", true), mat(S.terrainVS, S.solidFS, { uColor: { value: new THREE.Color(0x03070c) }, uRim: { value: new THREE.Color(0x1fa9c9) } }));
   add("landmarks", layerGeo("landmarks", true), mat(S.terrainVS, S.solidFS, { uColor: { value: new THREE.Color(0x0a0410) }, uRim: { value: new THREE.Color(0xff4fa3) } }));
   add("borders", layerGeo("borders"), mat(S.glowVS, S.roadFS, { uLift: { value: 0.25 }, uColor: { value: new THREE.Color(0x0b6b86) },
@@ -260,9 +270,12 @@ function createViewer(root, data, prefs, opts) {
     uColor2: { value: new THREE.Color(0xff3d7a) }, uIntensity: { value: 0.3 } }, additive), 6);
   add("metro", layerGeo("metro"), mat(S.glowVS, S.metroFS, { uLift: { value: 0.6 }, uIntensity: { value: 1.6 } }), 4);
 
-  // buildings: one instanced box each
-  const B = meta.buildings ? view(buf, meta.buildings.data, Float32Array) : new Float32Array(0);
-  const boxes = new BoxSet(B);
+  // buildings: the map screen's own blocks (a cache of citymap v2: ~255,000 of them, district by
+  // district, each shaded by its district's grey map), else one box per building (the colliders)
+  const CU = meta.cubes || null;
+  const B = CU ? view(buf, CU.data, Float32Array) : meta.buildings ? view(buf, meta.buildings.data, Float32Array) : new Float32Array(0);
+  const SH = CU ? view(buf, CU.shade, Uint8Array) : null;
+  const boxes = new BoxSet(B, CU ? 32 : 64);       // (the blocks are small: a finer grid)
   const districts = (meta.districts || []).map((d) => Object.assign({}, d, { poly: d.outline.map((p) => [p[0], p[1]]) }));
   const tops = districts.filter((d) => d.top);
   const districtAt = (x, y) => {
@@ -273,47 +286,68 @@ function createViewer(root, data, prefs, opts) {
     }
     return { top, sub };
   };
-  let buildingMesh = null;
-  const buildingMats = {};
-  if (boxes.n) {
+  const hoverUniform = { value: -1 };          // the box under the cursor (an index into B)
+  const tintUniform = { value: prefs.tint ? 1 : 0 };
+  const blockSets = [];                        // { mesh, game, neon, holo }
+  function blockSet(start, n, part) {
     const geo = new THREE.BoxGeometry(1, 1, 1);
-    const size = new Float32Array(boxes.n * 3), tint = new Float32Array(boxes.n * 3), seed = new Float32Array(boxes.n), ids = new Float32Array(boxes.n);
+    const size = new Float32Array(n * 3), tint = new Float32Array(n * 3), seed = new Float32Array(n), ids = new Float32Array(n),
+      shade = new Float32Array(n);
     const c = new THREE.Color();
-    const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), p = new THREE.Vector3(), s = new THREE.Vector3();
-    const mesh = new THREE.InstancedMesh(geo, null, boxes.n);
-    for (let b = 0; b < boxes.n; b++) {
-      const o = b * 10;
+    const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), p = new THREE.Vector3(), sc = new THREE.Vector3();
+    const mesh = new THREE.InstancedMesh(geo, null, n);
+    let lastTop = null;
+    for (let i = 0; i < n; i++) {
+      const b = start + i, o = b * 10;
       p.set(B[o], B[o + 1], B[o + 2]);
-      s.set(B[o + 3] * 2, B[o + 4] * 2, B[o + 5] * 2);
+      sc.set(B[o + 3] * 2, B[o + 4] * 2, B[o + 5] * 2);
       q.set(B[o + 6], B[o + 7], B[o + 8], B[o + 9]).normalize();
-      m4.compose(p, q, s);
-      mesh.setMatrixAt(b, m4);
-      size.set([s.x, s.y, s.z], b * 3);
+      m4.compose(p, q, sc);
+      mesh.setMatrixAt(i, m4);
+      size[i * 3] = sc.x; size[i * 3 + 1] = sc.y; size[i * 3 + 2] = sc.z;
       let dc = BADLANDS;
-      for (const d of tops) if (insidePoly(d.poly, B[o], B[o + 1])) { dc = DISTRICT_COLORS[d.id] || BADLANDS; break; }
+      if (lastTop && insidePoly(lastTop.poly, B[o], B[o + 1])) dc = DISTRICT_COLORS[lastTop.id] || BADLANDS;
+      else for (const d of tops) if (insidePoly(d.poly, B[o], B[o + 1])) { dc = DISTRICT_COLORS[d.id] || BADLANDS; lastTop = d; break; }
       c.setHex(dc);
-      tint.set([c.r, c.g, c.b], b * 3);
-      seed[b] = (Math.sin(b * 12.9898 + B[o] * 0.0137) * 43758.5453) % 1;
-      if (seed[b] < 0) seed[b] += 1;
-      ids[b] = b;
+      tint[i * 3] = c.r; tint[i * 3 + 1] = c.g; tint[i * 3 + 2] = c.b;
+      seed[i] = (Math.sin(b * 12.9898 + B[o] * 0.0137) * 43758.5453) % 1;
+      if (seed[i] < 0) seed[i] += 1;
+      ids[i] = b;
+      shade[i] = SH ? SH[b] / 255 : 0.62;
     }
     geo.setAttribute("aSize", new THREE.InstancedBufferAttribute(size, 3));
     geo.setAttribute("aTint", new THREE.InstancedBufferAttribute(tint, 3));
     geo.setAttribute("aSeed", new THREE.InstancedBufferAttribute(seed, 1));
     geo.setAttribute("aId", new THREE.InstancedBufferAttribute(ids, 1));
-    const bu = { uHover: { value: -1 }, uHolo: { value: 0 }, uTint: { value: prefs.tint ? 1 : 0 } };
-    buildingMats.solid = mat(S.buildingVS, S.buildingFS, bu);
-    buildingMats.holo = mat(S.buildingVS, S.buildingFS, Object.assign({}, bu, { uHolo: { value: 1 } }), additive);
-    mesh.material = prefs.holo ? buildingMats.holo : buildingMats.solid;
+    geo.setAttribute("aShade", new THREE.InstancedBufferAttribute(shade, 1));
+    let tex = null;
+    if (part && part.mask) {
+      tex = new THREE.DataTexture(view(buf, part.mask.data, Uint8Array), part.mask.w, part.mask.h, THREE.RedFormat, THREE.UnsignedByteType);
+      tex.minFilter = THREE.LinearMipmapLinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      tex.generateMipmaps = true;
+      tex.needsUpdate = true;
+    }
+    const mm = part ? part.mask_min : [0, 0], mx = part ? part.mask_max : [1, 1];
+    const set = {
+      mesh,
+      game: mat(S.cubeVS, S.cubeFS, { uHover: hoverUniform, uTint: tintUniform, uMask: { value: tex }, uHasMask: { value: tex ? 1 : 0 },
+        uMaskMin: { value: new THREE.Vector2(mm[0], mm[1]) }, uMaskMax: { value: new THREE.Vector2(mx[0], mx[1]) }, uEdge: { value: 0.0 } }),
+      neon: mat(S.cubeVS, S.buildingFS, { uHover: hoverUniform, uHolo: { value: 0 }, uTint: tintUniform }),
+      holo: mat(S.cubeVS, S.buildingFS, { uHover: hoverUniform, uHolo: { value: 1 }, uTint: tintUniform }, additive),
+      tex,
+    };
+    mesh.material = set.game;
     mesh.instanceMatrix.needsUpdate = true;
     mesh.computeBoundingSphere();
-    mesh.frustumCulled = false;
-    mesh.renderOrder = prefs.holo ? 8 : 2;
+    mesh.frustumCulled = true;
+    mesh.renderOrder = 2;
     city.add(mesh);
-    buildingMesh = mesh;
-    meshes.buildings = mesh;
+    blockSets.push(set);
+    return set;
   }
-  const hoverU = buildingMats.solid ? [buildingMats.solid.uniforms.uHover, buildingMats.holo.uniforms.uHover] : [];
+  if (CU) for (const part of CU.districts) blockSet(part.start, part.count, part);
+  else if (boxes.n) blockSet(0, boxes.n, null);
 
   // walking surfaces and picking: the ground, the streets, the cliffs, the landmarks
   const ground = new TriGrid(["terrain", "roads", "cliffs", "landmarks", "water"].filter((n) => L[n]).map((n, i) => ({
@@ -517,9 +551,14 @@ function createViewer(root, data, prefs, opts) {
   const modeBar = h("div.c3-modes", Object.entries(MODES).map(([k, label]) => (modeBtns[k] = h("button", { type: "button", onclick: () => setMode(k) },
     h("span.k", String(Object.keys(MODES).indexOf(k) + 1)), label))));
   const toggles = [["buildings", "Buildings"], ["roads", "Streets"], ["metro", "NCART"], ["districts", "Districts"], ["labels", "Labels"], ["grid", "Grid"],
-    ["tint", "District colours"], ["holo", "Hologram"], ["glow", "Glow"]];
-  const layerMenu = h("div.c3-menu.hidden", toggles.map(([k, label]) => {
+    ["tint", "District colours"], ["holo", "Hologram"], ["glow", "Glow"], ["autotilt", "Tilt as you zoom (like the map screen)"]];
+  const prefBoxes = {};
+  const lookSel = h("select", Object.entries(LOOKS).map(([v, label]) => h("option", { value: v }, label)));
+  lookSel.value = LOOKS[prefs.look] ? prefs.look : "game";
+  lookSel.addEventListener("change", () => { prefs.look = lookSel.value; savePrefs(prefs); applyPrefs(); poke(); });
+  const layerMenu = h("div.c3-menu.hidden", h("label", h("span", "Look"), lookSel), h("div.sep"), toggles.map(([k, label]) => {
     const cb = h("input", { type: "checkbox", checked: !!prefs[k] });
+    prefBoxes[k] = cb;
     cb.addEventListener("change", () => { prefs[k] = cb.checked; savePrefs(prefs); applyPrefs(); });
     return h("label", cb, h("span", label));
   }), h("div.sep"),
@@ -543,6 +582,19 @@ function createViewer(root, data, prefs, opts) {
     else if (v.startsWith("m:")) focusItem(v.slice(2), true);
     canvas.focus();
   });
+  // the map screen's angles, turning the view, and the lens
+  const viewBtns = {};
+  const lensSel = h("select.c3-lens", { title: "Lens: a long lens flattens the city like the map screen" },
+    Object.entries(LENSES).map(([v, label]) => h("option", { value: v }, label)));
+  lensSel.value = String(LENSES[prefs.lens] ? prefs.lens : 55);
+  lensSel.addEventListener("change", () => { setLens(Number(lensSel.value)); canvas.focus(); });
+  const viewBar = h("div.c3-views",
+    Object.entries(VIEWS).map(([k, v]) => (viewBtns[k] = h("button", { type: "button", title: `${v.label} view (${v.key})`, onclick: () => setView(k) }, v.label))),
+    h("span.c3-vsep"),
+    h("button", { type: "button", title: "Turn the view left (,)", onclick: () => turn(-45) }, "⟲"),
+    h("button", { type: "button", title: "Turn the view right (.)", onclick: () => turn(45) }, "⟳"),
+    h("button", { type: "button", title: "North up (N)", onclick: () => northUp() }, "N"),
+    h("span.c3-vsep"), lensSel);
   const pickBtn = opts.onPick ? h("button.c3-tool", { type: "button", title: "Click the city to set the new spot (P)", onclick: () => setPick(!picking) }, "◎ Set the spot") : null;
   const focusBtn = h("button.c3-tool", { type: "button", title: "Back to the map (F)", onclick: () => focusItem(null, true) }, "⌖ Focus");
   const fullBtn = h("button.c3-icon", { type: "button", title: "Full screen", onclick: () => (document.fullscreenElement ? document.exitFullscreen() : root.requestFullscreen && root.requestFullscreen()) }, "⛶");
@@ -554,23 +606,34 @@ function createViewer(root, data, prefs, opts) {
   const reticle = h("div.c3-reticle", h("i"), h("i"), h("i"), h("i"));
   const lockHint = h("div.c3-lockhint.hidden", "click to look around");
   hud.append(
-    h("div.c3-tl", modeBar, h("div.c3-row", layerBtn, jumpSel, pickBtn, focusBtn, fullBtn), layerMenu),
+    h("div.c3-tl", modeBar, viewBar, h("div.c3-row", layerBtn, jumpSel, pickBtn, focusBtn, fullBtn), layerMenu),
     h("div.c3-tr", where, compass, coords, speedEl),
     h("div.c3-bl", help),
     reticle, lockHint);
   root.append(hud);
+  if (opts.upgrade || !CU) {
+    hud.append(h("div.c3-upgrade", h("b", "More detail: "), "this 3D city was built by an older Studio, with one box per building. ",
+      "Rebuilding it from the game (about a minute) adds the map screen's own ~255,000 building blocks. ",
+      h("button.btn.small.primary", { type: "button", onclick: () => { if (opts.onRebuild) opts.onRebuild(); } }, "Rebuild now")));
+  }
   const cursorGlow = h("div.c3-cursor");
   root.append(cursorGlow);
   document.addEventListener("click", closeMenu);
   function closeMenu(e) { if (!layerMenu.contains(e.target) && e.target !== layerBtn) layerMenu.classList.add("hidden"); }
 
   function applyPrefs() {
-    if (buildingMesh) {
-      buildingMesh.visible = prefs.buildings;
-      buildingMesh.material = prefs.holo ? buildingMats.holo : buildingMats.solid;
-      buildingMesh.renderOrder = prefs.holo ? 8 : 2;
-      buildingMats.solid.uniforms.uTint.value = buildingMats.holo.uniforms.uTint.value = prefs.tint ? 1 : 0;
+    const game = prefs.look === "game";
+    U.uLook.value = game ? 1 : 0;
+    tintUniform.value = prefs.tint ? 1 : 0;
+    for (const b of blockSets) {
+      b.mesh.visible = prefs.buildings;
+      b.mesh.material = prefs.holo ? b.holo : game ? b.game : b.neon;
+      b.mesh.renderOrder = prefs.holo ? 8 : 2;
     }
+    renderer.setClearColor(game ? 0x05080d : 0x03050b, 1);
+    U.uFogColor.value.setHex(game ? 0x070b11 : 0x04060d);
+    bloom.strength = game ? 0.32 : 0.5;
+    bloom.threshold = game ? 0.85 : 0.8;
     if (meshes.roads) meshes.roads.visible = prefs.roads;
     if (meshes.borders) meshes.borders.visible = prefs.roads;
     if (meshes.metro) meshes.metro.visible = prefs.metro;
@@ -620,7 +683,17 @@ function createViewer(root, data, prefs, opts) {
   const cm = meta.city || { min: [-5000, -7000, 0], max: [5000, 4500, 400] };
   const cityCenter = [(cm.min[0] + cm.max[0]) / 2, (cm.min[1] + cm.max[1]) / 2];
   g2t(cityCenter[0] - 600, cityCenter[1] + 1800, 0, controls.target);
-  camera.position.copy(controls.target).add(new THREE.Vector3(2600, 3600, 4200));
+  const lensK = (fov) => Math.tan(THREE.MathUtils.degToRad(27.5)) / Math.tan(THREE.MathUtils.degToRad(fov) / 2);
+  controls.maxDistance = 26000 * lensK(camera.fov);
+  controls.minDistance = 25 * lensK(camera.fov);
+  const FOG = U.uFogDensity.value;
+  U.uFogDensity.value = FOG / lensK(camera.fov);          // a long lens looks from farther: the haze thins with it
+  if (prefs.look === "game") {
+    const el0 = THREE.MathUtils.degToRad(62), d0 = 6400 * lensK(camera.fov);
+    camera.position.copy(controls.target).add(new THREE.Vector3(0, Math.sin(el0), Math.cos(el0)).multiplyScalar(d0));
+  } else {
+    camera.position.copy(controls.target).add(new THREE.Vector3(2600, 3600, 4200).multiplyScalar(lensK(camera.fov)));
+  }
   controls.update();
 
   let mode = "orbit";
@@ -642,13 +715,15 @@ function createViewer(root, data, prefs, opts) {
     controls.enabled = m === "orbit";
     clear(help).append(...HELP[m].map(([k, t]) => h("span", h("kbd", k), t)));
     root.classList.toggle("c3-first", m !== "orbit");
-    if (m === "orbit") {
+    if (m === "orbit" && prev === "orbit") {
+      // (the first call: the view as it was set up)
+    } else if (m === "orbit") {
       if (locked) document.exitPointerLock();
       // look at the point ahead
       const dir = camera.getWorldDirection(new THREE.Vector3());
       const [x, y, z] = t2g(camera.position);
       const [dx, dy, dz] = t2g(dir);
-      const hit = raycast(x, y, z, dx, dy, dz, 6000);
+      const hit = raycast(x, y, z, dx, dy, dz, 6000 * lensK(camera.fov));
       const tgt = hit ? hit.p : [x + dx * 400, y + dy * 400, surfaceZ(x + dx * 400, y + dy * 400)];
       g2t(tgt[0], tgt[1], Number.isFinite(tgt[2]) ? tgt[2] : 0, controls.target);
       controls.update();
@@ -679,9 +754,74 @@ function createViewer(root, data, prefs, opts) {
     poke();
   }
 
+  // ---------------------------------------------------------------- the map screen's angles
+  // where the camera is around the orbit's centre: azimuth (0: looking north), elevation, distance
+  function sphOf() {
+    const off = camera.position.clone().sub(controls.target);
+    const d = off.length() || 1;
+    return { az: Math.atan2(off.x, off.z), el: Math.asin(THREE.MathUtils.clamp(off.y / d, -1, 1)), d };
+  }
+  function orbitTo(az, el, d, dur = 900) {
+    if (mode !== "orbit") setMode("orbit");
+    const from = sphOf();
+    const daz = Math.atan2(Math.sin(az - from.az), Math.cos(az - from.az));        // the short way round
+    tween = { t0: performance.now(), dur, sph: { from, to: { az: from.az + daz, el, d } } };
+    poke();
+  }
+  function setView(key) {
+    const v = VIEWS[key];
+    if (!v) return;
+    const cur = sphOf();
+    let az = cur.az;
+    if (v.yaw != null) az = Math.round((cur.az - Math.PI / 4) / (Math.PI / 2)) * (Math.PI / 2) + Math.PI / 4;    // the nearest diagonal
+    if (key === "top") az = Math.round(cur.az / (Math.PI / 2)) * (Math.PI / 2);
+    orbitTo(az, THREE.MathUtils.degToRad(v.pitch), cur.d);
+    // the map view tilts with the zoom like the map screen; the others hold their angle
+    prefs.autotilt = key === "map";
+    if (prefBoxes.autotilt) prefBoxes.autotilt.checked = prefs.autotilt;
+    prefs.view = key;
+    savePrefs(prefs);
+    markView(key);
+  }
+  function markView(key) { for (const [k, b] of Object.entries(viewBtns)) b.classList.toggle("on", k === key); }
+  function turn(deg) { const cur = sphOf(); orbitTo(cur.az + THREE.MathUtils.degToRad(deg), cur.el, cur.d, 600); }
+  function northUp() { const cur = sphOf(); orbitTo(0, cur.el, cur.d, 700); }
+  function setLens(fov) {
+    const before = camera.fov;
+    camera.fov = fov;
+    controls.maxDistance = 26000 * lensK(fov);
+    controls.minDistance = 25 * lensK(fov);
+    U.uFogDensity.value = FOG / lensK(fov);
+    if (mode === "orbit") {                   // the same width of the city in view: closer with a wide lens
+      const cur = sphOf();
+      const d = cur.d * lensK(fov) / lensK(before);
+      camera.position.copy(controls.target).add(new THREE.Vector3(Math.sin(cur.az) * Math.cos(cur.el), Math.sin(cur.el), Math.cos(cur.az) * Math.cos(cur.el)).multiplyScalar(d));
+      controls.update();
+    }
+    prefs.lens = fov;
+    savePrefs(prefs);
+    applySize();
+    poke();
+  }
+  let lastOrbitD = 0;
+  // zooming in tilts the view down to the streets, zooming out lifts it to a plan (the map screen)
+  function autoTilt(dt) {
+    const cur = sphOf();
+    if (lastOrbitD && Math.abs(cur.d - lastOrbitD) / lastOrbitD > 0.002 && !drag) {
+      const dn = cur.d / lensK(camera.fov);
+      const f = THREE.MathUtils.clamp((Math.log(dn) - Math.log(260)) / (Math.log(9000) - Math.log(260)), 0, 1);
+      const want = THREE.MathUtils.degToRad(THREE.MathUtils.lerp(40, 80, f));
+      const el = cur.el + (want - cur.el) * Math.min(1, dt * 5);
+      camera.position.copy(controls.target).add(tmp.set(Math.sin(cur.az) * Math.cos(el), Math.sin(el), Math.cos(cur.az) * Math.cos(el)).multiplyScalar(cur.d));
+      controls.update();
+    }
+    lastOrbitD = sphOf().d;
+  }
+
   // a smooth camera move: to a point (game) at a distance, or the camera itself to a spot
   function flyTo(p, dist = 900, pitchDeg = 52) {
     if (mode !== "orbit") setMode("orbit");
+    dist *= lensK(camera.fov);
     const tgt = g2t(p[0], p[1], Number.isFinite(p[2]) ? p[2] : 0);
     const off = camera.position.clone().sub(controls.target);
     const az = Math.atan2(off.x, off.z);
@@ -818,6 +958,13 @@ function createViewer(root, data, prefs, opts) {
       if (k === "Digit2") { setMode("fly"); e.preventDefault(); return; }
       if (k === "Digit3") { setMode("walk"); e.preventDefault(); return; }
       if (k === "KeyF" && mode === "orbit") { focusItem(null, true); return; }
+      if (mode === "orbit" && !e.ctrlKey && !e.metaKey) {
+        const vk = { KeyT: "top", KeyM: "map", KeyI: "iso", KeyL: "low" }[k];
+        if (vk) { setView(vk); e.preventDefault(); return; }
+        if (k === "KeyN") { northUp(); return; }
+        if (k === "Comma") { turn(-45); return; }
+        if (k === "Period") { turn(45); return; }
+      }
       if (k === "KeyP" && opts.onPick) {
         if (mode !== "orbit" && hover) { opts.onPick({ x: +hover.p[0].toFixed(2), y: +hover.p[1].toFixed(2), z: +hover.p[2].toFixed(2) }); pulse(hover.p[0], hover.p[1]); }
         else setPick(!picking);
@@ -977,6 +1124,14 @@ function createViewer(root, data, prefs, opts) {
   function runTween(now) {
     const t = Math.min(1, (now - tween.t0) / tween.dur);
     const k = ease(t);
+    if (tween.sph) {                          // round the orbit's centre (a view, a turn)
+      const { from, to } = tween.sph;
+      const az = from.az + (to.az - from.az) * k, el = from.el + (to.el - from.el) * k, d = from.d + (to.d - from.d) * k;
+      camera.position.copy(controls.target).add(tmp.set(Math.sin(az) * Math.cos(el), Math.sin(el), Math.cos(az) * Math.cos(el)).multiplyScalar(d));
+      camera.lookAt(controls.target);
+      if (t >= 1) { tween = null; controls.update(); lastOrbitD = d; }
+      return;
+    }
     camera.position.lerpVectors(tween.fromCam, tween.toCam, k);
     if (tween.arc) camera.position.y += Math.sin(Math.PI * k) * tween.arc;
     if (!tween.camOnly) {
@@ -1009,6 +1164,7 @@ function createViewer(root, data, prefs, opts) {
       camera.position.add(tmp);
     }
     controls.update();
+    if (prefs.autotilt) autoTilt(dt);
     // never under the city
     const [x, y, z] = t2g(camera.position);
     const gz = surfaceZ(x, y);
@@ -1113,7 +1269,7 @@ function createViewer(root, data, prefs, opts) {
       hit = raycast(x, y, z, dx, dy, dz, 5000);
     }
     hover = hit;
-    for (const u of hoverU) u.value = hit && hit.kind === "building" ? hit.box : -1;
+    hoverUniform.value = hit && hit.kind === "building" ? hit.box : -1;
     if (hit && hit.kind !== "building" && mode === "orbit") U.uCursor.value.set(hit.p[0], hit.p[1], 1);
     else U.uCursor.value.z = 0;
     updateGhost();
@@ -1132,14 +1288,15 @@ function createViewer(root, data, prefs, opts) {
   }
   function updateLabels() {
     if (!prefs.labels) return;
-    for (const mk of markers.values()) placeLabel(mk.label, mk.top, 30000);
-    for (const mk of playerMarks.values()) placeLabel(mk.label, mk.top, 9000);
-    if (ghost && ghost.top && ghost.group.visible) placeLabel(ghost.label, ghost.top, 30000);
+    const k = lensK(camera.fov);              // distances as seen through the lens
+    for (const mk of markers.values()) placeLabel(mk.label, mk.top, 30000 * k);
+    for (const mk of playerMarks.values()) placeLabel(mk.label, mk.top, 9000 * k);
+    if (ghost && ghost.top && ghost.group.visible) placeLabel(ghost.label, ghost.top, 30000 * k);
     const [, , cz] = t2g(camera.position);
     for (const { d, e } of districtLabels) {
       if (!prefs.districts || mode === "walk") { e.style.display = "none"; continue; }
-      if (d.top) placeLabel(e, [d.center[0], d.center[1], d.center[2] + 60], 16000, mode === "walk" ? 600 : 400);
-      else placeLabel(e, [d.center[0], d.center[1], d.center[2] + 20], cz > 2500 ? 0 : 4200, 80);
+      if (d.top) placeLabel(e, [d.center[0], d.center[1], d.center[2] + 60], 16000 * k, (mode === "walk" ? 600 : 400) * k);
+      else placeLabel(e, [d.center[0], d.center[1], d.center[2] + 20], cz > 2500 * k ? 0 : 4200 * k, 80 * k);
     }
   }
 
@@ -1224,10 +1381,24 @@ function createViewer(root, data, prefs, opts) {
   }
 
   setMode("orbit", true);
+  markView(prefs.autotilt ? "map" : prefs.view);
   poke();
   // for tests and the curious: the state of the view
   root.c3update = update;
+  // (tests: put the orbit at { x, y, z, az, el, d } at once)
+  root.c3go = (g) => {
+    if (mode !== "orbit") setMode("orbit");
+    tween = null;
+    g2t(g.x, g.y, g.z || 0, controls.target);
+    const az = THREE.MathUtils.degToRad(g.az || 0), el = THREE.MathUtils.degToRad(g.el == null ? 58 : g.el);
+    camera.position.copy(controls.target).add(new THREE.Vector3(Math.sin(az) * Math.cos(el), Math.sin(el), Math.cos(az) * Math.cos(el)).multiplyScalar(g.d || 1000));
+    controls.update();
+    lastOrbitD = sphOf().d;
+    poke();
+  };
   root.c3state = () => ({ mode, keys: [...keys], locked, tween: !!tween, cam: t2g(camera.position), vel: fly.vel.toArray(), yaw: fly.yaw, pitch: fly.pitch,
+    orbit: (() => { const o = sphOf(); return { az: o.az * 180 / Math.PI, el: o.el * 180 / Math.PI, d: o.d }; })(), fov: camera.fov, look: prefs.look,
+    blocks: blockSets.reduce((a, b) => a + b.mesh.count, 0), blockSets: blockSets.length,
     feet: walk.feet.slice(), wv: [walk.vx, walk.vy, walk.vz], onGround: walk.onGround, frames, hover: hover ? { kind: hover.kind, p: hover.p } : null });
 
   function dispose() {
@@ -1245,6 +1416,7 @@ function createViewer(root, data, prefs, opts) {
     if (locked) document.exitPointerLock();
     controls.dispose();
     scene.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
+    for (const b of blockSets) { for (const m of [b.game, b.neon, b.holo]) m.dispose(); if (b.tex) b.tex.dispose(); }
     composer.dispose && composer.dispose();
     rt.dispose();
     renderer.dispose();

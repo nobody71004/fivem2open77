@@ -126,3 +126,21 @@
 .view-tabs { display: inline-flex; border: 1px solid #9ef3ed33; padding: 2px; gap: 2px; background: #070c16; }
 .view-tabs button { all: unset; cursor: pointer; padding: 4px 12px; font: 600 10.5px var(--mono, monospace); letter-spacing: .14em; text-transform: uppercase; color: #a9c6cf; }
 .view-tabs button.on { background: #9ef3ed; color: #041417; box-shadow: 0 0 14px #9ef3ed55; }
+
+/* the map screen's angles, the turn buttons and the lens */
+.c3-views { display: inline-flex; align-items: center; padding: 3px; gap: 2px; background: linear-gradient(180deg, #08101dd9, #060b15cc);
+  border: 1px solid #9ef3ed2e; backdrop-filter: blur(10px) saturate(1.2); -webkit-backdrop-filter: blur(10px); flex-wrap: wrap; max-width: calc(100vw - 40px); }
+.c3-views button { all: unset; cursor: pointer; padding: 5px 9px; font: 600 10.5px var(--mono, monospace); letter-spacing: .12em; text-transform: uppercase;
+  color: #a9c6cf; transition: background .15s, color .15s; }
+.c3-views button:hover { color: #fff; background: #9ef3ed14; }
+.c3-views button.on { color: #041417; background: #9ef3ed; box-shadow: 0 0 14px #9ef3ed55; }
+.c3.c3-first .c3-views button.on { color: #a9c6cf; background: none; box-shadow: none; }   /* the angles are the orbit's: none is on while flying or walking */
+.c3-vsep { width: 1px; height: 16px; background: #9ef3ed30; margin: 0 3px; }
+.c3-lens { all: unset; cursor: pointer; padding: 3px 6px; font: 500 10.5px var(--mono, monospace); color: #d4eef3; }
+.c3-lens option { background: #0b1220; color: #d4eef3; }
+.c3-menu select { all: unset; cursor: pointer; padding: 2px 4px; border: 1px solid #9ef3ed2e; color: #d4eef3; font: 500 11px var(--mono, monospace); }
+.c3-menu select option { background: #0b1220; }
+.c3-upgrade { position: absolute; left: 50%; bottom: 86px; transform: translateX(-50%); max-width: min(720px, calc(100% - 40px)); pointer-events: auto;
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 9px 12px; font-size: 12px; color: #cfe9f0;
+  background: linear-gradient(180deg, #08101df0, #060b15e6); border: 1px solid #ffd23f66; box-shadow: 0 0 22px #ffd23f22; }
+.c3-upgrade b { color: #ffd23f; }
