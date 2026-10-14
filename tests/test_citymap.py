@@ -264,6 +264,20 @@ def test_studio_citymap_api():
         with urllib.request.urlopen(r) as resp:
             body = resp.read()
             assert len(body) == meta["bytes"] and "immutable" in resp.headers["Cache-Control"]
+        # the agents' tools (the Studio's own and MCP clients) see the same status
+        from fivem2open77.studio.agent.tools import registry, tools_for
+
+        class Ctx:
+            studio = None
+        ctx = Ctx()
+        from fivem2open77.studio.app import Studio
+        ctx.studio = Studio(st.ws)
+        out = registry()["city_map_status"].fn(ctx, {})
+        body = json.loads(out["content"][0]["text"] if isinstance(out, dict) and "content" in out else
+                          (out[0]["text"] if isinstance(out, list) else out))
+        assert body["ready"] and body["stats"]["buildings"] == 2
+        for kind in (None, "car", "map", "world"):
+            assert {"city_map_status", "build_city_map"} <= set(tools_for(kind))
         # the page and its modules are served
         for p in ("/js/pages/city3d.js", "/js/pages/citydata.js", "/js/pages/cityshaders.js", "/css/city3d.css",
                   "/vendor/three/UnrealBloomPass.js", "/vendor/three/EffectComposer.js"):

@@ -74,6 +74,16 @@ def t_world_prepare(ctx, args):
     return text(ctx.wait_job(job, 1800))
 
 
+def t_city_map_status(ctx, args):
+    return text(ctx.studio.citymap_status())
+
+
+def t_build_city_map(ctx, args):
+    job = ctx.studio.citymap_build(force=bool(args.get("again")))
+    ctx.session.attach_job(job)
+    return text(ctx.wait_job(job, 1800))
+
+
 def t_world_find(ctx, args):
     try:
         q = ctx.studio.world_query(args["x"], args["y"], args.get("radius", 30), z=args.get("z"), dz=args.get("dz"),
@@ -257,6 +267,12 @@ def registry() -> dict:
         Tool("world_prepare", "Read Night City's sector list from the game (once, a minute or two; world_find does it "
              "when needed). again=true reads it again (after a game update).",
              _obj({"again": {"type": "boolean"}}), "read", t_world_prepare),
+        Tool("city_map_status", "The 3D city of Live maps (the game's own world-map model, read from the game once): "
+             "built or not, when, its parts (terrain, streets, NCART, buildings, districts) and whether a game patch made "
+             "it stale.", _obj(), "read", t_city_map_status),
+        Tool("build_city_map", "Read the game's 3D world map (terrain, streets, NCART lines, ~10,000 buildings, the "
+             "districts) into the Studio for Live maps' 3D city: once, about a minute. again=true reads it again "
+             "(after a game update).", _obj({"again": {"type": "boolean"}}), "read", t_build_city_map),
         Tool("world_find", "Night City's own objects around a point, nearest first: meshes, instanced meshes (each "
              "instance is an `element`), terrain, collision (actors are elements), entities, decals, lights... Each: "
              "sector + index (+ element) to edit it, its resource, place and yaw. kinds filters, text matches name or "

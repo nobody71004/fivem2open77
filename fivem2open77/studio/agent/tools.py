@@ -384,14 +384,14 @@ def registry() -> dict:
 
 def tools_for(kind: str | None) -> tuple:
     """The tool names a session offers the model for its project kind (car, map, world, or None)."""
-    from .maptools import LIVE_TOOLS, MAP_TOOLS, STUDIO_TOOLS
+    from .maptools import CITY_TOOLS, LIVE_TOOLS, MAP_TOOLS, STUDIO_TOOLS
     from .worldtools import WORLD_TOOLS
     from .ncwe import NCWE_TOOLS
     if kind == "car":
-        return CAR_TOOLS + COMMON_TOOLS + STUDIO_TOOLS + LIVE_TOOLS + NCWE_TOOLS
+        return CAR_TOOLS + COMMON_TOOLS + STUDIO_TOOLS + LIVE_TOOLS + CITY_TOOLS + NCWE_TOOLS
     if kind == "map":
-        return MAP_TOOLS + LIVE_TOOLS + COMMON_TOOLS + STUDIO_TOOLS + NCWE_TOOLS
+        return MAP_TOOLS + LIVE_TOOLS + CITY_TOOLS + COMMON_TOOLS + STUDIO_TOOLS + NCWE_TOOLS
     if kind == "world":
-        return WORLD_TOOLS + COMMON_TOOLS + STUDIO_TOOLS + LIVE_TOOLS + NCWE_TOOLS
-    return STUDIO_TOOLS + COMMON_TOOLS + LIVE_TOOLS + ("new_world_edit", "world_status", "world_find", "world_prepare",
-                                                      "remove_world_edit") + NCWE_TOOLS
+        return WORLD_TOOLS + COMMON_TOOLS + STUDIO_TOOLS + LIVE_TOOLS + CITY_TOOLS + NCWE_TOOLS
+    return STUDIO_TOOLS + COMMON_TOOLS + LIVE_TOOLS + CITY_TOOLS + ("new_world_edit", "world_status", "world_find",
+                                                                    "world_prepare", "remove_world_edit") + NCWE_TOOLS

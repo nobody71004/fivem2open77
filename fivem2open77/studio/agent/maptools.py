@@ -524,6 +524,7 @@ def registry() -> dict:
 STUDIO_TOOLS = ("list_projects", "open_project", "import_resource", "enable_agent_api")
 LIVE_TOOLS = ("live_maps", "live_map", "list_players", "ground_height", "set_map_spot", "map_preset", "apply_map_move",
               "cancel_map_move", "wait_map_move", "send_player_to_map")
+CITY_TOOLS = ("city_map_status", "build_city_map")     # Live maps' 3D city (this computer, not a server)
 MAP_TOOLS = ("get_map", "look_at_map", "render_map", "set_map_options", "build_map", "map_build_report",
              "install_map_in_game", "deploy_map", "ncwe_assets_list", "ncwe_assets_import", "ncwe_assets_verify",
              "ncwe_import_map")
