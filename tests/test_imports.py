@@ -233,6 +233,10 @@ def test_car_pack_flow(tmp_path):
         assert job.state == "done", job.error
         pack = job.result
         assert pack["name"] == "TestPack" and [c["model"] for c in pack["cars"]] == ["ccf250", "e400"]
+        # the same pack again: no second copy, the cars that are there already
+        e_again, ja = st.create_pack(path=z)
+        st.jobs.wait(ja, 60)
+        assert e_again["id"] == e["id"] and ja.state == "done" and len(st.library.list("cars")) == 1
         made, j2 = st.import_pack_cars(e["id"], ["e400"])
         st.jobs.wait(j2, 300)
         assert j2.state == "done" and j2.result["read"] == 1, j2.error

@@ -225,8 +225,11 @@ python -m fivem2open77 mlo-roads ...           Night City's road lanes for the m
 * **Whole cities** (Liberty V and friends: tens of thousands of objects) are converted a district at
   a time: `--area x,y,radius` (GTA world metres) takes only what stands there — its entities, MLOs,
   collision, and the texture dictionaries they need through `gtxd.meta` parents. Without an area a
-  city-sized input stops with its biggest districts listed, ready to pass as `--area`; the Studio's
-  map options have the same *area* field with a district picker. Texture dictionaries converted with
+  city-sized input stops with its biggest districts listed, ready to pass as `--area`. In the Studio a
+  city's first look is the city overview (where its objects stand, its districts, in seconds: Liberty
+  V's 160,319 objects in 1,300 ymaps make 37 districts); each district you pick becomes a map of its
+  own with its own resource id, and the next district is a project that reads the same files.
+  Texture dictionaries converted with
   OpenIV (names like `pack:/tl_church_marble.dds`, as in almost all of Liberty V) are read the way
   GTA reads them.
 * **Doors** are detected from the map's own objects and can be steered with `--door-map`
@@ -281,13 +284,21 @@ WinForms + WebView2 app that needs no runtime install). What each release change
   The window's start screen and the installer wear the same HUD (drawn natively while the server
   starts: the lattice, the horizon grid, the emblem, a progress bar, the cursor's trail and
   shockwaves).
-* **Cars**: drop a FiveM resource (.zip/.rar/.7z or a folder path). The Studio reads it at once,
-  renders it and keeps it extracted while you work.
+* **Cars**: drop a FiveM resource (.zip/.rar/.7z, a folder, or type its path). The Studio reads it
+  at once, renders it and keeps it extracted while you work. A **car pack** (one download, dozens of
+  cars, like the FiveM Civ Car Pack's 67) is held once: you tick the cars you want and each becomes a
+  project of its own; the pack builds all its cars one after another and installs them on a server
+  in one bundle (one restart).
+* **Imports of any size** run as a job with progress: a folder of 1 GB or more is read where it is
+  (nothing copied: keep it there), an archive of 512 MB or more is extracted once, the free space is
+  checked first. In the Studio's own window a dropped file or folder is read from its place on disk
+  (nothing is uploaded).
 * **3D**: the car exactly as the conversion assembles it (three.js), part by part; colour by part to
   check doors, hood, trunk, wheels; click a part to see its GTA bones.
 * **Maps**: a FiveM map or MLO becomes a Night City place — convert it, walk the result in 3D
   (floors, doors, glass), set options like *quiet interiors*, pick the Night City spot, bake,
-  QA-check and install it in your game or on a server.
+  QA-check and install it in your game or on a server. A whole city (Liberty V) opens on its
+  overview: click where to convert, or pick a district from the list.
 * **World**: see what Night City itself has at the spot and clean it up — delete or move the game
   objects that clash with the map, then ship that as a world edit.
 * **Live maps in 3D**: the maps on a server, shown on Night City in 3D — the game's own world-map

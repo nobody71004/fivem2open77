@@ -246,3 +246,27 @@ def test_stage_live_and_restart():
 if __name__ == "__main__":
     test_stage_live_and_restart()
     print("ok")
+
+
+def test_a_car_pack_installs_in_one_bundle():
+    """A car pack's builds go to a server together: one bundle, every car (and its chime) in it."""
+    if not shutil.which("bash") or not shutil.which("python3") or not shutil.which("sha256sum"):
+        print("   (skipped: needs bash, python3, sha256sum)")
+        return
+    tmp = tempfile.mkdtemp(prefix="f2o77-pack-")
+    try:
+        outs = []
+        for car in ("e400", "ccf250"):
+            out = os.path.join(tmp, f"build-{car}", "out")
+            os.makedirs(out)
+            _resource(out, car, "1.0.1", preload=car.encode(), display=car, record=f"Vehicle.{car}")
+            _resource(out, f"{car}_chime", "1.0.1")
+            outs.append(out)
+        b = make_bundle(os.path.join(tmp, "pack.tgz"), build_outs=outs)
+        assert b["resources"] == ["e400", "e400_chime", "ccf250", "ccf250_chime"], b["resources"]
+        fake = Fake(tmp)
+        fake.run("deploy", b["path"], "open77-test", "--stage")
+        load = fake.load()
+        assert all(n in load for n in b["resources"]), load
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)

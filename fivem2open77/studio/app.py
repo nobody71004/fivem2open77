@@ -29,7 +29,16 @@ from .settings import Settings
 from .tools import Toolbox
 from .worldops import WorldOps
 
-APP_VERSION = "1.5.1"
+APP_VERSION = "1.5.2"
+
+
+def _stamp(path) -> list:
+    """What tells a file or folder apart from the same one changed: its size and time."""
+    try:
+        st = os.stat(path)
+        return [st.st_size if os.path.isfile(path) else 0, int(st.st_mtime)]
+    except OSError:
+        return [0, 0]
 SECRET_KEYS = re.compile(r"^(anthropic_api_key|server:[a-z0-9_-]{1,32}:(password|passphrase))$")
 
 
@@ -262,7 +271,19 @@ class Studio(MapOps, WorldOps):
         The cars become projects with import_pack_cars (the ones the user picks)."""
         src, uploaded, original = self._source_of(path, upload_id)
         stem = os.path.splitext(os.path.basename(os.path.normpath(original)))[0]
+        stamp = _stamp(src)
+        if not uploaded:
+            # the same pack again (same file, same size and time): its cars are already here
+            for old in self.library.list("cars"):
+                if old.get("state") == "ready" and old.get("original") == original and old.get("stamp") == stamp:
+                    def again(job, old=old):
+                        job.log(f"{os.path.basename(original)} is imported already ({len(old.get('cars') or [])} cars): "
+                                "add the cars that have no project yet")
+                        return self._pack_view(old)
+                    return old, self.jobs.submit("pack", f"Import {os.path.basename(original)}", again, meta={"pack": old["id"]})
         e = self.library.create("cars", name or re.sub(r"\s*\(\d+\)$", "", stem), original)
+        e["stamp"] = stamp
+        self.library.save(e)
 
         def run(job):
             try:

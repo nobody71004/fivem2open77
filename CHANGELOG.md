@@ -1,5 +1,46 @@
 # Changelog
 
+## Studio 1.5.2 · converter 1.4.2 (2026-10-14)
+
+### Liberty V (and any big map) imports
+
+* Why it did not work: the 6.9 GB `libertyv.zip` was over the 4 GiB upload limit and was refused; a
+  dropped folder cannot be uploaded at all (a browser only sees an empty file); a typed path made
+  the request copy the 6.5 GB folder before it answered; and the first look of a whole city
+  stopped with an error before the district picker could show.
+* An import is a job now, with progress, and the project is there at once. A folder of 1 GB or more
+  is **read where it is** (nothing copied; keep it there), an archive of 512 MB or more is
+  **extracted once** into the Studio's library, smaller ones are copied as before. The free space is
+  checked before anything is written (Liberty V: 31,835 files, 6.5 GB, linked in place).
+* In the Studio's own window a dropped file or folder is read from its place on disk: the page asks
+  the window for the path, nothing is uploaded. In a browser, type the path (uploads now go to
+  64 GB, with the free space checked first).
+* **A whole city opens on its overview**: where its objects stand (a density map of the city from
+  above), its districts (ymaps grouped by name, centred where their objects are, a stray ymap far
+  away no longer makes a district kilometres wide) and an estimate of what an area holds. Liberty V:
+  160,319 objects in 1,300 ymaps, 37 districts, read in 13 s (its collision is not read for the
+  overview). Click the map or a district, set the radius (400 m by default), and *Convert this
+  district*. Each district is a map of its own with its own resource id (`libertyv_manhat01`...),
+  so several stand side by side on a server; *Convert another district* makes a new project that
+  reads the same files, with the converted districts shown on the map, and refuses an id that is
+  already taken. Building a whole city at once is refused with the reason.
+* The AI agent: `pick_district` (by name or area, in the project or as a new one); `import_resource`
+  waits for the import and the first look, and says when a map is a city.
+
+### Car packs
+
+* Drop a car pack on *Cars* (the FiveM Civ Car Pack 2: 67 cars in one 2 GB zip): it is held once,
+  its cars are listed with their name, make, class and folder, you tick the ones you want and each
+  becomes a project of its own that reads only its own folder of the pack. One job reads them one
+  after another (parts, textures, name, thumbnail); the list fills as they are done.
+* The pack's card: *Build all* (one build after another), *Build the unbuilt*, *Install all* (every
+  built car in one bundle: one install, one restart), *Add cars* for the ones not picked yet, and
+  *Delete* (the pack with its cars' projects). Importing the same pack again reuses it.
+* A car's other texture dictionaries are its own resource's only, and they are read only for a
+  texture its own dictionaries lack (a car of a pack loaded every texture of the whole pack).
+* A car folder named after the car's model id (`ikx3_c63se24`) is not taken for a better name.
+* The AI agent: `import_car_pack` (list a pack's cars, make projects for some or all of them).
+
 ## Studio 1.5.1 · converter 1.4.1 (2026-10-14)
 
 ### Live maps: no more black screens in the 3D city

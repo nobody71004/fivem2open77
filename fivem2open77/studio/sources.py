@@ -108,12 +108,21 @@ def need_space(where: str, nbytes: int, what: str):
                           "extract it yourself and import the folder: a big folder is read where it is.")
 
 
+_WIN_BAD = re.compile(r'[<>:"|?*\x00-\x1f]')
+
+
 def _safe_member(dest: str, name: str) -> str | None:
-    """Where an archive member goes, or None when it would land outside dest (zip-slip)."""
+    """Where an archive member goes, or None when it would land outside dest (zip-slip).  On
+    Windows a name part with characters it does not allow is cleaned the way zipfile does."""
     name = name.replace("\\", "/")
     if name.startswith("/") or re.match(r"^[A-Za-z]:", name):
         return None
-    target = os.path.normpath(os.path.join(dest, name))
+    parts = [p for p in name.split("/") if p not in ("", ".")]
+    if os.name == "nt":
+        parts = [p if p == ".." else (_WIN_BAD.sub("_", p).rstrip(". ") or "_") for p in parts]
+    if not parts:
+        return None
+    target = os.path.normpath(os.path.join(dest, *parts))
     if os.path.commonpath([os.path.abspath(dest), os.path.abspath(target)]) != os.path.abspath(dest):
         return None
     return target
@@ -147,7 +156,7 @@ def extract(archive: str, dest: str, log=print, progress=None, check=None, seven
                 if target is None:
                     log(f"skipped {i.filename} (outside the archive's folder)")
                     continue
-                if i.is_dir():
+                if i.is_dir() or i.filename.endswith(("/", "\\")):
                     os.makedirs(target, exist_ok=True)
                     continue
                 if i.flag_bits & 0x1:
