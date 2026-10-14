@@ -1226,20 +1226,70 @@ def solid_columns(col: Collision, *, cell=0.2, htol=0.08, max_boxes=150, min_up=
     return out
 
 
+def quat_mats(q: np.ndarray) -> np.ndarray:
+    """(N, 4) quaternions (x, y, z, w) -> (N, 3, 3) rotation matrices."""
+    q = np.asarray(q, float).reshape(-1, 4)
+    x, y, z, w = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
+    return np.stack([
+        np.stack([1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)], -1),
+        np.stack([2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)], -1),
+        np.stack([2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)], -1)], 1)
+
+
+def quats_from_mats(m: np.ndarray) -> np.ndarray:
+    """(N, 3, 3) matrices whose columns are a frame's axes -> (N, 4) unit quaternions, the axes
+    orthonormalised first (Gram-Schmidt, right-handed): _quat_from_axes for many at once."""
+    m = np.asarray(m, float).reshape(-1, 3, 3)
+    if not len(m):
+        return np.zeros((0, 4))
+    x = m[:, :, 0]
+    nx = np.linalg.norm(x, axis=1, keepdims=True)
+    x = x / np.where(nx > 0, nx, 1.0)
+    y = m[:, :, 1] - x * np.sum(x * m[:, :, 1], axis=1, keepdims=True)
+    ny = np.linalg.norm(y, axis=1, keepdims=True)
+    y = y / np.where(ny > 0, ny, 1.0)
+    z = np.cross(x, y)
+    a = np.stack([x, y, z], 2)
+    m00, m11, m22 = a[:, 0, 0], a[:, 1, 1], a[:, 2, 2]
+    t = m00 + m11 + m22
+    q = np.empty((len(a), 4))
+    b0 = t > 0
+    b1 = ~b0 & (m00 > m11) & (m00 > m22)
+    b2 = ~b0 & ~b1 & (m11 > m22)
+    b3 = ~(b0 | b1 | b2)
+    if b0.any():
+        s = np.sqrt(t[b0] + 1.0) * 2
+        k = a[b0]
+        q[b0] = np.stack([(k[:, 2, 1] - k[:, 1, 2]) / s, (k[:, 0, 2] - k[:, 2, 0]) / s, (k[:, 1, 0] - k[:, 0, 1]) / s, 0.25 * s], 1)
+    if b1.any():
+        k = a[b1]
+        s = np.sqrt(1.0 + k[:, 0, 0] - k[:, 1, 1] - k[:, 2, 2]) * 2
+        q[b1] = np.stack([0.25 * s, (k[:, 0, 1] + k[:, 1, 0]) / s, (k[:, 0, 2] + k[:, 2, 0]) / s, (k[:, 2, 1] - k[:, 1, 2]) / s], 1)
+    if b2.any():
+        k = a[b2]
+        s = np.sqrt(1.0 + k[:, 1, 1] - k[:, 0, 0] - k[:, 2, 2]) * 2
+        q[b2] = np.stack([(k[:, 0, 1] + k[:, 1, 0]) / s, 0.25 * s, (k[:, 1, 2] + k[:, 2, 1]) / s, (k[:, 0, 2] - k[:, 2, 0]) / s], 1)
+    if b3.any():
+        k = a[b3]
+        s = np.sqrt(1.0 + k[:, 2, 2] - k[:, 0, 0] - k[:, 1, 1]) * 2
+        q[b3] = np.stack([(k[:, 0, 2] + k[:, 2, 0]) / s, (k[:, 1, 2] + k[:, 2, 1]) / s, 0.25 * s, (k[:, 1, 0] - k[:, 0, 1]) / s], 1)
+    return q / np.linalg.norm(q, axis=1, keepdims=True)
+
+
 def transform_colliders(cols: list, m: np.ndarray) -> list:
-    """Colliders moved by a 4x4 rigid transform (uniform scale tolerated)."""
+    """Colliders moved by a 4x4 rigid transform (uniform scale tolerated).  All at once: a city
+    district moves hundreds of thousands of them."""
+    if not cols:
+        return []
     r, tr = np.asarray(m, float)[:3, :3], np.asarray(m, float)[:3, 3]
     s = float(np.cbrt(abs(np.linalg.det(r)))) or 1.0
     rn = r / s
+    rot = np.einsum("ij,njk->nik", rn, quat_mats([c.rotation for c in cols]))
+    quats = quats_from_mats(rot).tolist()
+    centers = (np.array([c.center for c in cols], float) @ r.T + tr).tolist()
     out = []
-    for c in cols:
-        x, y, z, w = c.rotation
-        q = np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-                      [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-                      [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
-        rot = rn @ q
-        out.append(Collider(c.kind, c.physmat, center=tuple(float(v) for v in (r @ np.asarray(c.center, float) + tr)),
-                            rotation=_quat_from_axes(rot.T), half=tuple(float(v) * s for v in c.half),
+    for c, ctr, q in zip(cols, centers, quats):
+        out.append(Collider(c.kind, c.physmat, center=tuple(ctr), rotation=tuple(q), half=tuple(float(v) * s for v in c.half),
                             radius=c.radius * s, height=c.height * s,
                             vertices=None if c.vertices is None else np.asarray(c.vertices) @ r.T + tr,
                             source=c.source))

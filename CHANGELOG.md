@@ -1,5 +1,81 @@
 # Changelog
 
+## Studio 1.5.0 · converter 1.4.0 (2026-10-14)
+
+### Live maps: Night City in 3D
+
+* The Studio reads the game's own 3D world map — the model on the game's map screen, under
+  `base\entities\cameras\3dmap` — out of the installed game once (Live maps > *Build the 3D city*,
+  about a minute: WolvenKit `uncook` exports the meshes, `convert serialize` reads the map entity and
+  the building colliders) and keeps a compact cache in the workspace (`citymap/`, about 8 MB, never
+  uploaded or shipped): terrain, streets and kerbs, the NCART lines in their colours, water, the
+  landmarks, 10,166 building volumes and the 23 district and sub-district outlines, every part placed
+  the way the map entity places it (parent bindings, the streets' half-turn, the lowered terrain).
+  A game patch marks the cache stale.
+* Live maps opens on it (*3D city* / *Plan*): each map on the server where it stands, its new spot,
+  the previous one and the saved spots, as light beams, footprints (seen through buildings) and
+  labels; the players online; the other maps. *Orbit* like a map (drag, right-drag, wheel to the
+  cursor, WASD, double-click to go somewhere), *Fly* (mouse look, WASD, Space/E up, C/Q down, Shift
+  fast, Alt slow, wheel for speed) or *Walk* the streets (gravity, run, double jump, buildings in the
+  way, roofs to stand on; walking starts on the nearest street, not inside a building). *Set the
+  spot* places the new spot with a click on the city (ground, street or roof); arrows, Q/E and
+  PgUp/PgDn nudge it as in the plan view; nothing moves in game until Apply, as before.
+* HUD: compass, camera and aim coordinates, altitude, the district under the cursor, *Go to*
+  (districts, sub-districts, the maps), layers (buildings, streets, NCART, districts, labels, grid,
+  district colours, hologram buildings), glow (bloom) and a fast mode; dynamic resolution holds the
+  frame rate; full screen. Works with no server configured too.
+* `GET /api/citymap`, `POST /api/citymap/build`, `GET /api/citymap/citymap.{json,bin}` (cacheable by
+  key). Regression tests build the cache from a synthetic 3dmap (WolvenKit-shaped JSON and glTF) and
+  drive the API; the real build was checked against the game's own files (`basegame_1_engine`).
+
+### The Neural HUD: a high-tech Studio
+
+* Every page sits over a living background (WebGL): a hex lattice that lights up around the cursor,
+  a horizon grid, drifting data motes, a slow scan, and shockwaves that ripple the lattice where you
+  click. Over it: glass panels with corner brackets, neon hairlines, mono read-outs.
+* The cursor: a light trail with sparks, a turning reticle, target-lock brackets that jump to the
+  button, link, field or card under the cursor (with what it is), and neural links to the motes
+  around it. Panel borders light up where the cursor is, primary buttons are magnetic, showcase
+  cards tilt, buttons ripple, page titles decode, the window boots with a scan.
+* Home: Night City as a hologram on a projector pad (when the 3D city is built), turning slowly and
+  leaning towards the cursor; it opens Live maps.
+* Settings > Appearance: *Full*, *Lite* (still background that answers the cursor, brackets and lit
+  panels) or *Off*, kept per computer; the system's reduce-motion setting starts at Lite. Bounded
+  work: nothing runs while the window is hidden, the background falls to 20 fps at rest and to 8 fps
+  behind a 3D view, and over the 3D views the cursor stays clean for precise work.
+
+### Cars (converter 1.4.0): every GTA texture and part comes across
+
+* Lamps wear their GTA textures (per-shader `vehicle_lights` materials: base colour + emissive),
+  lenses use the light-cover glass; lamps on doors and lids get light meshes that move with them;
+  lamp geometry modelled on body bones is claimed by the nearest light bone; light bones without
+  geometry still cast light; light-less concept models get head and brake lights.
+* Paint textures (baked logos, trims, ambient occlusion) and liveries become decal overlays over the
+  multilayer paint, so CrystalCoat / Open77 paint still recolours the car.
+* Glass: palette textures split into tints, opaque frit and pillars solid, mixed triangles get an
+  alpha-tested copy. GTA colour slots in `matDiffuseColor` (wheels, interior, dashboard) tint the
+  texture instead of blowing it out.
+* Extras: `requiredExtras` on, extras under lids follow their toggle, parts the car needs to be whole
+  are fitted; carcols mod-kit parts are fitted when the body or seats only exist there; profiles can
+  choose (`parts.extras`, `parts.mods`).
+* Near-name texture matching, unique texture file names, unused materials pruned, a BC3 encoder for
+  generated textures. The Studio's preview and renders show textures per triangle; the project page
+  shows required/needed extras and a mod-kit card.
+* Checked with real builds and QA of the cars in the Studio (C63 S E, M4 F82, the Sosa, F-250,
+  Revuelto, i8, Biome, the e400 of the FiveM Civ Car Pack).
+
+### Maps: whole cities, GTA-only textures, speed
+
+* `--area x,y,radius` (and the map options' *area* with a district picker) converts a city such as
+  Liberty V a district at a time: only what stands there, with the texture dictionaries it needs
+  through `gtxd.meta` parents; a city-sized input without an area stops and lists its biggest
+  districts. Far collision files are read for their bounds only; the city-wide texture search is
+  gone (a lazy index instead).
+* Textures that only exist in GTA V itself (which cannot be shipped) give the surface a likely colour
+  from its name instead of white; untextured cut-out decal sheets are dropped.
+* The doorway check moves only the collision that can reach a doorway, all at once (a Liberty V
+  district: minutes instead of a quarter of an hour).
+
 ## Studio 1.4.1 (2026-10-13)
 
 Patch on top of 1.4.0: NCWE asset imports and MLO tooling follow-ups, the map deploy/upgrade

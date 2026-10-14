@@ -268,14 +268,20 @@ def opening_for(name: str, width: float, height: float, doorway=None) -> str:
 
 
 # ----------------------------------------------------------------------------- what blocks a doorway
-def _box_arrays(colliders):
+def box_arrays(colliders):
+    """(the box colliders, centres (N, 3), rotations (N, 3, 3), half extents (N, 3)): what the
+    doorway checks read, built once for all of an MLO's doorways."""
+    from .collision import quat_mats
     keep = [c for c in colliders if c.kind == "box"]
     if not keep:
         return keep, np.zeros((0, 3)), np.zeros((0, 3, 3)), np.zeros((0, 3))
     C = np.array([c.center for c in keep], float)
-    R = np.array([_quat_matrix(c.rotation) for c in keep])
+    R = quat_mats([c.rotation for c in keep])
     H = np.array([c.half for c in keep], float)
     return keep, C, R, H
+
+
+_box_arrays = box_arrays
 
 
 def _quat_matrix(q):
@@ -300,9 +306,10 @@ def _samples(w: Doorway, step=0.1, inset=0.12):
     return pts, cols
 
 
-def blocked_columns(w: Doorway, colliders) -> tuple:
-    """(blocked flag per column, {collider index: hit count}) for the static colliders."""
-    keep, C, R, H = _box_arrays(colliders)
+def blocked_columns(w: Doorway, colliders, boxes=None) -> tuple:
+    """(blocked flag per column, {collider index: hit count}) for the static colliders.
+    ``boxes``: box_arrays(colliders) when the caller checks many doorways against them."""
+    keep, C, R, H = boxes if boxes is not None else box_arrays(colliders)
     pts, cols = _samples(w)
     flat = pts.reshape(-1, 3)
     hit_any = np.zeros(len(flat), bool)
@@ -327,10 +334,10 @@ def widest_gap(per_col, step=0.1) -> float:
     return best * step
 
 
-def doorway_status(w: Doorway, colliders, door_names=(), suspects=()) -> dict:
+def doorway_status(w: Doorway, colliders, door_names=(), suspects=(), boxes=None) -> dict:
     """The report entry of one doorway: status, passage width and what blocks it.  ``suspects``:
     object names that look like door leaves (a doorway they close is blocked, not closed)."""
-    per_col, hits, keep = blocked_columns(w, colliders)
+    per_col, hits, keep = blocked_columns(w, colliders, boxes)
     gap = widest_gap(per_col)
     blockers = {}
     for k, n in hits.items():

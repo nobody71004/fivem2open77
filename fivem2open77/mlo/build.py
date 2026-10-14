@@ -465,20 +465,32 @@ class MapBuilder:
                     op.colliders, removed, _ = ways_mod.carve(w2, op.colliders)
                     if removed:
                         self.log(f"[{self.name}] doorway {w.key}: {removed} boxes of {pl.part} cut out")
-            # everything else's collision in this MLO's frame (first placement)
+            # everything else's collision in this MLO's frame (first placement): only the boxes that
+            # can reach one of its doorways (a city district has hundreds of thousands around)
             others = []
-            if pl0 is not None:
+            if pl0 is not None and ways:
                 M0 = np.linalg.inv(_place_matrix(pl0))
                 radius = max((w.width + w.height for w in ways), default=0.0) + 60.0
+                wc = np.array([w.center for w in ways], float)
+                reach = np.array([w.width + w.height for w in ways], float)
                 for pl in self.model.placements:
                     if pl.part == pname or self.model.parts[pl.part].kind == "door":
                         continue
                     if np.linalg.norm(np.subtract(pl.position, pl0.position)) > radius + 200.0:
                         continue
                     op = self.model.parts[pl.part]
-                    if not op.colliders:
+                    boxes = [c for c in op.colliders if c.kind == "box"]
+                    if not boxes:
                         continue
-                    moved = transform_colliders(op.colliders, M0 @ _place_matrix(pl))
+                    T = M0 @ _place_matrix(pl)
+                    sc = float(np.cbrt(abs(np.linalg.det(T[:3, :3])))) or 1.0
+                    ctr = np.array([c.center for c in boxes], float) @ T[:3, :3].T + T[:3, 3]
+                    size = np.linalg.norm(np.array([c.half for c in boxes], float), axis=1) * sc
+                    gap = (np.linalg.norm(ctr[:, None, :] - wc[None, :, :], axis=2) - reach[None, :]).min(1)
+                    near = [c for c, ok in zip(boxes, gap < size + 1.0) if ok]
+                    if not near:
+                        continue
+                    moved = transform_colliders(near, T)
                     for c in moved:
                         c.source = c.source if c.source and c.source not in ("collision",) else pl.part
                     others += moved
@@ -507,8 +519,10 @@ class MapBuilder:
                              "mode": self.door_map["objects"].get(lname, "auto")})
             cands += mine
             suspects = {c["name"] for c in mine}
+            pool = list(part.colliders) + others
+            boxes = ways_mod.box_arrays(pool)
             for w in ways:
-                entry = ways_mod.doorway_status(w, list(part.colliders) + others, in_way.get(w.key, ()), suspects)
+                entry = ways_mod.doorway_status(w, pool, in_way.get(w.key, ()), suspects, boxes=boxes)
                 entry["mode"] = self.door_map["doorways"].get(w.key, "auto")
                 out.append(entry)
         seen, uniq = set(), []

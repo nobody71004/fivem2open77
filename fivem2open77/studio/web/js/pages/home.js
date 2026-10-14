@@ -1,5 +1,6 @@
 import { h, clear, icon } from "../ui.js";
 import { store } from "../store.js";
+import { cityHologram } from "./cityholo.js";
 
 const href = (p) => (p.kind === "map" ? `#/map/${p.id}/overview` : `#/project/${p.id}/overview`);
 const thumb = (p) => `/api/projects/${encodeURIComponent(p.id)}/thumb.png?t=${Math.floor(p.updated || 0)}`;
@@ -21,6 +22,8 @@ function preview(p, kind, featured = false) {
 
 export function homePage(root) {
   root.className = "home-page";
+  let orbitArt = null;
+  let holo = null, gone = false;
   const cosmos = h("canvas.cosmos", { "aria-hidden": "true" });
   const content = h("div.home-content");
   const featured = h("div.featured-grid"), library = h("div.showcase-grid"), stats = h("div.home-stats");
@@ -35,7 +38,7 @@ export function homePage(root) {
         h("div.hero-actions", h("a.btn.primary", { href: "#/maps" }, icon("map"), "Explore MLOs"),
           h("a.btn", { href: "#/projects" }, icon("car"), "Open garage")),
         h("a.agent-link", { href: "#/agent" }, icon("agent"), "Create with your AI copilot", h("span", "↗"))),
-      h("div.orbit-art", { "aria-hidden": "true" }, h("div.orbit.orbit-one"), h("div.orbit.orbit-two"),
+      orbitArt = h("div.orbit-art", { "aria-hidden": "true" }, h("div.orbit.orbit-one"), h("div.orbit.orbit-two"),
         h("div.orbit.orbit-three"), h("div.planet", h("span", "77")), h("span.orbit-tag", "NIGHT CITY / CONNECTED WORLDS"))),
     stats,
     h("section", { "aria-labelledby": "featured-title" }, h("div.section-title", h("div", h("span.eyebrow", "THE SHOWCASE"),
@@ -61,7 +64,13 @@ export function homePage(root) {
   render();
   const off = store.on(ev => { if (ev.type === "state") render(); });
   const stopUniverse = universe(root, cosmos, motionButton);
-  return { dispose() { off(); stopUniverse(); } };
+  // Night City as a hologram when the 3D city is built (Live maps); the planet otherwise
+  cityHologram(orbitArt).then((x) => {
+    if (gone) { if (x) x.dispose(); return; }
+    holo = x;
+    if (x) orbitArt.classList.add("has-city");
+  }).catch(() => { /* keep the planet */ });
+  return { dispose() { gone = true; off(); stopUniverse(); if (holo) holo.dispose(); } };
 }
 
 // At most 110 stars, DPR capped at 1.5, 30fps. No animation off-page, hidden, or motion-disabled.

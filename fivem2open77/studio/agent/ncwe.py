@@ -118,8 +118,9 @@ class StdioClient:
         raise ToolError(f"NCWE {method} timed out after {self.timeout}s; no success is assumed")
 
     def initialize(self):
+        from ..app import APP_VERSION        # noqa: PLC0415 (the Studio imports this module)
         result = self.rpc("initialize", {"protocolVersion": "2024-11-05", "capabilities": {},
-                                         "clientInfo": {"name": "fivem2open77-studio", "version": "1.4.1"}})
+                                         "clientInfo": {"name": "fivem2open77-studio", "version": APP_VERSION}})
         self.rpc("notifications/initialized", notify=True)
         return result
 

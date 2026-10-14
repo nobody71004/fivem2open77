@@ -13,6 +13,7 @@ import { mapPage } from "./pages/map.js";
 import { livePage } from "./pages/live.js";
 import { worldPage } from "./pages/world.js";
 import { studioAgentPage } from "./pages/agent.js";
+import { initFx, fxRoute } from "./fx.js";
 
 let current = null;          // { dispose() }
 
@@ -123,6 +124,7 @@ function route() {
     console.error(e);
     main.append(h("div.card.err", String(e)));
   }
+  fxRoute(main);
 }
 
 // ------------------------------------------------------------------ command palette
@@ -189,6 +191,7 @@ async function loadIcons() {
 }
 
 async function boot() {
+  initFx();
   await loadIcons();
   document.getElementById("cmdk").addEventListener("click", openPalette);
   window.addEventListener("keydown", (e) => {

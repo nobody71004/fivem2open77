@@ -19,6 +19,7 @@ import threading
 import time
 import zipfile
 
+from ..world import citymap as citymap_mod
 from ..world import edits as E
 from ..world import ops as O
 from ..world import package as P
@@ -36,6 +37,7 @@ class WorldOps:
     _world_lock = None
     _world_index = None
     world_extractor = None          # tests (and tools) can hand in their own extract(paths) -> {path: json}
+    citymap_builder = None          # tests: (out_dir, job) -> status, instead of reading the game
 
     # ------------------------------------------------------------------ the world index
     def _wlock(self):
@@ -104,6 +106,54 @@ class WorldOps:
                 self._wtls().job = None
 
         return self.jobs.submit("world-index", "Read Night City's sector list from the game", run, heavy=True)
+
+    # ------------------------------------------------------------------ the 3D city (Live maps)
+    def citymap_dir(self) -> str:
+        return citymap_mod.cache_dir(self.workspace)
+
+    def citymap_status(self) -> dict:
+        tb = self.toolbox()
+        st = citymap_mod.status(self.citymap_dir(), tb.game_dir)
+        st.update(game=bool(tb.game_dir), wolvenkit=bool(tb.wolvenkit))
+        for j in self.jobs.list():
+            if j["kind"] == "citymap" and j["state"] in ("queued", "running"):
+                st["job"] = j["id"]
+                break
+        return st
+
+    def citymap_build(self, force=False):
+        """A job: read the game's own 3D world map (terrain, roads, metro, buildings, districts) out of
+        the installed game into the Studio's cache (once; about a minute)."""
+        for j in self.jobs.list():
+            if j["kind"] == "citymap" and j["state"] in ("queued", "running"):
+                return self.jobs.get(j["id"])
+
+        def run(job):
+            if not force and citymap_mod.read_meta(self.citymap_dir()):
+                st = self.citymap_status()
+                if not st.get("stale"):
+                    return st
+            if self.citymap_builder is not None:
+                return self.citymap_builder(self.citymap_dir(), job)
+            tb = self.toolbox(refresh=True)
+            if not tb.game_dir:
+                raise RuntimeError("Cyberpunk 2077 was not found: set its folder in Settings > Tools")
+            if not tb.wolvenkit:
+                raise RuntimeError("WolvenKit CLI not found: set it up in Settings > Tools")
+            wk = tb.wolvenkit_obj(log=job.log)
+            job.on_cancel.append(wk.kill)
+            scratch = os.path.join(self.workspace, "tmp")
+            os.makedirs(scratch, exist_ok=True)
+            return citymap_mod.build(wk, tb.game_dir, self.citymap_dir(), scratch, log=job.log, progress=job.set_progress)
+
+        return self.jobs.submit("citymap", "Read Night City's 3D map from the game", run, heavy=True)
+
+    def citymap_file(self, name: str) -> str:
+        if name not in ("citymap.json", "citymap.bin"):
+            raise ValueError("no such file")
+        if not citymap_mod.read_meta(self.citymap_dir()):
+            raise ProjectError("the 3D city is not built yet: build it from Live maps")
+        return os.path.join(self.citymap_dir(), name)
 
     def _with_index(self, fn):
         with self._wlock():

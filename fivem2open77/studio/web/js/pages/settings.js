@@ -2,15 +2,39 @@
 import { api, waitJob } from "../api.js";
 import { store, refreshState } from "../store.js";
 import { h, clear, put, toast, logLines, pill, fmtAgo, confirmBox, icon } from "../ui.js";
+import { fxLevel, setFxLevel } from "../fx.js";
 
 export function settingsPage(root, args) {
   const section = args[0] || "tools";
-  const tabs = h("div.tabs", [["tools", "Tools"], ["ai", "AI"], ["agents", "Agents (MCP)"], ["build", "Build"]].map(([k, l]) =>
+  const tabs = h("div.tabs", [["tools", "Tools"], ["ai", "AI"], ["agents", "Agents (MCP)"], ["build", "Build"], ["look", "Appearance"]].map(([k, l]) =>
     h("a", { href: `#/settings/${k}`, class: k === section ? "active" : "" }, l)));
   const body = h("div");
   root.append(h("div.page-head", h("h1", "Settings")), tabs, body);
-  const ret = ({ tools, ai, agents, build }[section] || tools)(body);
+  const ret = ({ tools, ai, agents, build, look }[section] || tools)(body);
   return ret || {};
+}
+
+// ------------------------------------------------------------------ appearance (this computer only)
+function look(body) {
+  const levels = [
+    ["full", "FULL", "The living background, the cursor's light trail, sparks and links, target lock, decoding titles, tilting cards."],
+    ["lite", "LITE", "A still background that answers the cursor, target lock and lit panels. Nothing animates on its own."],
+    ["off", "OFF", "No effects: plain panels, the system cursor only."],
+  ];
+  const grid = h("div.fx-levels");
+  function draw() {
+    clear(grid).append(...levels.map(([k, title, text]) => {
+      const inp = h("input", { type: "radio", name: "fx", value: k, checked: fxLevel() === k });
+      const el = h("label.fx-level" + (fxLevel() === k ? ".on" : ""), inp, h("b", title), h("span", text));
+      inp.addEventListener("change", () => { setFxLevel(k); draw(); toast(`Effects: ${k}`, "ok"); });
+      return el;
+    }));
+  }
+  draw();
+  body.append(h("div.card", h("h3", icon("command"), "Effects"),
+    h("p.help", "How much of the Studio moves. Kept on this computer. With the system's reduce-motion setting on, the Studio starts at Lite. ",
+      "The 3D views (Night City in Live maps, the car and map viewers) keep the cursor clean either way."),
+    grid));
 }
 
 // ------------------------------------------------------------------ agents outside the Studio (MCP)

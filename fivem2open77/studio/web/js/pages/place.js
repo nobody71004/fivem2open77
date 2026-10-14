@@ -7,6 +7,7 @@
 import { api, waitJob } from "../api.js";
 import { store } from "../store.js";
 import { h, clear, put, toast, confirmBox, prompt, fmtAgo, pill } from "../ui.js";
+import { cityStage } from "./city3d.js";
 
 const POLL_MS = 2000;
 const STATE_LABEL = {
@@ -15,13 +16,50 @@ const STATE_LABEL = {
   unstaging: "throwing the build away", applied: "applied", failed: "failed", cancelled: "cancelled",
 };
 const fmt = (a) => (a ? `${(+a.x).toFixed(1)}, ${(+a.y).toFixed(1)}, ${(+a.z).toFixed(1)} · ${(+(a.yaw || 0)).toFixed(0)}°` : "-");
+const VIEW_KEY = "f2o77.live.view";
+
+// the stage of the live page: Night City in 3D, or the plan (top-down canvas)
+export function liveStage(opts = {}) {
+  let want3d = true;
+  try { want3d = (localStorage.getItem(VIEW_KEY) || "3d") === "3d"; } catch (_) { /* private mode */ }
+  const plan = h("div.plan");
+  const cityHost = h("div.city");
+  const el = h("div.live-stage", plan, cityHost);
+  const tab3d = h("button", { type: "button", onclick: () => setView(true) }, "3D city");
+  const tab2d = h("button", { type: "button", onclick: () => setView(false) }, "Plan");
+  const tabs = h("div.view-tabs", tab3d, tab2d);
+  let city = null;
+  let scene = null;
+  function setView(on) {
+    want3d = on;
+    try { localStorage.setItem(VIEW_KEY, on ? "3d" : "plan"); } catch (_) { /* private mode */ }
+    tab3d.classList.toggle("on", on);
+    tab2d.classList.toggle("on", !on);
+    plan.classList.toggle("hidden", on);
+    cityHost.classList.toggle("hidden", !on);
+    if (on && !city) {
+      city = cityStage(cityHost, { onPick: opts.onPick, onNudge: opts.onNudge });
+      if (scene) city.update(scene);
+    }
+    if (opts.onView) opts.onView(on);
+  }
+  setView(want3d);
+  return {
+    el, tabs, plan,
+    is3d: () => want3d,
+    update(s) { scene = s; if (city) city.update(s); },
+    dispose() { if (city) city.dispose(); },
+  };
+}
 
 export function placePanel(root, opts) {
   const servers = store.state.settings.servers;
   if (!servers.length) {
-    root.append(h("div.card", h("h3", "No servers yet"), h("p.muted", "Add your Open77 server in Servers, then install the map there."),
-      h("a.btn.primary", { href: "#/servers" }, "Add a server")));
-    return () => {};
+    root.append(h("div.card", h("div.row", h("h3", { style: { margin: 0 } }, "No servers yet"), h("span.muted", "Add your Open77 server in Servers, then install a map there: it shows up on the city."),
+      h("div.grow"), h("a.btn.primary", { href: "#/servers" }, "Add a server"))));
+    const st = liveStage();
+    root.append(h("div", { style: { marginTop: "14px" } }, st.el));
+    return () => st.dispose();
   }
   let disposed = false;
   let timer = null;
@@ -46,14 +84,23 @@ export function placePanel(root, opts) {
   const conn = h("span.muted", "connecting...");
   const banner = h("div");
   const canvas = h("canvas", { tabIndex: 0, style: { width: "100%", height: "100%", display: "block", outline: "none", cursor: "grab" } });
-  const stage = h("div", { style: { position: "relative", height: "620px", background: "#0b0c0e", border: "1px solid var(--line)", borderRadius: "var(--radius)", overflow: "hidden" } },
-    canvas, h("div", { style: { position: "absolute", left: "10px", top: "8px", fontSize: "12px", color: "var(--faint)", pointerEvents: "none" } },
-      "drag: move · Shift+drag or right button: turn · wheel: zoom · arrows / Q E / PgUp PgDn: nudge"));
+  const live3d = liveStage({
+    onPick: (p) => {
+      const m = current();
+      if (!m) return toast("Pick a map on this server first", "err");
+      const base = m.pending || m.running || {};
+      op("place", { x: p.x, y: p.y, z: p.z, yaw: +(base.yaw || 0) }).then((r) => { if (r && r.ok) toast(`New spot set: ${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)} (nothing moves in game until Apply)`, "ok"); });
+    },
+    onNudge: (body) => op("move", body),
+  });
+  const stage = live3d.el;
+  live3d.plan.append(canvas, h("div", { style: { position: "absolute", left: "10px", top: "8px", fontSize: "12px", color: "var(--faint)", pointerEvents: "none" } },
+    "drag: move · Shift+drag or right button: turn · wheel: zoom · arrows / Q E / PgUp PgDn: nudge"));
   const coordsLbl = h("div", { style: { position: "absolute", right: "10px", top: "8px", fontSize: "12px", color: "var(--muted)", fontFamily: "var(--mono)" } });
-  stage.append(coordsLbl);
+  live3d.plan.append(coordsLbl);
   const side = h("div.col");
   root.append(
-    h("div.card", h("div.row", h("b", "Server"), srvSel, folderSel, mapSel, conn, h("div.grow"),
+    h("div.card", h("div.row", h("b", "Server"), srvSel, folderSel, mapSel, conn, h("div.grow"), live3d.tabs,
       h("button.btn.small.ghost", { onclick: () => poll(true) }, "Refresh"))),
     banner,
     h("div", { style: { display: "grid", gridTemplateColumns: "minmax(0, 1fr) 400px", gap: "14px", marginTop: "14px", alignItems: "start" } }, stage, side));
@@ -342,7 +389,38 @@ export function placePanel(root, opts) {
     g.restore();
   }
 
+  // the same picture for the 3D city
+  function scene3d() {
+    const items = [];
+    const ownBounds = (o) => {
+      const b = o && o.bounds;
+      if (b && b.min && b.max) return [b.min, b.max];
+      if (Array.isArray(b) && b.length === 2) return b;
+      return [[-20, -20, 0], [20, 20, 10]];
+    };
+    const m = current();
+    if (live && live.ok && live.status) {
+      for (const o of live.status.maps || []) {
+        if (o.name === mapName || !o.running) continue;
+        items.push({ key: `other:${o.name}`, map: o.name, name: o.display || o.name, role: "other", anchor: o.running, bounds: ownBounds(o) });
+      }
+    }
+    if (m) {
+      const b = boundsOf(m);
+      const name = m.display || m.name;
+      if (m.running) items.push({ key: `now:${m.name}`, map: m.name, name, role: "now", anchor: m.running, bounds: b });
+      if (m.pending) items.push({ key: `new:${m.name}`, map: m.name, name, role: "new", anchor: m.pending, bounds: b, note: m.apply && m.apply.state ? (STATE_LABEL[m.apply.state] || m.apply.state) : "Apply to move it" });
+      if (m.previous) items.push({ key: `prev:${m.name}`, map: m.name, name, role: "previous", anchor: m.previous, bounds: b });
+      for (const p of m.presets || []) if (p.anchor) items.push({ key: `preset:${m.name}:${p.name}`, map: m.name, name: p.name, role: "preset", anchor: p.anchor, bounds: b });
+    }
+    return {
+      focus: m ? m.name : null, items,
+      players: players.filter((p) => p.position).map((p) => ({ key: `p${p.playerId}`, name: p.name, x: +p.position.x, y: +p.position.y, z: +(p.position.z || 0) })),
+    };
+  }
+
   function draw() {
+    live3d.update(scene3d());
     if (!W) return;
     g.clearRect(0, 0, W, H);
     const m = current();
@@ -499,6 +577,7 @@ export function placePanel(root, opts) {
   return () => {
     disposed = true;
     clearTimeout(timer);
+    live3d.dispose();
     ro.disconnect();
     window.removeEventListener("mousemove", onMove);
     window.removeEventListener("mouseup", onUp);

@@ -222,6 +222,11 @@ python -m fivem2open77 mlo-bundle ...          deploy bundles for server_deploy.
 python -m fivem2open77 mlo-roads ...           Night City's road lanes for the map manager
 ```
 
+* **Whole cities** (Liberty V and friends: tens of thousands of objects) are converted a district at
+  a time: `--area x,y,radius` (GTA world metres) takes only what stands there — its entities, MLOs,
+  collision, and the texture dictionaries they need through `gtxd.meta` parents. Without an area a
+  city-sized input stops with its biggest districts listed, ready to pass as `--area`; the Studio's
+  map options have the same *area* field with a district picker.
 * **Doors** are detected from the map's own objects and can be steered with `--door-map`
   (`hinged|sliding|rolling|open|solid|remove` per object, `open|door-hinged|door-double|...` per
   doorway), so a shop front can keep its roller shutter while an apartment door swings.
@@ -261,10 +266,16 @@ longer matches this game build) and either installed in the local game for a tes
 WinForms + WebView2 app that needs no runtime install). What each release changes is in
 [CHANGELOG.md](CHANGELOG.md).
 
-* **Home**: the app opens on an animated universe home — a starfield and orbital scene that follow
-  the cursor, with your own converted cars and MLOs showcased (their real build thumbnails and
-  status, straight into each project). Motion can be switched off (remembered) and follows the
-  system's reduced-motion setting; the animation is bounded and stops when the tab is hidden.
+* **Home**: the app opens on Night City as a hologram on a projector pad (once the 3D city of Live
+  maps is built; a planet scene before that), with your own converted cars and MLOs showcased (their
+  real build thumbnails and status, straight into each project).
+* **The look (Neural HUD)**: glass panels over a living background — a hex lattice the cursor
+  lights, a horizon grid, data motes, shockwaves where you click — and a cursor with a light trail,
+  sparks, a reticle and target-lock brackets on what it is over; panel borders light up where the
+  cursor is, primary buttons are magnetic, showcase cards tilt, page titles decode. Settings >
+  Appearance sets it to *Full*, *Lite* (still background, no trail) or *Off*; the system's
+  reduce-motion setting starts at Lite, and the 3D views keep a clean cursor. Nothing runs while the
+  window is hidden, and the background drops to a few frames a second at rest and behind 3D views.
 * **Cars**: drop a FiveM resource (.zip/.rar/.7z or a folder path). The Studio reads it at once,
   renders it and keeps it extracted while you work.
 * **3D**: the car exactly as the conversion assembles it (three.js), part by part; colour by part to
@@ -274,6 +285,16 @@ WinForms + WebView2 app that needs no runtime install). What each release change
   QA-check and install it in your game or on a server.
 * **World**: see what Night City itself has at the spot and clean it up — delete or move the game
   objects that clash with the map, then ship that as a world edit.
+* **Live maps in 3D**: the maps on a server, shown on Night City in 3D — the game's own world-map
+  model (the one on its map screen): terrain, streets and kerbs, the NCART lines in their colours,
+  water, landmarks, about 10,000 buildings and the 23 districts. The Studio reads it out of your
+  installed game once (about a minute, with WolvenKit) and keeps it on this computer (about 8 MB;
+  never uploaded or shipped). Every map shows where it stands, its new spot, the previous one and
+  the saved spots, with the players online, as light beams, footprints and labels. Three ways to
+  move: *Orbit* like a map, *Fly* (mouse look, WASD, Space/E up, C/Q down, Shift fast, wheel for
+  speed) or *Walk* the streets (gravity, jumps, buildings in the way, roofs to stand on). *Set the
+  spot* places the map's new spot with a click on the city; arrows, Q/E and PgUp/PgDn nudge it as in
+  the plan view (still one click away); nothing moves in game until Apply.
 * **Parts / Lights / Handling / Sound**: editors for the profile, with live previews (handling
   numbers recomputed as you drag, the chime playable in the app).
 * **Build**: WolvenKit build as a job with a live log and progress, then automatic checks of the

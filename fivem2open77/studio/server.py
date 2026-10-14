@@ -236,14 +236,15 @@ class Handler(BaseHTTPRequestHandler):
                                               "worker-src 'self' blob:"} if full.endswith(".html") else None
         self._send(200, data, ctype, headers)
 
-    def file(self, path, ctype=None, download_name=None):
+    def file(self, path, ctype=None, download_name=None, immutable=False):
+        """immutable: the URL names this content for good (a ?k= key), so the browser may keep it."""
         if not os.path.isfile(path):
             raise HttpError(404, "not found")
         size = os.path.getsize(path)
         self.send_response(200)
         self.send_header("Content-Type", ctype or mimetypes.guess_type(path)[0] or "application/octet-stream")
         self.send_header("Content-Length", str(size))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", "private, max-age=31536000, immutable" if immutable else "no-store")
         if download_name:
             self.send_header("Content-Disposition", f'attachment; filename="{download_name}"')
         self.end_headers()
@@ -554,6 +555,23 @@ def api_map_glb(h, q, pid):
 def api_map_game(h, q, pid):
     b = h.body_json()
     h.json(h.studio.map_game(pid, build=b.get("build"), uninstall=bool(b.get("uninstall"))).summary())
+
+
+# ---------------------------------------------------------------- the 3D city (Live maps)
+@route("GET", r"/api/citymap")
+def api_citymap_status(h, q):
+    h.json(h.studio.citymap_status())
+
+
+@route("POST", r"/api/citymap/build")
+def api_citymap_build(h, q):
+    h.json(h.studio.citymap_build(force=bool(h.body_json().get("force"))).summary())
+
+
+@route("GET", r"/api/citymap/(citymap\.json|citymap\.bin)")
+def api_citymap_file(h, q, name):
+    ctype = "application/json" if name.endswith(".json") else "application/octet-stream"
+    h.file(h.studio.citymap_file(name), ctype, immutable=bool(q.get("k")))
 
 
 # ---------------------------------------------------------------- world edits
