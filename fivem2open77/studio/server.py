@@ -557,6 +557,28 @@ def api_map_game(h, q, pid):
     h.json(h.studio.map_game(pid, build=b.get("build"), uninstall=bool(b.get("uninstall"))).summary())
 
 
+# ---------------------------------------------------------------- what went wrong in the page
+_DIAG = {"t": 0.0, "n": 0}
+
+
+@route("POST", r"/api/diag")
+def api_diag(h, q):
+    """The page's errors (script errors, a lost graphics context, a shader the GPU refused, the GPU
+    itself) into the Studio's log, one line each, at most 60 a minute."""
+    b = h.body_json()
+    now = time.time()
+    if now - _DIAG["t"] > 60:
+        _DIAG.update(t=now, n=0)
+    _DIAG["n"] += 1
+    if _DIAG["n"] <= 60:
+        def text(v, n):
+            return re.sub(r"[\x00-\x1f]+", " ", str(v if v is not None else ""))[:n]
+        extra = {k: b[k] for k in ("dpr", "size") if k in b}
+        print(f"client {text(b.get('kind'), 24)}: {text(b.get('message'), 600)} [{text(b.get('page'), 80)}]"
+              + (f" {json.dumps(extra)}" if extra else ""), file=sys.stderr, flush=True)
+    h.json({"ok": True})
+
+
 # ---------------------------------------------------------------- the 3D city (Live maps)
 @route("GET", r"/api/citymap")
 def api_citymap_status(h, q):

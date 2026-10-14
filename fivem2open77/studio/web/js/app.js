@@ -14,6 +14,7 @@ import { livePage } from "./pages/live.js";
 import { worldPage } from "./pages/world.js";
 import { studioAgentPage } from "./pages/agent.js";
 import { initFx, fxRoute } from "./fx.js";
+import { initDiag } from "./diag.js";
 
 let current = null;          // { dispose() }
 
@@ -191,6 +192,7 @@ async function loadIcons() {
 }
 
 async function boot() {
+  initDiag();
   initFx();
   await loadIcons();
   document.getElementById("cmdk").addEventListener("click", openPalette);
