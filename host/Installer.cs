@@ -78,7 +78,7 @@ namespace Fivem2Open77.Studio
                 using (var k = Registry.CurrentUser.CreateSubKey(UninstallKey))
                 {
                     k.SetValue("DisplayName", Program.AppName);
-                    k.SetValue("DisplayVersion", Application.ProductVersion);
+                    k.SetValue("DisplayVersion", Program.Version);
                     k.SetValue("Publisher", "fivem2open77");
                     k.SetValue("DisplayIcon", exe);
                     k.SetValue("InstallLocation", target);
