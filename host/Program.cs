@@ -42,6 +42,8 @@ namespace Fivem2Open77.Studio
                     WindowFinder.ActivateExisting(AppName);
                     return 0;
                 }
+                // files an update had to move aside (they were in use then)
+                if (Installer.IsInstalled(home)) new Thread(() => Installer.Sweep(home)) { IsBackground = true, Priority = ThreadPriority.BelowNormal }.Start();
                 using (var backend = new Backend(home))
                 {
                     Application.Run(new MainForm(backend, has("--browser")));

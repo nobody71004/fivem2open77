@@ -48,28 +48,24 @@ namespace Fivem2Open77.Studio
             {
                 if (!IsInstalled(home))
                 {
-                    foreach (var p in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(ExeName)))
-                    {
-                        if (p.Id == Process.GetCurrentProcess().Id) continue;
-                        try { if (p.MainModule.FileName.StartsWith(target, StringComparison.OrdinalIgnoreCase)) { p.CloseMainWindow(); p.WaitForExit(8000); } } catch { }
-                    }
                     using (var progress = new ProgressForm("Installing " + Program.AppName + "..."))
                     {
                         progress.Show();
                         Application.DoEvents();
-                        // replace the program files, keep nothing else in that folder
+                        progress.Say("Closing the Studio");
+                        StopRunning(target);
+                        Sweep(target);
+                        progress.Say("Installing " + Program.AppName + "...");
+                        // the new copy next to the old one first, then into place
                         string staging = target + ".new";
-                        if (Directory.Exists(staging)) Directory.Delete(staging, true);
-                        CopyTree(home, staging, progress);
-                        if (Directory.Exists(target))
+                        if (Directory.Exists(staging))
                         {
-                            string old = target + ".old";
-                            if (Directory.Exists(old)) Directory.Delete(old, true);
-                            Directory.Move(target, old);
-                            try { Directory.Delete(old, true); } catch { }
+                            try { Directory.Delete(staging, true); }
+                            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException) { staging += "-" + DateTime.UtcNow.Ticks.ToString("x"); }
                         }
-                        Directory.Move(staging, target);
-                        File.Delete(Path.Combine(target, "portable.txt"));
+                        CopyTree(home, staging, progress);
+                        Swap(staging, target);
+                        try { File.Delete(Path.Combine(target, "portable.txt")); } catch { }
                     }
                 }
                 string exe = Path.Combine(target, ExeName);
@@ -94,9 +90,151 @@ namespace Fivem2Open77.Studio
             }
             catch (Exception ex)
             {
-                if (!quiet) MessageBox.Show("Installation failed:\n\n" + ex.Message, Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                if (!quiet) MessageBox.Show("Installation failed:\n\n" + ex.Message + "\n\nClose the Studio and the apps that use its agent " +
+                    "connection (Claude, Cursor, VS Code, Codex), then run the setup again.", Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return 1;
             }
+        }
+
+        // ---------------------------------------------------------------- replacing a copy that is in use
+
+        /// <summary>Close what runs the Studio from the install folder: its window (and the server in the window's job),
+        /// a server an agent app started on its own, and WolvenKit or 7-Zip left from one.  An agent app's MCP bridge
+        /// (runtime\python\python.exe) is left running: the app would start it again at once; Swap moves its files aside.</summary>
+        static void StopRunning(string target)
+        {
+            int me = Process.GetCurrentProcess().Id;
+            foreach (var p in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(ExeName)))
+            {
+                if (p.Id == me || !Under(ImagePath(p), target)) continue;
+                try
+                {
+                    p.CloseMainWindow();
+                    if (!p.WaitForExit(8000)) { p.Kill(); p.WaitForExit(5000); }
+                }
+                catch { }
+            }
+            // the Studio server of the workspace (the one the window ran is gone with it; one an agent started is not)
+            try
+            {
+                string run = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "fivem2open77", "studio", "run", "studio.json");
+                if (File.Exists(run))
+                {
+                    var m = System.Text.RegularExpressions.Regex.Match(File.ReadAllText(run), "\"pid\"\\s*:\\s*(\\d+)");
+                    if (m.Success)
+                    {
+                        var p = Process.GetProcessById(int.Parse(m.Groups[1].Value));
+                        if (Under(ImagePath(p), target)) { p.Kill(); p.WaitForExit(5000); }
+                    }
+                }
+            }
+            catch { }
+            foreach (var name in new[] { "dotnet", "7z" })
+                foreach (var p in Process.GetProcessesByName(name))
+                    try { if (Under(ImagePath(p), target)) { p.Kill(); p.WaitForExit(3000); } } catch { }
+        }
+
+        /// <summary>The new copy into place.  In one move when nothing runs from the old folder; otherwise file by file:
+        /// a file in use cannot be replaced or deleted, but it can be renamed, so it is moved aside (deleted by Sweep
+        /// on a later start) and the new one takes its place.</summary>
+        static void Swap(string staging, string target)
+        {
+            if (!Directory.Exists(target)) { Directory.Move(staging, target); return; }
+            string old = target + ".old";
+            bool moved = false;
+            try
+            {
+                if (Directory.Exists(old)) Directory.Delete(old, true);
+                Directory.Move(target, old);
+                moved = true;
+            }
+            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException) { }
+            if (moved)
+            {
+                try { Directory.Move(staging, target); }
+                catch { try { Directory.Move(old, target); } catch { } throw; }      // never leave no app behind
+                try { Directory.Delete(old, true); } catch { }
+                return;
+            }
+            var keep = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var f in Directory.GetFiles(staging, "*", SearchOption.AllDirectories))
+            {
+                string rel = f.Substring(staging.Length).TrimStart('\\');
+                keep.Add(rel);
+                string dst = Path.Combine(target, rel);
+                Directory.CreateDirectory(Path.GetDirectoryName(dst));
+                if (File.Exists(dst)) Aside(dst, true);
+                File.Move(f, dst);
+            }
+            // what the old version had and this one has not (and stale compiled Python)
+            foreach (var f in Directory.GetFiles(target, "*", SearchOption.AllDirectories))
+            {
+                string rel = f.Substring(target.Length).TrimStart('\\');
+                if (!keep.Contains(rel) && rel.IndexOf(AsideTag, StringComparison.OrdinalIgnoreCase) < 0) Aside(f, false);
+            }
+            RemoveEmptyDirs(target);
+            try { Directory.Delete(staging, true); } catch { }
+        }
+
+        const string AsideTag = ".f2o77-old-";
+
+        /// <summary>Delete a file, or rename it when it is in use.  must: throw when neither works.</summary>
+        static void Aside(string path, bool must)
+        {
+            try { File.SetAttributes(path, FileAttributes.Normal); } catch { }
+            try { File.Delete(path); return; }
+            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException) { }
+            try { File.Move(path, path + AsideTag + DateTime.UtcNow.Ticks.ToString("x")); }
+            catch (Exception e) when (!must && (e is IOException || e is UnauthorizedAccessException)) { }
+        }
+
+        /// <summary>Delete the files an update moved aside, where nothing uses them any more (and the update's leftovers).</summary>
+        public static void Sweep(string target)
+        {
+            try
+            {
+                if (!Directory.Exists(target)) return;
+                foreach (var f in Directory.EnumerateFiles(target, "*" + AsideTag + "*", SearchOption.AllDirectories))
+                {
+                    try { File.SetAttributes(f, FileAttributes.Normal); File.Delete(f); } catch { }
+                }
+                foreach (var d in new[] { target + ".old", target + ".new" })
+                    try { if (Directory.Exists(d)) Directory.Delete(d, true); } catch { }
+            }
+            catch { }
+        }
+
+        static void RemoveEmptyDirs(string dir)
+        {
+            foreach (var d in Directory.GetDirectories(dir))
+            {
+                RemoveEmptyDirs(d);
+                try { if (Directory.GetFileSystemEntries(d).Length == 0) Directory.Delete(d); } catch { }
+            }
+        }
+
+        static bool Under(string path, string dir) =>
+            !string.IsNullOrEmpty(path) && path.StartsWith(dir.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase);
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+        static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool CloseHandle(IntPtr h);
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        static extern bool QueryFullProcessImageName(IntPtr h, int flags, System.Text.StringBuilder name, ref int size);
+
+        /// <summary>A process's exe path (any bitness, limited rights), or null.</summary>
+        static string ImagePath(Process p)
+        {
+            IntPtr h = OpenProcess(0x1000, false, p.Id);          // PROCESS_QUERY_LIMITED_INFORMATION
+            if (h == IntPtr.Zero) return null;
+            try
+            {
+                var sb = new System.Text.StringBuilder(1024);
+                int n = sb.Capacity;
+                return QueryFullProcessImageName(h, 0, sb, ref n) ? sb.ToString(0, n) : null;
+            }
+            finally { CloseHandle(h); }
         }
 
         public static int Uninstall(string home, bool quiet)
@@ -108,6 +246,7 @@ namespace Fivem2Open77.Studio
                     " are kept.", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question);
                 if (r != DialogResult.Yes) return 1;
             }
+            StopRunning(InstallDir);
             foreach (var l in new[] { StartMenuLink, DesktopLink }) { try { File.Delete(l); } catch { } }
             try { Registry.CurrentUser.DeleteSubKeyTree(UninstallKey, false); } catch { }
             // the running exe cannot delete its own folder: a short-lived cmd does it after we exit
@@ -184,5 +323,7 @@ namespace Fivem2Open77.Studio
         }
 
         public void Set(int pct) { hud.Progress = pct; hud.Refresh(); }
+
+        public void Say(string text) { hud.Status = text; hud.Refresh(); Application.DoEvents(); }
     }
 }

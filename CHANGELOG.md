@@ -26,6 +26,15 @@
   (about a minute) with the blocks. The cache grows from about 8 MB to about 21 MB; it stays on
   this computer.
 
+### Setup
+
+* **Fixed:** updating failed with *Access to the path is denied* while an agent app (Claude,
+  Cursor, VS Code, Codex) had the Studio's MCP connection open: its bridge runs
+  `runtime\python\python.exe` from the install folder, so the folder could not be moved. The setup
+  now closes the Studio, its server and WolvenKit runs left from one, and when something still runs
+  from the folder it replaces the files one by one: a file in use is renamed out of the way (Windows
+  allows that) and deleted on a later start. The agent apps keep their connection.
+
 ## Studio 1.5.2 · converter 1.4.2 (2026-10-14)
 
 ### Liberty V (and any big map) imports
