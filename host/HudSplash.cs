@@ -77,6 +77,9 @@ namespace Fivem2Open77.Studio
         PointF[] hexes = new PointF[0];
         readonly PointF[] hexUnit = new PointF[6];
         Bitmap backdrop;                         // gradient, vignette and the dim lattice, per size
+        float S = 1f;                            // device pixels per logical (96 dpi) pixel
+        float LW => Width / S;                   // the logical size everything is laid out in
+        float LH => Height / S;
         Font titleFont, tagFont, monoFont, monoSmall, glyphFont;
 
         public HudSplash()
@@ -89,11 +92,11 @@ namespace Fivem2Open77.Studio
                 double a = Math.PI / 6 + i * Math.PI / 3;           // pointy-top hexagon
                 hexUnit[i] = new PointF((float)Math.Cos(a), (float)Math.Sin(a));
             }
-            titleFont = new Font("Segoe UI Light", 30f, FontStyle.Regular, GraphicsUnit.Point);
-            tagFont = new Font("Consolas", 10.5f, FontStyle.Bold, GraphicsUnit.Point);
-            monoFont = new Font("Consolas", 10f, FontStyle.Regular, GraphicsUnit.Point);
-            monoSmall = new Font("Consolas", 8.5f, FontStyle.Regular, GraphicsUnit.Point);
-            glyphFont = new Font("Segoe UI Semibold", 30f, FontStyle.Regular, GraphicsUnit.Point);
+            titleFont = new Font("Segoe UI Light", 30f * 96f / 72f, FontStyle.Regular, GraphicsUnit.Pixel);
+            tagFont = new Font("Consolas", 10.5f * 96f / 72f, FontStyle.Bold, GraphicsUnit.Pixel);
+            monoFont = new Font("Consolas", 10f * 96f / 72f, FontStyle.Regular, GraphicsUnit.Pixel);
+            monoSmall = new Font("Consolas", 8.5f * 96f / 72f, FontStyle.Regular, GraphicsUnit.Pixel);
+            glyphFont = new Font("Segoe UI Semibold", 30f * 96f / 72f, FontStyle.Regular, GraphicsUnit.Pixel);
             timer.Tick += (s, e) => { Step(); Invalidate(); };
         }
 
@@ -121,10 +124,33 @@ namespace Fivem2Open77.Studio
         }
 
         // ------------------------------------------------------------------ input
+        // the monitor's dpi: Control.DeviceDpi (.NET 4.7+, per-monitor aware); 96 where it does not exist
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        int MonitorDpi() => DeviceDpi;
+
+        void UpdateScale()
+        {
+            float dpi = 96f;
+            try { dpi = MonitorDpi(); } catch { }
+            // F2O77_UI_SCALE overrides it (a projector, a remote session that reports the wrong dpi)
+            if (float.TryParse(Environment.GetEnvironmentVariable("F2O77_UI_SCALE") ?? "", System.Globalization.NumberStyles.Float,
+                               System.Globalization.CultureInfo.InvariantCulture, out float forced) && forced > 0)
+                dpi = forced * 96f;
+            S = Math.Max(1f, Math.Min(4f, dpi / 96f));
+        }
+
+        protected override void OnDpiChangedAfterParent(EventArgs e)
+        {
+            base.OnDpiChangedAfterParent(e);
+            OnResize(EventArgs.Empty);
+        }
+
+        PointF Logical(MouseEventArgs e) => new PointF(e.X / S, e.Y / S);
+
         protected override void OnMouseMove(MouseEventArgs e)
         {
             base.OnMouseMove(e);
-            var p = new PointF(e.X, e.Y);
+            var p = Logical(e);
             if (!inside) { reticle = p; inside = true; }
             float dx = p.X - mouse.X, dy = p.Y - mouse.Y;
             float speed = (float)Math.Sqrt(dx * dx + dy * dy);
@@ -146,7 +172,7 @@ namespace Fivem2Open77.Studio
         protected override void OnMouseDown(MouseEventArgs e)
         {
             base.OnMouseDown(e);
-            var p = new PointF(e.X, e.Y);
+            var p = Logical(e);
             waves.Add(new Wave { P = p, T = Now, Rot = (float)(rnd.NextDouble() * Math.PI) });
             for (int i = 0; i < 18; i++) AddSpark(p, 1.5f + (float)rnd.NextDouble() * 3.5f, i % 3 == 0 ? Y : i % 3 == 1 ? M : A);
             if (e.Button == MouseButtons.Left && action != null && actionRect.Contains(p)) action();
@@ -185,7 +211,7 @@ namespace Fivem2Open77.Studio
             {
                 motes[i].Y -= motes[i].Speed * dt;
                 motes[i].X += (float)Math.Sin(now * 0.6 + motes[i].Phase) * 6 * dt;
-                if (motes[i].Y < -8) { motes[i].Y = Height + 8; motes[i].X = (float)rnd.NextDouble() * Width; }
+                if (motes[i].Y < -8) { motes[i].Y = LH + 8; motes[i].X = (float)rnd.NextDouble() * LW; }
             }
             // the lock brackets ease onto the button under the cursor, or shrink back to the reticle
             bool locking = inside && !actionRect.IsEmpty && actionRect.Contains(mouse);
@@ -201,10 +227,11 @@ namespace Fivem2Open77.Studio
         {
             base.OnResize(e);
             if (Width < 8 || Height < 8) return;
+            UpdateScale();
             var list = new List<PointF>();
             float w = (float)(Math.Sqrt(3) * HexR), h = 1.5f * HexR;
-            for (int row = -1; row * h < Height + h; row++)
-                for (int col = -1; col * w < Width + w; col++)
+            for (int row = -1; row * h < LH + h; row++)
+                for (int col = -1; col * w < LW + w; col++)
                     list.Add(new PointF(col * w + ((row & 1) != 0 ? w / 2 : 0), row * h));
             hexes = list.ToArray();
             if (motes.Length == 0)
@@ -213,7 +240,7 @@ namespace Fivem2Open77.Studio
                 for (int i = 0; i < motes.Length; i++)
                     motes[i] = new Mote
                     {
-                        X = (float)rnd.NextDouble() * Width, Y = (float)rnd.NextDouble() * Height,
+                        X = (float)rnd.NextDouble() * LW, Y = (float)rnd.NextDouble() * LH,
                         Speed = 6 + (float)rnd.NextDouble() * 22, Size = 1f + (float)rnd.NextDouble() * 1.6f, Phase = (float)rnd.NextDouble() * 6.28f,
                     };
             }
@@ -227,21 +254,22 @@ namespace Fivem2Open77.Studio
             using (var g = Graphics.FromImage(backdrop))
             {
                 g.SmoothingMode = SmoothingMode.AntiAlias;
-                using (var b = new LinearGradientBrush(new Rectangle(0, 0, Width, Height), Bg1, Bg0, 90f))
-                    g.FillRectangle(b, 0, 0, Width, Height);
+                g.ScaleTransform(S, S);
+                using (var b = new LinearGradientBrush(new RectangleF(0, 0, LW, LH), Bg1, Bg0, 90f))
+                    g.FillRectangle(b, 0, 0, LW, LH);
                 DrawNebula(g, 0f);
                 using (var pen = new Pen(Color.FromArgb(14, A), 1f))
                     foreach (var c in hexes) g.DrawPolygon(pen, Hex(c, HexR - 1.5f));
                 // vignette
                 using (var path = new GraphicsPath())
                 {
-                    path.AddEllipse(-Width * 0.25f, -Height * 0.3f, Width * 1.5f, Height * 1.6f);
+                    path.AddEllipse(-LW * 0.25f, -LH * 0.3f, LW * 1.5f, LH * 1.6f);
                     using (var pg = new PathGradientBrush(path))
                     {
                         pg.CenterColor = Color.FromArgb(0, 0, 0, 0);
                         pg.SurroundColors = new[] { Color.FromArgb(200, 0, 0, 0) };
                         pg.FocusScales = new PointF(0.55f, 0.5f);
-                        g.FillRectangle(pg, 0, 0, Width, Height);
+                        g.FillRectangle(pg, 0, 0, LW, LH);
                     }
                 }
             }
@@ -269,16 +297,17 @@ namespace Fivem2Open77.Studio
         protected override void OnPaint(PaintEventArgs e)
         {
             var g = e.Graphics;
-            if (Width < 240 || Height < 240) { g.Clear(Bg0); return; }       // minimised or tiny: nothing to show
+            if (Width < 240 || Height < 240) { g.Clear(Bg0); return; }   // minimised or tiny: nothing to show
             if (backdrop == null || backdrop.Width != Width || backdrop.Height != Height) OnResize(EventArgs.Empty);
             if (backdrop == null) return;
             float t = Now;
             g.DrawImageUnscaled(backdrop, 0, 0);
+            g.ScaleTransform(S, S);
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
             g.PixelOffsetMode = PixelOffsetMode.HighQuality;
 
-            var center = new PointF(Width / 2f, Height * 0.39f);
+            var center = new PointF(LW / 2f, LH * 0.39f);
             // the emblem leans towards the cursor
             if (inside) center = new PointF(center.X + (reticle.X - center.X) * 0.018f, center.Y + (reticle.Y - center.Y) * 0.018f);
 
@@ -311,36 +340,36 @@ namespace Fivem2Open77.Studio
                 }
             }
             const float px = 0, py = 0;
-            blob(Width * 0.28f + (float)Math.Sin(t * 0.11) * 60 - px, Height * 0.30f + (float)Math.Cos(t * 0.13) * 40 - py, Width * 0.36f, M, 26);
-            blob(Width * 0.74f + (float)Math.Cos(t * 0.09) * 70 - px, Height * 0.42f + (float)Math.Sin(t * 0.12) * 50 - py, Width * 0.40f, A, 22);
-            blob(Width * 0.5f, Height * 0.39f, 240, A, 18);
+            blob(LW * 0.28f + (float)Math.Sin(t * 0.11) * 60 - px, LH * 0.30f + (float)Math.Cos(t * 0.13) * 40 - py, LW * 0.36f, M, 26);
+            blob(LW * 0.74f + (float)Math.Cos(t * 0.09) * 70 - px, LH * 0.42f + (float)Math.Sin(t * 0.12) * 50 - py, LW * 0.40f, A, 22);
+            blob(LW * 0.5f, LH * 0.39f, 240, A, 18);
         }
 
         void DrawHorizon(Graphics g, float t)
         {
-            float hy = Height * 0.72f, vx = Width / 2f + (inside ? (reticle.X - Width / 2f) * -0.04f : 0);
-            g.SetClip(new RectangleF(0, hy, Width, Height - hy));
+            float hy = LH * 0.72f, vx = LW / 2f + (inside ? (reticle.X - LW / 2f) * -0.04f : 0);
+            g.SetClip(new RectangleF(0, hy, LW, LH - hy));
             // lines running towards you
             float phase = (t * 0.32f) % 1f;
             for (int i = 0; i < 18; i++)
             {
                 float k = (i + phase) / 18f;
-                float y = hy + (Height - hy) * (float)Math.Pow(k, 2.3);
+                float y = hy + (LH - hy) * (float)Math.Pow(k, 2.3);
                 using (var pen = new Pen(Alpha(Mix(M, A, k), 0.05f + 0.32f * k), 1f))
-                    g.DrawLine(pen, 0, y, Width, y);
+                    g.DrawLine(pen, 0, y, LW, y);
             }
             // lines to the vanishing point
             for (int i = -24; i <= 24; i++)
             {
-                float bx = vx + i * Width / 13f;
+                float bx = vx + i * LW / 13f;
                 using (var pen = new Pen(Alpha(A, 0.14f - Math.Abs(i) * 0.004f), 1f))
-                    g.DrawLine(pen, vx + i * 6f, hy, bx, Height);
+                    g.DrawLine(pen, vx + i * 6f, hy, bx, LH);
             }
             g.ResetClip();
             // the horizon itself
-            using (var b = new LinearGradientBrush(new RectangleF(0, hy - 60, Width, 61), Color.FromArgb(0, A), Color.FromArgb(34, A), 90f))
-                g.FillRectangle(b, 0, hy - 60, Width, 60);
-            using (var b = new LinearGradientBrush(new RectangleF(0, hy, Width, 2), Color.FromArgb(0, A), Color.FromArgb(0, A), 0f))
+            using (var b = new LinearGradientBrush(new RectangleF(0, hy - 60, LW, 61), Color.FromArgb(0, A), Color.FromArgb(34, A), 90f))
+                g.FillRectangle(b, 0, hy - 60, LW, 60);
+            using (var b = new LinearGradientBrush(new RectangleF(0, hy, LW, 2), Color.FromArgb(0, A), Color.FromArgb(0, A), 0f))
             {
                 var blend = new ColorBlend
                 {
@@ -348,7 +377,7 @@ namespace Fivem2Open77.Studio
                     Positions = new[] { 0f, 0.3f, 0.5f, 0.7f, 1f },
                 };
                 b.InterpolationColors = blend;
-                g.FillRectangle(b, 0, hy - 0.5f, Width, 1.5f);
+                g.FillRectangle(b, 0, hy - 0.5f, LW, 1.5f);
             }
         }
 
@@ -438,12 +467,12 @@ namespace Fivem2Open77.Studio
 
         void DrawScan(Graphics g, float t)
         {
-            float period = 5.5f, y = ((t % period) / period) * (Height + 160) - 80;
-            var r = new RectangleF(0, y - 70, Width, 70);
+            float period = 5.5f, y = ((t % period) / period) * (LH + 160) - 80;
+            var r = new RectangleF(0, y - 70, LW, 70);
             using (var b = new LinearGradientBrush(r, Color.FromArgb(0, A), Color.FromArgb(20, A), 90f))
                 g.FillRectangle(b, r);
             using (var pen = new Pen(Color.FromArgb(70, A), 1f))
-                g.DrawLine(pen, 0, y, Width, y);
+                g.DrawLine(pen, 0, y, LW, y);
         }
 
         void DrawEmblem(Graphics g, PointF c, float t)
@@ -498,7 +527,7 @@ namespace Fivem2Open77.Studio
             using (var path = new GraphicsPath())
             {
                 var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-                float em = g.DpiY * glyphFont.SizeInPoints / 72f;
+                float em = glyphFont.Size;                                  // logical pixels (GraphicsUnit.Pixel)
                 var style = glyphFont.FontFamily.IsStyleAvailable(FontStyle.Regular) ? FontStyle.Regular : glyphFont.Style;
                 path.AddString("F", glyphFont.FontFamily, (int)style, em, new RectangleF(c.X - 50, c.Y - 52, 100, 104), fmt);
                 foreach (var (w, a) in new[] { (9f, 0.08f), (5f, 0.16f), (2.5f, 0.32f) })
@@ -527,7 +556,7 @@ namespace Fivem2Open77.Studio
             }
             string s = sb.ToString();
             var size = g.MeasureString(Caption, titleFont);
-            float x = Width / 2f - size.Width / 2f;
+            float x = LW / 2f - size.Width / 2f;
             using (var b = new SolidBrush(Alpha(A, 0.12f)))
                 g.DrawString(s, titleFont, b, x + 1.5f, y + 1.5f);
             using (var b = new SolidBrush(Ink))
@@ -538,7 +567,7 @@ namespace Fivem2Open77.Studio
             var typo = StringFormat.GenericTypographic;
             foreach (char ch in Tagline) tw += g.MeasureString(ch.ToString(), tagFont, 100, typo).Width + spacing;
             tw -= spacing;
-            float tx = Width / 2f - tw / 2f;
+            float tx = LW / 2f - tw / 2f;
             using (var b = new SolidBrush(Alpha(A, Math.Min(1f, Math.Max(0f, (t - 0.9f) * 2.5f)))))
                 foreach (char ch in Tagline)
                 {
@@ -549,8 +578,8 @@ namespace Fivem2Open77.Studio
             using (var pen = new Pen(Alpha(A, 0.35f), 1f))
             {
                 float mid = ty + 9, half = tw / 2f + 16;
-                g.DrawLine(pen, Width / 2f - half - 90, mid, Width / 2f - half, mid);
-                g.DrawLine(pen, Width / 2f + half, mid, Width / 2f + half + 90, mid);
+                g.DrawLine(pen, LW / 2f - half - 90, mid, LW / 2f - half, mid);
+                g.DrawLine(pen, LW / 2f + half, mid, LW / 2f + half + 90, mid);
             }
             return ty + 22;
         }
@@ -561,10 +590,10 @@ namespace Fivem2Open77.Studio
             string line = "// " + (Status ?? "").ToUpperInvariant() + new string('.', dots);
             var fmt = new StringFormat { Alignment = StringAlignment.Center };
             using (var b = new SolidBrush(Alpha(Ink, 0.92f)))
-                g.DrawString(line, monoFont, b, new RectangleF(0, y, Width, 22), fmt);
+                g.DrawString(line, monoFont, b, new RectangleF(0, y, LW, 22), fmt);
             // the progress bar: segments, a packet when the length of the work is unknown
             const int segs = 44;
-            float seg = 8f, gap = 2.4f, bw = segs * (seg + gap) - gap, bx = Width / 2f - bw / 2f, by = y + 30;
+            float seg = 8f, gap = 2.4f, bw = segs * (seg + gap) - gap, bx = LW / 2f - bw / 2f, by = y + 30;
             using (var b = new SolidBrush(A))
             {
                 for (int i = 0; i < segs; i++)
@@ -598,7 +627,7 @@ namespace Fivem2Open77.Studio
             if (!string.IsNullOrEmpty(Detail))
             {
                 using (var b = new SolidBrush(Dim))
-                    g.DrawString(Detail, monoSmall, b, new RectangleF(40, ny, Width - 80, 60), fmt);
+                    g.DrawString(Detail, monoSmall, b, new RectangleF(40, ny, LW - 80, 60), fmt);
                 ny += 34;
             }
             // the one button
@@ -606,7 +635,7 @@ namespace Fivem2Open77.Studio
             if (!string.IsNullOrEmpty(actionLabel))
             {
                 var sz = g.MeasureString(actionLabel.ToUpperInvariant(), monoFont);
-                var r = new RectangleF(Width / 2f - sz.Width / 2f - 22, ny + 4, sz.Width + 44, 34);
+                var r = new RectangleF(LW / 2f - sz.Width / 2f - 22, ny + 4, sz.Width + 44, 34);
                 actionRect = r;
                 bool hot = inside && r.Contains(mouse);
                 using (var b = new LinearGradientBrush(r, Alpha(A, hot ? 0.95f : 0.8f), Alpha(Mix(A, M, 0.35f), hot ? 0.95f : 0.75f), 0f))
@@ -629,12 +658,12 @@ namespace Fivem2Open77.Studio
             using (var pen = new Pen(Alpha(A, 0.6f), 1.5f))
             {
                 g.DrawLines(pen, new[] { new PointF(m, m + L), new PointF(m, m), new PointF(m + L, m) });
-                g.DrawLines(pen, new[] { new PointF(Width - m - L, m), new PointF(Width - m, m), new PointF(Width - m, m + L) });
-                g.DrawLines(pen, new[] { new PointF(m, Height - m - L), new PointF(m, Height - m), new PointF(m + L, Height - m) });
-                g.DrawLines(pen, new[] { new PointF(Width - m - L, Height - m), new PointF(Width - m, Height - m), new PointF(Width - m, Height - m - L) });
+                g.DrawLines(pen, new[] { new PointF(LW - m - L, m), new PointF(LW - m, m), new PointF(LW - m, m + L) });
+                g.DrawLines(pen, new[] { new PointF(m, LH - m - L), new PointF(m, LH - m), new PointF(m + L, LH - m) });
+                g.DrawLines(pen, new[] { new PointF(LW - m - L, LH - m), new PointF(LW - m, LH - m), new PointF(LW - m, LH - m - L) });
             }
             // a light running along the top hairline
-            using (var b = new LinearGradientBrush(new RectangleF(m + L + 10, m - 1, Width - 2 * (m + L + 10), 2), Color.FromArgb(0, A), Color.FromArgb(0, A), 0f))
+            using (var b = new LinearGradientBrush(new RectangleF(m + L + 10, m - 1, LW - 2 * (m + L + 10), 2), Color.FromArgb(0, A), Color.FromArgb(0, A), 0f))
             {
                 float head = (t * 0.25f) % 1f;
                 b.InterpolationColors = new ColorBlend
@@ -642,7 +671,7 @@ namespace Fivem2Open77.Studio
                     Colors = new[] { Color.FromArgb(10, A), Color.FromArgb(10, A), Color.FromArgb(170, A), Color.FromArgb(150, M), Color.FromArgb(10, A), Color.FromArgb(10, A) },
                     Positions = new[] { 0f, Math.Max(0.001f, head - 0.12f), Math.Max(0.002f, head - 0.02f), Math.Min(0.998f, head + 0.02f), Math.Min(0.999f, head + 0.08f), 1f },
                 };
-                g.FillRectangle(b, m + L + 10, m - 0.5f, Width - 2 * (m + L + 10), 1f);
+                g.FillRectangle(b, m + L + 10, m - 0.5f, LW - 2 * (m + L + 10), 1f);
             }
             using (var b = new SolidBrush(Alpha(A, 0.75f)))
             using (var d = new SolidBrush(Dim))
@@ -651,15 +680,15 @@ namespace Fivem2Open77.Studio
                 g.DrawString("STUDIO " + (string.IsNullOrEmpty(Version) ? "" : "v" + Version), monoSmall, d, m + 10, m + 22);
                 string right = "NEURAL HUD // NC-77";
                 var rs = g.MeasureString(right, monoSmall);
-                g.DrawString(right, monoSmall, b, Width - m - 10 - rs.Width, m + 8);
+                g.DrawString(right, monoSmall, b, LW - m - 10 - rs.Width, m + 8);
                 string link = "LINK " + (Progress < 0 ? "SYNC" : "XFER") + "  " + ((int)(t * 12) % 2 == 0 ? "■" : "□");
                 var ls = g.MeasureString(link, monoSmall);
-                g.DrawString(link, monoSmall, d, Width - m - 10 - ls.Width, m + 22);
+                g.DrawString(link, monoSmall, d, LW - m - 10 - ls.Width, m + 22);
                 string cur = inside ? $"CURSOR  X {(int)mouse.X:0000}  Y {(int)mouse.Y:0000}" : "CURSOR  X ----  Y ----";
-                g.DrawString(cur, monoSmall, d, m + 10, Height - m - 22);
+                g.DrawString(cur, monoSmall, d, m + 10, LH - m - 22);
                 string clock = $"T+{t:00.00}s";
                 var cs = g.MeasureString(clock, monoSmall);
-                g.DrawString(clock, monoSmall, b, Width - m - 10 - cs.Width, Height - m - 22);
+                g.DrawString(clock, monoSmall, b, LW - m - 10 - cs.Width, LH - m - 22);
             }
         }
 
