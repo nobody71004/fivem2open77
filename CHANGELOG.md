@@ -1,5 +1,15 @@
 # Changelog
 
+## Studio 1.6.3 · converter 1.6.0 (2026-10-18)
+
+### A car deploy that cannot read the server installs nothing
+
+* Deploying one car first reads which car bundles the server has, so that a car carried in a bundle
+  is re-packed with it. When that read failed (the server not answering SSH, say), the Studio went on
+  and installed the car on its own, and a server that carried it in a bundle would then have defined
+  its record twice. It now stops there, installs nothing and says so: deploy again when the server
+  answers.
+
 ## Studio 1.6.2 · converter 1.6.0 (2026-10-18)
 
 ### Maps shipped as a single-player dlc.rpf

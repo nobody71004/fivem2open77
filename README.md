@@ -236,7 +236,8 @@ page, or `deploy_all_cars` for agents) installs every car whose latest build is 
 server script announcing each car to the car hub. A car keeps its bundle from one deploy to the next
 (read back from the server's bundles), so only bundles whose cars changed are re-packed and players
 download only those; a car installed on its own stays on its own and is updated in place. Deploying
-one car that the server carries in a bundle re-packs that bundle.
+one car that the server carries in a bundle re-packs that bundle, and a deploy that cannot read the
+server's bundles installs nothing rather than risk defining a car's record twice.
 
 ## Notes for Open77 servers
 

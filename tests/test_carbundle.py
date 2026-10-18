@@ -195,3 +195,44 @@ def test_studio_repacks_only_changed_bundles(tmp_path, monkeypatch):
     assert any("f2o77_cars_1 unchanged" in l for l in job.lines)
     assert best["Vehicle.urus"]["project"].data["deployments"][-1]["bundle"] == "f2o77_cars_2"
     assert "deployments" not in best["Vehicle.a80"]["project"].data
+
+
+def test_studio_installs_nothing_when_the_server_cannot_be_read(tmp_path, monkeypatch):
+    """A car is never installed on its own on a guess: the server could carry it in a car bundle,
+    and its record would then be defined twice. A server whose bundles cannot be read refuses."""
+    from fivem2open77.studio.app import Studio
+    from fivem2open77.studio.projects import ProjectError
+    out = str(tmp_path / "proj" / "builds" / "2" / "out")
+    _car(out, "a80")
+    p = _Proj("p1")
+    p.kind = "car"
+    p.data = {"name": "a80", "builds": [{"n": 2, "ok": True}]}
+    p.latest_build = lambda: p.data["builds"][-1]
+    p.build_dir = lambda n: str(tmp_path / "proj" / "builds" / str(n))
+    ran = {}
+
+    def submit(kind, title, fn, project=None, **kw):
+        job = _Job()
+        try:
+            ran["result"] = fn(job)
+        except Exception as e:  # noqa: BLE001 - the job's own failure is what is checked
+            ran["error"] = e
+        ran["lines"] = job.lines
+        return job
+
+    def unreachable(*a, **k):
+        raise deploy_mod.DeployError("cannot reach 203.0.113.7:22: timed out")
+
+    def must_not_install(*a, **k):
+        raise AssertionError("a car was installed on a guess")
+
+    monkeypatch.setattr(deploy_mod, "car_inventory", unreachable)
+    monkeypatch.setattr(deploy_mod, "deploy", must_not_install)
+    me = types.SimpleNamespace(projects=types.SimpleNamespace(get=lambda pid: p),
+                               settings=types.SimpleNamespace(get=lambda: {"deploy": {"mode": "stage"}}),
+                               jobs=types.SimpleNamespace(submit=submit), secrets=None,
+                               _server=lambda sid: {"id": sid, "label": "XyberRP"})
+    Studio.deploy(me, "p1", "xyberrp", mode="files")
+    assert isinstance(ran.get("error"), ProjectError), ran
+    assert "nothing was installed" in str(ran["error"]) and "timed out" in str(ran["error"])
+    assert "deployments" not in p.data

@@ -29,7 +29,7 @@ from .settings import Settings
 from .tools import Toolbox
 from .worldops import WorldOps
 
-APP_VERSION = "1.6.2"
+APP_VERSION = "1.6.3"
 
 
 def _stamp(path) -> list:
@@ -656,8 +656,10 @@ class Studio(MapOps, WorldOps):
             try:
                 inv = deploy_mod.car_inventory(server, self.secrets, names, log=job.log)
             except deploy_mod.DeployError as e:
-                job.log(f"could not read the server's car bundles ({e}): installing the car on its own")
-                inv = {}
+                # never installed on its own on a guess: a car the server carries in a bundle would then
+                # define its record twice (and a server that cannot be read now cannot be written either)
+                raise ProjectError(f"could not read the server's car bundles ({e}): nothing was installed; "
+                                   "deploy again when the server answers") from e
             inbundle = {f: sorted(b for b, i in (d.get("bundles") or {}).items() if records & set(i.get("records") or []))
                         for f, d in inv.items()}
             if any(inbundle.values()):
