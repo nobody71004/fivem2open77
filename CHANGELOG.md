@@ -1,5 +1,17 @@
 # Changelog
 
+## Studio 1.6.2 · converter 1.6.0 (2026-10-18)
+
+### Maps shipped as a single-player dlc.rpf
+
+* A map packed the single-player way, one OpenIV `dlc.rpf` with its models and placements in a
+  nested `x64/levels/gta5/<name>.rpf` (the Eiffel Tower is one), is unpacked on import like a
+  single-player car, so the map converter sees its `.ymap` and `.ydr` files. It used to find
+  none, and the Studio could neither look at the map nor build it. An archive that cannot be read
+  is named in the error instead of being skipped in silence.
+
+The converter's car output is unchanged, so builds from 1.6.1 stay current: nothing is rebuilt.
+
 ## Studio 1.6.1 · converter 1.6.0 (2026-10-18)
 
 ### Faster cars with more grip and stronger brakes
