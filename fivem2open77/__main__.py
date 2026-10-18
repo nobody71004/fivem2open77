@@ -16,6 +16,7 @@ import argparse
 import json
 import os
 import sys
+import time
 
 from . import pipeline
 from . import profile as profile_mod
@@ -104,6 +105,59 @@ def cmd_studio(a):
     return studio_main(a)
 
 
+def cmd_qc(a):
+    """Quality sweep of every Studio project (what Windows Task Scheduler runs, see studio/qcsweep.py):
+    the running Studio does it (started without a window when it is not running); --in-process runs
+    it here, without a Studio (one at a time per workspace)."""
+    from .studio.paths import default_workspace
+    ws = os.path.abspath(a.workspace or os.environ.get("F2O77_WORKSPACE") or default_workspace())
+    rebuild = True if a.rebuild else (False if a.no_rebuild else None)
+    if a.in_process:
+        from .studio.app import Studio
+        from .studio.server import running_instance
+        if running_instance(ws):
+            raise SystemExit("error: a Studio runs on this workspace: run `qc` without --in-process (it asks that Studio)")
+        st = Studio(ws)
+        try:
+            job = st.qc.run_job(rebuild=rebuild)
+            st.jobs.wait(job)
+            res = job.result if job.state == "done" else {"error": job.error, "state": job.state}
+        finally:
+            st.close()
+        print(json.dumps(res, indent=1, default=str))
+        return 0 if job.state == "done" and res.get("ok") else 1
+    from .studio.bridge import Bridge, BridgeError
+    logs = os.path.join(ws, "logs")
+    os.makedirs(logs, exist_ok=True)
+    b = Bridge(ws, headless=True, log=os.path.join(logs, "qc-task.log"))
+    try:
+        b.ensure(wait=240.0)
+        b._initialize({"protocolVersion": "2025-06-18", "capabilities": {},
+                       "clientInfo": {"name": "fivem2open77-qc", "version": "1"}}, 1)
+        args = {} if rebuild is None else {"rebuild": rebuild}
+        st, _, data = b._post({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                               "params": {"name": "run_qc", "arguments": args}})
+        ans = json.loads(data or b"{}")
+        txt = "".join(c.get("text", "") for c in ((ans.get("result") or {}).get("content") or []))
+        out = json.loads(txt) if txt.strip().startswith("{") else {"answer": txt or ans}
+        job = out.get("job") if out.get("status") == "running" else None
+        t0 = time.time()
+        while job and a.wait and time.time() - t0 < a.wait:
+            st, _, data = b._post({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                                   "params": {"name": "wait_job", "arguments": {"job": job, "seconds": 50}}})
+            ans = json.loads(data or b"{}")
+            txt = "".join(c.get("text", "") for c in ((ans.get("result") or {}).get("content") or []))
+            out = json.loads(txt) if txt.strip().startswith("{") else {"answer": txt}
+            if out.get("status") != "running":
+                break
+        b.log("quality sweep: " + json.dumps(out, default=str)[:400])
+        print(json.dumps(out, indent=1, default=str))
+        return 0
+    except BridgeError as e:
+        b.log(f"quality sweep: {e}")
+        raise SystemExit(f"error: {e}")
+
+
 def cmd_donor(a):
     wk = WolvenKit(a.wolvenkit, verbose=a.verbose)
     game = _game_dir(a.game)
@@ -174,6 +228,14 @@ def main(argv=None):
     mc.add_argument("--headless", action="store_true", help="start the Studio without its window (stops when idle)")
     mc.add_argument("--log", help="write the bridge's log here (default: <workspace>/logs/mcp-bridge.log)")
     mc.set_defaults(fn=cmd_mcp)
+
+    qc = sub.add_parser("qc", help="quality sweep of every Studio project (rebuilds what fails or is stale)")
+    qc.add_argument("--workspace", help="the Studio's projects/settings folder (default: the usual one)")
+    qc.add_argument("--rebuild", action="store_true", help="rebuild what fails or is stale (default: the qc.auto_rebuild setting)")
+    qc.add_argument("--no-rebuild", action="store_true", help="only check")
+    qc.add_argument("--wait", type=float, default=0, metavar="SECONDS", help="wait this long for the sweep to finish")
+    qc.add_argument("--in-process", action="store_true", help="run the sweep here, without a Studio")
+    qc.set_defaults(fn=cmd_qc)
 
     d = sub.add_parser("donor", help="extract and cache donor files from the game")
     d.add_argument("--donor", action="append", choices=sorted(DONORS))

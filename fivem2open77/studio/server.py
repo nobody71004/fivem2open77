@@ -883,6 +883,34 @@ def api_server_action(h, q, sid, action):
     h.json(job.summary())
 
 
+# ---------------------------------------------------------------- quality checks (qcsweep.py)
+@route("GET", r"/api/qc")
+def api_qc(h, q):
+    h.json(h.studio.qc.view())
+
+
+@route("POST", r"/api/qc/run")
+def api_qc_run(h, q):
+    b = h.body_json() or {}
+    only = b.get("projects")
+    if only is not None and not (isinstance(only, list) and all(isinstance(x, str) for x in only)):
+        raise HttpError(400, "projects: a list of project ids")
+    rebuild = b.get("rebuild")
+    job = h.studio.qc.run_job(rebuild=None if rebuild is None else bool(rebuild), only=only or None)
+    h.json(job.summary())
+
+
+@route("POST", r"/api/qc/schedule")
+def api_qc_schedule(h, q):
+    from .qcsweep import install_schedule
+    b = h.body_json() or {}
+    try:
+        h.json(install_schedule(int(b.get("hours") or h.studio.settings.get()["qc"]["interval_hours"]),
+                                enable=b.get("enable") is not False))
+    except RuntimeError as e:
+        raise HttpError(400, str(e))
+
+
 # ---------------------------------------------------------------- fleet: versions and the one-click upgrade
 @route("POST", r"/api/fleet/(status|upgrade)")
 def api_fleet(h, q, action):
@@ -1185,6 +1213,7 @@ def serve(host="127.0.0.1", port=0, workspace=None, token=None, ready_file=None,
     os.replace(inst + ".tmp", inst)
     if idle_exit:
         threading.Thread(target=_idle_watch, args=(httpd, studio, float(idle_exit)), daemon=True).start()
+    studio.qc.start()                   # quality sweeps on their clock (qcsweep.py)
     if on_ready is not None:            # tests: the server and its Studio
         on_ready(httpd, studio)
     print(f"fivem2open77 Studio on http://127.0.0.1:{real_port}/  (open {url})", flush=True)

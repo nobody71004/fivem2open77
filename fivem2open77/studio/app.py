@@ -29,7 +29,7 @@ from .settings import Settings
 from .tools import Toolbox
 from .worldops import WorldOps
 
-APP_VERSION = "1.5.3"
+APP_VERSION = "1.6.0"
 
 
 def _stamp(path) -> list:
@@ -63,6 +63,8 @@ class Studio(MapOps, WorldOps):
         self.agents = None          # set by agent.manager
         from .mcp import McpHub
         self.mcp = McpHub(self)     # agents outside the Studio (mcp.py)
+        from .qcsweep import QualityControl
+        self.qc = QualityControl(self)   # quality checks around the clock (qcsweep.py); serve() starts its clock
 
     # ------------------------------------------------------------------ tools
     def toolbox(self, refresh=False) -> Toolbox:
@@ -102,9 +104,11 @@ class Studio(MapOps, WorldOps):
         return s
 
     def state(self) -> dict:
+        qc = self.qc.report or {}
         return {"version": APP_VERSION, "converter": VERSION, "workspace": self.workspace,
                 "settings": self.redacted_settings(), "tools": self.tools_status(),
-                "projects": self.projects.list(), "jobs": self.jobs.list()[:50]}
+                "projects": self.projects.list(), "jobs": self.jobs.list()[:50],
+                "qc": {"time": qc.get("time"), "ok": qc.get("ok"), "counts": qc.get("counts") or {}}}
 
     def set_secret(self, key: str, value: str | None):
         if not SECRET_KEYS.match(key or ""):
@@ -558,7 +562,10 @@ class Studio(MapOps, WorldOps):
                 raise
             finally:
                 info["seconds"] = round(time.time() - t0, 1)
+                info["converter"] = VERSION
+                info["studio"] = APP_VERSION
                 p.add_build(info)
+                self.qc.after_build(p.id)
 
         return self.jobs.submit("build", f"Build {p.data['name']}", run, project=p.id, heavy=True)
 
@@ -756,5 +763,6 @@ class Studio(MapOps, WorldOps):
         return deploy_mod.logs(self._server(sid), self.secrets, name, lines)
 
     def close(self):
+        self.qc.close()
         self.analyzer.close()
         self.links.close()

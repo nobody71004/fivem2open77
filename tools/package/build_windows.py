@@ -32,7 +32,7 @@ import sys
 import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-VERSION = "1.5.3"
+VERSION = "1.6.0"
 
 SFX_CONFIG = """;!@Install@!UTF-8!
 Title="fivem2open77 Studio {version}"

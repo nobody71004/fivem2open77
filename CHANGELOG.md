@@ -1,5 +1,50 @@
 # Changelog
 
+## Studio 1.6.0 · converter 1.5.0 (2026-10-18)
+
+### Cars come out whole: four-door donor, every part on a bone, wheels on their bones
+
+* **Four-door cars** (SUVs, saloons, pickups with rear doors) convert with a four-door donor, the
+  Archer Hella: its rig has the rear door, rear window and rear seat bones, its animations open the
+  rear doors, its seat set seats four and its entity has the rear seats' interaction points. With the
+  two-door Porsche as the only donor, the rear doors and windows hung from bones its rig does not
+  have and were left behind at the car's origin in game (the Urus, the F-250, every four-door car).
+  The donor is picked by the doors the car really has (a door-sized panel at the side: a
+  Lamborghini's engine-cover flaps on the rear door bones are not doors). The physics stays the
+  Porsche's, which the FiveM handling is mapped onto; the record, seats and destruction are the
+  donor's.
+* **No part left behind**: a part bound to a bone the donor's rig lacks is fixed to the body instead
+  (27 two-door cars had rear quarter windows floating at the car's origin).
+* **Wheels on their bones**: the record wrote the Porsche's wheel offset (10 cm front, 8 cm rear)
+  for every car, which pushed every tyre out of its arch (the Revuelto), and inherited the Porsche's
+  camber (1.5 degrees front, 1 rear, rear wheels moved 2.7 cm). Both are 0 now: the tyres sit on the
+  GTA wheel centres, upright (a profile can still set `handling.wheel_offset`).
+* **Bodies that failed to import**: GTA models with zero-length normals or tangents (and a tangent
+  handedness of 0) made WolvenKit refuse the mesh ("Operation is not valid due to the current state
+  of the object"): the CHARGER and the Aventador (lp700r) did not build. Normals and tangents are
+  made unit length with a handedness of +-1 before import.
+* **Mod-kit parts**: a part is measured against the model itself, so a truck shipped as chassis,
+  body and bed mods gets all three (the F-250 had no cab roof); a mod-kit part is fitted only when it
+  is a big piece of the car (GTA fits none by default) and never when it stands above the car (the
+  Urus's roof box) or hides inside it.
+* **Third axle**: a 6x6's middle wheels are drawn, fixed to the body (they were missing).
+* Third person camera by body size (sports car, saloon, SUV, truck presets).
+
+### Quality checks around the clock
+
+* Every build writes what it built (`conversion-report.json` `qc`) and its QA checks it: every part
+  on a bone of the rig, doors the donor opens, seats a player can use, wheels on the GTA wheel
+  centres with no offset or camber, tyres in their arches, no body geometry left out, head and brake
+  lights. A build made before these checks is reported stale.
+* The Studio sweeps every car and map a few minutes after it starts and every 6 hours (Settings
+  `qc`), rebuilds what fails or is stale and checks it again; a project its rebuild did not fix is
+  tried again only after the converter, its source or its profile changes. The **Quality** page shows
+  every project's status and what the checks found; `qc_report` and `run_qc` give agents the same;
+  `python -m fivem2open77 qc` runs a sweep from the command line, and Windows Task Scheduler can run
+  it when the Studio is closed (Quality > *Run them in the background*).
+* Maps: the floor check counts the floor the conversion lost (not the floors the FiveM map does not
+  have either), and collision coverage far below its target fails the QA.
+
 ## Studio 1.5.3 · converter 1.4.2 (2026-10-14)
 
 ### Live maps: Night City as the game's own map screen draws it

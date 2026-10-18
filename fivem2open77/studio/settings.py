@@ -30,6 +30,9 @@ DEFAULTS = {
     "servers": [],
     "deploy": {"default_server": "", "mode": "stage", "allow_unsecured": False},
     "build": {"keep_work": False},
+    # quality checks around the clock (qcsweep.py): every project's latest build checked every
+    # interval_hours, what fails or was built before a converter fix rebuilt (auto_rebuild)
+    "qc": {"enabled": True, "interval_hours": 6, "auto_rebuild": True, "max_rebuilds": 100},
     # agents outside the Studio (Claude Code, Claude Desktop, Codex, Cursor...) over MCP
     "mcp": {
         "enabled": True,
@@ -143,6 +146,14 @@ def validate(data: dict) -> dict:
     d["servers"] = servers
     if d["deploy"]["mode"] not in ("stage", "restart", "files"):
         errors.append("deploy.mode: stage, restart or files")
+    q = d["qc"]
+    q["enabled"] = bool(q.get("enabled"))
+    q["auto_rebuild"] = bool(q.get("auto_rebuild"))
+    try:
+        q["interval_hours"] = max(1, min(168, int(q.get("interval_hours"))))
+        q["max_rebuilds"] = max(0, min(1000, int(q.get("max_rebuilds"))))
+    except (TypeError, ValueError):
+        errors.append("qc.interval_hours / qc.max_rebuilds: numbers")
     m = d["mcp"]
     m["enabled"] = bool(m.get("enabled"))
     if not isinstance(m.get("ncwe_launch"), bool):
@@ -175,7 +186,7 @@ class Settings:
         except SettingsError:
             # keep what is valid: fall back section by section
             out = copy.deepcopy(DEFAULTS)
-            for k in ("paths", "ai", "deploy", "build", "mcp"):
+            for k in ("paths", "ai", "deploy", "build", "mcp", "qc"):
                 try:
                     out = validate(_merge(out, {k: raw.get(k, {})}))
                 except SettingsError:

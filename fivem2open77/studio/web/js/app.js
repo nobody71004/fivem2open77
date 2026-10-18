@@ -13,6 +13,7 @@ import { mapPage } from "./pages/map.js";
 import { livePage } from "./pages/live.js";
 import { worldPage } from "./pages/world.js";
 import { studioAgentPage } from "./pages/agent.js";
+import { qualityPage } from "./pages/quality.js";
 import { initFx, fxRoute } from "./fx.js";
 import { initDiag } from "./diag.js";
 
@@ -20,7 +21,7 @@ let current = null;          // { dispose() }
 
 const SECTIONS = {
   home: "Home", projects: "Cars", project: "Cars", maps: "Maps", map: "Maps", world: "World", live: "Live maps",
-  servers: "Servers", agent: "Agent", jobs: "Activity", settings: "Settings",
+  servers: "Servers", agent: "Agent", jobs: "Activity", settings: "Settings", quality: "Quality",
 };
 const NAV_OF = { project: "projects", map: "maps" };
 const agentsLive = new Map();      // MCP session -> { label, tool } while a call runs
@@ -42,6 +43,10 @@ function updateChrome() {
   b.classList.toggle("hidden", !running.length);
   const s = document.getElementById("setup-badge");
   s.classList.toggle("hidden", !store.state || store.state.tools.ready);
+  const qb = document.getElementById("qc-badge");
+  const qc = (store.state && store.state.qc) || {};
+  const bad = ["fail", "failed", "stale", "unbuilt"].reduce((n, k) => n + ((qc.counts || {})[k] || 0), 0);
+  if (qb) { qb.textContent = bad; qb.classList.toggle("hidden", !bad); }
   // title bar: what runs
   const tb = document.getElementById("tb-jobs");
   clear(tb);
@@ -117,7 +122,8 @@ function route() {
   // a page names its own item; until it does the trail shows the section
   setCrumbs([[SECTIONS[parts[0]] || "Cars", `#/${nav}`]]);
   const pages = { home: homePage, projects: projectsPage, project: projectPage, maps: mapsPage, map: mapPage, live: livePage,
-    world: worldPage, agent: studioAgentPage, servers: serversPage, settings: settingsPage, jobs: jobsPage };
+    world: worldPage, agent: studioAgentPage, servers: serversPage, settings: settingsPage, jobs: jobsPage,
+    quality: qualityPage };
   const page = pages[parts[0]] || homePage;
   try {
     current = page(main, parts.slice(1)) || null;
@@ -131,7 +137,7 @@ function route() {
 // ------------------------------------------------------------------ command palette
 function paletteItems() {
   const items = Object.entries({ home: "Home", projects: "Cars", maps: "Maps", world: "World edits", live: "Live maps", servers: "Servers",
-    agent: "Agent", jobs: "Activity", settings: "Settings" }).map(([k, v]) => ({ what: v, kind: "section", href: `#/${k}` }));
+    quality: "Quality", agent: "Agent", jobs: "Activity", settings: "Settings" }).map(([k, v]) => ({ what: v, kind: "section", href: `#/${k}` }));
   const st = store.state;
   if (st) {
     for (const p of st.projects || []) {

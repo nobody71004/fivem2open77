@@ -163,14 +163,24 @@ def check_build(out_dir: str) -> dict:
     warnings = report.get("warnings", [])
     c.add("report.warnings", True, f"{len(warnings)} conversion warning(s)" if warnings else "no conversion warnings",
           level="warn")
+    # the car itself: every part on a bone, doors, seats, wheels, geometry (fivem2open77/qc.py)
+    from .. import qc as car_qc
+    cq = car_qc.check_car(report)
+    for item in cq["checks"]:
+        c.items.append(dict(item, id="car." + item["id"]))
     ok = all(i["ok"] for i in c.items if i["level"] != "warn")
-    return {"ok": ok, "car": name, "record": record, "checks": c.items,
+    facts = report.get("qc") or {}
+    return {"ok": ok, "car": name, "record": record, "checks": c.items, "stale": bool(cq.get("stale")),
+            "converter": report.get("version"),
+            "car_qc": {"ok": cq["ok"], "donor": (facts.get("donor") or {}).get("id"),
+                       "doors": facts.get("doors"), "version": facts.get("version")},
             "summary": {"packages": sizes, "warnings": warnings, "resources": report.get("resources"),
                         "sound": report.get("sound"), "version": man["version"]}}
 
 
 # ----------------------------------------------------------------------------- maps
-MAP_COVERAGE_WARN = {"walkable": 95.0, "walls": 90.0, "floors": 95.0}
+MAP_COVERAGE_WARN = {"walkable": 95.0, "walls": 90.0}
+MAP_COVERAGE_FAIL = {"walkable": 80.0, "walls": 60.0}
 
 
 def check_map_build(out_dir: str) -> dict:
@@ -262,14 +272,28 @@ def check_map_build(out_dir: str) -> dict:
     cov = ((report.get("build") or {}).get("coverage") or {})
     col, vis = cov.get("collision") or {}, cov.get("visual_floors") or {}
     if cov:
-        got = {"walkable": (col.get("walkable") or {}).get("covered_pct"), "walls": (col.get("walls") or {}).get("covered_pct"),
-               "floors": vis.get("solid_pct")}
+        got = {"walkable": (col.get("walkable") or {}).get("covered_pct"), "walls": (col.get("walls") or {}).get("covered_pct")}
         for k, lim in MAP_COVERAGE_WARN.items():
             v = got.get(k)
             if v is None:
                 continue
-            c.add(f"coverage.{k}", v >= lim, f"{k} collision covers {v}% (want {lim}%+)" if k != "floors" else
-                  f"visible floors {v}% solid (want {lim}%+)", level="warn")
+            # a player falls through (or walks through) what is not covered: far below is a broken map
+            c.add(f"coverage.{k}", v >= lim, f"{k} collision covers {v}% (want {lim}%+)",
+                  level="error" if v < MAP_COVERAGE_FAIL.get(k, 0) else "warn")
+        if vis.get("m2"):
+            # floors the FiveM map has no surface for either are the map's own (open sky, a roof
+            # walked over in GTA too); what counts is a floor the conversion lost
+            lost = float(vis.get("converter_gaps_m2") or 0.0)
+            share = 100.0 * lost / max(1.0, float(vis["m2"]))
+            c.add("coverage.floors", share <= 1.0 or lost <= 4.0,
+                  f"the conversion keeps the visible floors ({lost:.0f} m2 of {vis['m2']:.0f} m2 lost)" if share <= 1.0 or lost <= 4.0
+                  else f"the conversion lost {lost:.0f} m2 of visible floor ({share:.1f}%)",
+                  level="error" if share > 5.0 else "warn")
+    skipped = (report.get("build") or {}).get("skipped") or {}
+    if skipped:
+        n = sum(int(v) if isinstance(v, (int, float)) else len(v) if isinstance(v, (list, dict)) else 1
+                for v in skipped.values())
+        c.add("parts.skipped", False, f"{n} objects left out: " + ", ".join(sorted(skipped)[:8]), level="warn")
     warnings = report.get("warnings", [])
     c.add("report.warnings", True, f"{len(warnings)} conversion warning(s)" if warnings else "no conversion warnings",
           level="warn")

@@ -54,8 +54,33 @@ carried the loader dependencies *and* a client script failed to activate on ever
 | — | collision hulls built from the body, TweakXL record, ArchiveXL localisation |
 
 Everything that makes a car *behave* in Cyberpunk (seats, enter/exit, cameras, audio, AI, damage,
-interactions) comes from a **donor** vehicle (Porsche 911 Turbo by default) extracted from your own
-game install. Nothing from the game is shipped with this tool.
+interactions) comes from a **donor** vehicle extracted from your own game install: the **Porsche 911
+Turbo** for cars with two doors, the **Archer Hella** for cars with rear doors (its rig has the rear
+door, window and seat bones, its animations open the rear doors, its seat set seats four). Every part
+of the car hangs from a bone the donor's rig has: a part the donor has no bone for (a two-door's rear
+quarter window) is fixed to the body rather than left behind at the car's origin. The physics the
+FiveM handling is mapped onto is the Porsche's for every donor. Nothing from the game is shipped
+with this tool.
+
+Wheels sit on the GTA wheel centres, upright (no donor wheel offset or camber); wheels on a third
+axle (a 6x6) ride fixed to the body, since Cyberpunk simulates four. Mod-kit parts are fitted only
+when they are a big piece of the car (a truck shipped as chassis + body + bed mods); a roof box or a
+rack standing above the car stays an option, as in GTA.
+
+## Quality checks
+
+Every conversion writes down what it built (`conversion-report.json`, `qc`): each part and the rig
+bone it hangs from, the doors the donor opens, the seats a player can use, where the rig puts the
+wheels and what the TweakDB record says about them, the geometry left out. `fivem2open77/qc.py`
+checks those facts after every build (a part on a bone the rig lacks, a door the donor cannot open,
+a wheel off its bone or pushed out, a body piece left out fail the build's QA).
+
+The Studio runs the checks around the clock (`qcsweep.py`, the **Quality** page): every car and map's
+latest build, a few minutes after it starts and every `qc.interval_hours` (default 6); a build that
+fails, or was made before a converter fix (stale), is rebuilt and checked again (`qc.auto_rebuild`).
+`python -m fivem2open77 qc` runs a sweep from the command line (Windows Task Scheduler runs it when
+the Studio is closed: Quality > *Run them in the background*); the report is kept in the workspace's
+`qc/` folder (`report.json`, `report.html`, `history.jsonl`).
 
 ## Requirements
 
@@ -78,6 +103,7 @@ python -m fivem2open77 inspect <resource> [--profile p.json]   what the converte
 python -m fivem2open77 profile [--check p.json]                default profile / validate one
 python -m fivem2open77 sounds                                  Cyberpunk engine sounds a car can use
 python -m fivem2open77 donor --game <dir>                      extract and cache donor files
+python -m fivem2open77 qc [--rebuild] [--in-process]           quality sweep of every Studio project
 python -m fivem2open77 studio [--port N] [--open]              the app (local web UI + API)
 ```
 
@@ -358,7 +384,7 @@ restart [s] | cancel` (ACL `command.carhub`) for operators. A rebuild whose pack
 
 ## Limits (v1)
 
-* Cars and trucks (4 wheels, 2 or 4 doors). Bikes and boats are not handled yet.
+* Cars and trucks (4 simulated wheels, 2 or 4 doors; a third axle's wheels ride fixed). Bikes and boats are not handled yet.
 * High LOD only; distant LODs/proxy are not generated (the car hides past its streaming distance).
 * GTA shared textures (`vehshare` etc.) are not in the resource and fall back to flat colours.
 * Extras and liveries are dropped; license plates are not added.

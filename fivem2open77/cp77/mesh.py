@@ -19,6 +19,31 @@ def ordered_submeshes(part):
     return sorted(part.submeshes, key=lambda s: (s.lod, s.material))
 
 
+def clean_frames(n, t):
+    """Unit normals and unit tangents with a handedness of +1 or -1, as glTF wants.  GTA models carry
+    zero-length normals and tangents (degenerate or unmapped triangles); WolvenKit refuses a mesh
+    with one ("Operation is not valid due to the current state of the object"): the whole part, often
+    the body, was then missing from the car."""
+    n = np.nan_to_num(np.asarray(n, np.float64)[:, :3])
+    ln = np.linalg.norm(n, axis=1)
+    bad = ln < 1e-6
+    n[bad] = (0.0, 0.0, 1.0)
+    n[~bad] /= ln[~bad, None]
+    t = np.nan_to_num(np.asarray(t, np.float64))
+    t3, w = t[:, :3].copy(), t[:, 3] if t.shape[1] > 3 else np.ones(len(t))
+    lt = np.linalg.norm(t3, axis=1)
+    badt = lt < 1e-6
+    if badt.any():
+        nb = n[badt]
+        ref = np.where(np.abs(nb[:, :1]) < 0.9, np.array([[1.0, 0.0, 0.0]]), np.array([[0.0, 1.0, 0.0]]))
+        alt = np.cross(nb, ref)
+        t3[badt] = alt / np.linalg.norm(alt, axis=1, keepdims=True)
+        lt[badt] = 1.0
+    t3 /= lt[:, None]
+    w = np.where(w < 0, -1.0, 1.0)
+    return n.astype(np.float32), np.concatenate([t3, w[:, None]], 1).astype(np.float32)
+
+
 def write_glb(part, path, transform=None):
     """transform: optional 3x3 applied to positions/normals/tangents (row vectors: v @ transform)."""
     w = GlbWriter()
@@ -29,6 +54,7 @@ def write_glb(part, path, transform=None):
             p = (p.astype(np.float64) @ q).astype(np.float32)
             n = (n.astype(np.float64) @ q).astype(np.float32)
             t = np.concatenate([(t[:, :3].astype(np.float64) @ q), t[:, 3:4]], 1).astype(np.float32)
+        n, t = clean_frames(n, t)
         colors = sm.colors
         if colors is None:
             colors = np.ones((len(p), 4), np.float32)

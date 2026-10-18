@@ -501,3 +501,13 @@ input[type=checkbox]:disabled { opacity: .45; cursor: default; }
 .pack-card .title { font-weight: 600; }
 .pack-card > .row svg.icon { width: 18px; height: 18px; color: var(--accent); }
 .job-card .progress { margin-top: 6px; }
+
+/* Quality page (pages/quality.js) */
+.qc-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
+.qc-tile { border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 10px; cursor: pointer; display: flex; flex-direction: column; gap: 2px; }
+.qc-tile b { font-size: 20px; font-variant-numeric: tabular-nums; }
+.qc-tile span { color: var(--text-2); font-size: 12px; }
+.qc-tile.ok b { color: var(--ok); }
+.qc-tile.warn b { color: var(--warn); }
+.qc-tile.err b { color: var(--err); }
+.qc-tile:hover { background: rgba(255, 255, 255, .03); }

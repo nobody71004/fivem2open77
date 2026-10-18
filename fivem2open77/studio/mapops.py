@@ -314,7 +314,12 @@ class MapOps:
                 raise
             finally:
                 info["seconds"] = round(time.time() - t0, 1)
+                from ..pipeline import VERSION as CONVERTER
+                info["converter"] = CONVERTER
                 p.add_build(info)
+                qc = getattr(self, "qc", None)
+                if qc is not None:
+                    qc.after_build(p.id)
 
         return self.jobs.submit("build", f"Build {p.data['name']}", run, project=p.id, heavy=True)
 

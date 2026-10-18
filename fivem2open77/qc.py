@@ -158,8 +158,8 @@ def check_car(report: dict) -> dict:
     c = _Checks()
     q = (report or {}).get("qc")
     if not q:
-        c.add("qc.facts", False, "built by a converter without quality checks (before "
-              f"{report.get('version', '?') if report else '?'} was replaced): rebuild it", level="error")
+        c.add("qc.facts", False, f"built by converter {report.get('version', '?') if report else '?'}, before the "
+              "quality checks and the fixes they watch: rebuild it", level="error")
         return {"ok": False, "stale": True, "checks": c.items}
     if q.get("version", 0) < QC_VERSION:
         c.add("qc.version", False, f"built with quality checks v{q.get('version')} (now v{QC_VERSION}): the "

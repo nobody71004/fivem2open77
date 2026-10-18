@@ -307,6 +307,27 @@ class McpHub:
                 return [{"type": "text", "text": json.dumps(out, indent=1, default=str)}], True
             return text(out)
 
+        def t_qc_report(ctx, args):
+            v = self.studio.qc.view()
+            rows = v["projects"]
+            want = str(args.get("status") or "")
+            if want:
+                rows = [r for r in rows if r["status"] == want]
+            elif not args.get("all"):
+                rows = [r for r in rows if r["status"] != "ok"]
+            return text({"time": v["time"], "converter": v["converter"], "ok": v["ok"], "counts": v["counts"],
+                         "next_sweep": v["next"], "running": v["running"], "settings": v["settings"],
+                         "projects": [{k: r.get(k) for k in ("id", "name", "kind", "build", "status", "donor", "errors",
+                                                             "warnings")} for r in rows[:120]]})
+
+        def t_qc_run(ctx, args):
+            only = args.get("projects")
+            job = self.studio.qc.run_job(rebuild=args.get("rebuild"), only=only or None)
+            ctx.wait_job(job)
+            if job.state == "failed":
+                raise ToolError(job.error or "the quality sweep failed")
+            return text(job.result)
+
         def t_cancel(ctx, args):
             job = self.studio.jobs.get(str(args.get("job") or ""))
             if job is None:
@@ -321,6 +342,17 @@ class McpHub:
                  "read", t_wait),
             Tool("cancel_job", "Stop a running Studio job (a build, a deploy...).", _obj({"job": {"type": "string"}}, ["job"]),
                  "change", t_cancel),
+            Tool("qc_report", "The latest quality sweep: every car and map's status (ok, warn, fail, stale = built before "
+                 "a converter fix, failed, unbuilt) with the failing checks (parts not on a rig bone, doors the donor "
+                 "cannot open, wheels off their bones, geometry left out, map collision/floor coverage). Lists what is "
+                 "not ok unless all is true; status filters.",
+                 _obj({"status": {"type": "string", "enum": ["ok", "warn", "fail", "failed", "stale", "unbuilt"]},
+                       "all": {"type": "boolean"}}), "read", t_qc_report),
+            Tool("run_qc", "Run a quality sweep now: check every project's latest build (or only `projects`) and, with "
+                 "rebuild (default: the Studio's qc.auto_rebuild setting), rebuild what fails or is stale and check it "
+                 "again. Long: answers running, then wait_job.",
+                 _obj({"rebuild": {"type": "boolean"}, "projects": {"type": "array", "items": {"type": "string"}}}),
+                 "change", t_qc_run),
         ]
 
     def tool_list(self) -> list:

@@ -207,3 +207,53 @@ def test_quality_checks_pass_a_good_car_and_catch_the_old_faults():
     f = _facts()
     f["version"] = qc.QC_VERSION - 1
     assert qc.check_car({"qc": f})["stale"]
+
+
+# ----------------------------------------------------------------------------- the Studio's sweep
+def _car_project(ws, pid, report, name="boxcar"):
+    import json as _json
+    d = os.path.join(ws, "projects", pid)
+    out = os.path.join(d, "builds", "1", "out", name)
+    os.makedirs(os.path.join(out, "dist"), exist_ok=True)
+    with open(os.path.join(d, "project.json"), "w", encoding="utf-8") as f:
+        _json.dump({"id": pid, "kind": "car", "name": name, "created": 1.0, "updated": 1.0,
+                    "source": {"file": "car.zip", "original": "car.zip", "hash": "h1"},
+                    "builds": [{"n": 1, "ok": True, "version": "1.0.1", "name": name, "record": f"Vehicle.{name}"}],
+                    "build_counter": 1}, f)
+    with open(os.path.join(out, "conversion-report.json"), "w", encoding="utf-8") as f:
+        _json.dump(report, f)
+    with open(os.path.join(out, "open77.lua"), "w", encoding="utf-8") as f:
+        f.write(f'resource "{name}"\nversion "1.0.1"\n')
+    return d
+
+
+def test_quality_sweep_finds_stale_builds_and_rebuilds_them_once():
+    import tempfile
+    from fivem2open77.studio.app import Studio
+    ws = tempfile.mkdtemp(prefix="f2o77-qc-")
+    st = Studio(ws)
+    try:
+        _car_project(ws, "aaaaaaaaaaaa", {"version": "1.4.2", "record": "Vehicle.oldcar"}, name="oldcar")
+        good = _facts()
+        _car_project(ws, "bbbbbbbbbbbb", {"version": pipeline.VERSION, "record": "Vehicle.newcar", "qc": good}, name="newcar")
+        rep = st.qc.sweep(rebuild=False)
+        rows = rep["projects"]
+        assert rows["aaaaaaaaaaaa"]["status"] == "stale", rows["aaaaaaaaaaaa"]
+        # the new car fails only the package checks of this stub build, never the car's own checks
+        assert not any(e.startswith("car.") for e in rows["bbbbbbbbbbbb"]["errors"]), rows["bbbbbbbbbbbb"]
+        assert os.path.isfile(os.path.join(ws, "qc", "report.json")) and os.path.isfile(os.path.join(ws, "qc", "report.html"))
+        built = []
+
+        def fake_build(pid, **kw):
+            built.append(pid)
+            return st.jobs.submit("build", "build", lambda job: {"ok": False}, project=pid)
+
+        st.build = fake_build
+        st.qc.sweep(rebuild=True, only=["aaaaaaaaaaaa"])
+        assert built == ["aaaaaaaaaaaa"]
+        st.qc.sweep(rebuild=True, only=["aaaaaaaaaaaa"])
+        assert built == ["aaaaaaaaaaaa"], "a rebuild that did not help is not repeated until something changes"
+        v = st.qc.view()
+        assert v["counts"]["stale"] >= 1 and v["projects"][0]["status"] in ("stale", "fail")
+    finally:
+        st.close()
