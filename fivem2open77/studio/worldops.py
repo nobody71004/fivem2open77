@@ -550,7 +550,7 @@ class WorldOps:
             try:
                 bundle = P.bundle([res], os.path.join(tmp, "world.tgz"))
                 job.log(f"bundle: {', '.join(bundle['resources'])} ({bundle['bytes'] / 1024:.0f} KiB)")
-                out = deploy_mod.deploy(server, self.secrets, bundle["path"], mode=mode, names=names, log=job.log)
+                out = deploy_mod.deploy(server, self.secrets, bundle["path"], mode=mode, names=names, log=job.log, job=job)
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
             entry = {"time": time.time(), "server": sid, "names": out["names"], "mode": mode, "build": b["n"],

@@ -362,7 +362,8 @@ class McpHub:
             job = self.studio.jobs.get(str(args.get("job") or ""))
             if job is None:
                 raise ToolError("no such job")
-            return text({"cancelled": job.cancel()})
+            ok = job.cancel()
+            return text({"cancelled": ok, **({"stops_after": job.cancel_late} if ok and job.cancel_late else {})})
 
         # ---------------------------------------------------------------- the whole app, without the screen
         def term_answer(run, since=0, fmt="text"):
@@ -613,7 +614,9 @@ class McpHub:
             Tool("wait_job", "Wait for a Studio job a call answered as running (up to `seconds`, default 50, each call); "
                  "its result when done.", _obj({"job": {"type": "string"}, "seconds": {"type": "number"}}, ["job"]),
                  "read", t_wait),
-            Tool("cancel_job", "Stop a running Studio job (a build, a deploy...).", _obj({"job": {"type": "string"}}, ["job"]),
+            Tool("cancel_job", "Stop a running Studio job (a build, a deploy...). A deploy stops at once while it "
+                 "uploads (nothing is installed); while the server installs it stops right after that step "
+                 "(stops_after names it).", _obj({"job": {"type": "string"}}, ["job"]),
                  "change", t_cancel),
             Tool("qc_report", "The latest quality sweep: every car and map's status (ok, warn, fail, stale = built before "
                  "a converter fix, failed, unbuilt) with the failing checks (parts not on a rig bone, doors the donor "

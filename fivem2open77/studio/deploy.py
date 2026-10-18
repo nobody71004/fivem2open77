@@ -12,15 +12,24 @@ runtime is uploaded only when the host does not have that version yet.
 
 SSH goes through paramiko (bundled with the app): key files, passwords and the SSH agent work
 the same on Windows and Linux.  Passwords and key passphrases come from the secret store.
+
+A Studio job's cancel stops a deploy while it uploads: the SSH connection is dropped at once (an
+SFTP write waiting on a slow link would otherwise finish the upload first), nothing was installed,
+and the partial upload is removed over a new connection.  Once the server runs the install script,
+a cancel waits for its end: a server stopped half-way through installing could be left broken.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import posixpath
 import re
 import shlex
+import socket
+import struct
 import tarfile
+import threading
 import time
 import uuid
 
@@ -28,17 +37,83 @@ from . import fleet
 from .paths import deploy_script, hub_dir, remote_script
 
 REMOTE_DIR = "/tmp/f2o77-studio"
+STALE_UPLOADS_MIN = 1440            # upload folders a stopped deploy left behind go after a day
 
 
 class DeployError(RuntimeError):
     pass
 
 
+class DeployCancelled(DeployError):
+    """The Studio job running the deploy was cancelled; the message says what was installed."""
+    log_on_cancel = True
+
+
+class _Stop:
+    """A Studio job's cancel as a deploy sees it.  job: the job running the deploy (duck-typed:
+    cancel_event, on_cancel, shield); None for a deploy nothing stops."""
+
+    def __init__(self, job=None):
+        self.job = job
+
+    def asked(self) -> bool:
+        return self.job is not None and self.job.cancel_event.is_set()
+
+    def check(self, why="cancelled: nothing was installed"):
+        if self.asked():
+            raise DeployCancelled(why)
+
+    @contextlib.contextmanager
+    def dropping(self, r: "Remote", what: str):
+        """Inside, a cancel drops the SSH connection at once."""
+        if self.job is None:
+            yield
+            return
+        live, lock = [True], threading.Lock()
+
+        def drop():
+            with lock:
+                if live[0]:
+                    r.abort()
+
+        self.job.on_cancel.append(drop)           # first: a cancel from now on drops the connection
+        try:
+            self.check(f"cancelled before {what}: nothing was installed")
+            try:
+                yield
+            except Exception:  # noqa: BLE001 - what a dropped connection raises varies (EOFError, OSError, SSHException)
+                if self.asked() or r.aborted:
+                    raise DeployCancelled(f"cancelled while {what}: nothing was installed") from None
+                raise
+        finally:
+            with lock:
+                live[0] = False
+            try:
+                self.job.on_cancel.remove(drop)
+            except ValueError:
+                pass
+
+    @contextlib.contextmanager
+    def unstoppable(self, why: str, before: str):
+        """A step a cancel must not cut (the server installing, restarting): a cancel asked for during
+        it stops the job after it.  before: what a cancel that came before the step says."""
+        shield = getattr(self.job, "shield", None)
+        if shield is None:
+            self.check(before)
+            yield
+            return
+        with shield(why):
+            self.check(before)
+            yield
+
+
 # ----------------------------------------------------------------------------- bundles
-def _add_dir(tar, src, arc):
+def _add_dir(tar, src, arc, cancel=None):
     for dp, dn, fns in os.walk(src):
         dn.sort()
         for fn in sorted(fns):
+            if cancel is not None and cancel.is_set():
+                raise DeployCancelled("cancelled while packing the bundle: nothing was installed")
             p = os.path.join(dp, fn)
             rel = os.path.relpath(p, src).replace(os.sep, "/")
             info = tar.gettarinfo(p, arcname=f"{arc}/{rel}")
@@ -51,10 +126,10 @@ def _add_dir(tar, src, arc):
 
 
 def make_bundle(out_path: str, *, build_out: str | None = None, include_hub=False, loaders_dir: str | None = None,
-                build_outs=None, resource_dirs=None) -> dict:
+                build_outs=None, resource_dirs=None, cancel=None) -> dict:
     """build_out: a build's out/ folder (<car>/ and <car>_chime/); build_outs: several (a car
     pack: one bundle, one restart); resource_dirs: more resources, {name: folder} (car bundles).
-    Returns {path, resources}."""
+    cancel: an Event that stops the packing (DeployCancelled).  Returns {path, resources}."""
     resources = []
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     with tarfile.open(out_path, "w:gz", format=tarfile.PAX_FORMAT) as tar:
@@ -62,20 +137,20 @@ def make_bundle(out_path: str, *, build_out: str | None = None, include_hub=Fals
             for name in ("archivexl", "tweakxl"):
                 d = os.path.join(loaders_dir, name)
                 if os.path.isfile(os.path.join(d, "open77.lua")):
-                    _add_dir(tar, d, f"resources/assets/loaders/{name}")
+                    _add_dir(tar, d, f"resources/assets/loaders/{name}", cancel)
                     resources.append(name)
         for out in ([build_out] if build_out else []) + list(build_outs or []):
             for name in sorted(os.listdir(out)):
                 d = os.path.join(out, name)
                 if os.path.isfile(os.path.join(d, "open77.lua")) and name not in resources:
-                    _add_dir(tar, d, f"resources/assets/vehicles/{name}")
+                    _add_dir(tar, d, f"resources/assets/vehicles/{name}", cancel)
                     resources.append(name)
         for name, d in sorted((resource_dirs or {}).items()):
             if name not in resources:
-                _add_dir(tar, d, f"resources/assets/vehicles/{name}")
+                _add_dir(tar, d, f"resources/assets/vehicles/{name}", cancel)
                 resources.append(name)
         if include_hub:
-            _add_dir(tar, hub_dir(), "resources/assets/tools/f2o77_hub")
+            _add_dir(tar, hub_dir(), "resources/assets/tools/f2o77_hub", cancel)
             resources.append("f2o77_hub")
     if not resources:
         raise DeployError("nothing to deploy")
@@ -131,6 +206,29 @@ class Remote:
             raise DeployError(f"cannot reach {server['host']}:{kw['port']}: {e}") from e
         self.client = c
         self._sftp = None
+        self.aborted = False
+
+    def abort(self):
+        """Drop the connection now (another thread: a cancel).  The SFTP write or the command this
+        connection waits on fails at once, and what was still queued for the server is thrown away
+        (a reset, not a close that would first send it all on a slow link)."""
+        self.aborted = True
+        t = self.client.get_transport()
+        if t is None:
+            return
+        try:
+            t.sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER,
+                              struct.pack("HH" if os.name == "nt" else "ii", 1, 0))
+        except (OSError, AttributeError, ValueError):
+            pass
+        try:
+            t.close()
+        except Exception:  # noqa: BLE001 - a connection already gone
+            pass
+
+    def alive(self) -> bool:
+        t = self.client.get_transport()
+        return bool(t is not None and t.is_active() and not self.aborted)
 
     def close(self):
         try:
@@ -192,10 +290,22 @@ class Remote:
         return code, "\n".join(out)
 
     def put(self, local: str, remote: str, progress=None):
-        self.sftp.put(local, remote, callback=progress)
+        def step(done, total):
+            if self.aborted:
+                raise DeployCancelled("the upload was stopped")
+            if progress:
+                progress(done, total)
+        self.sftp.put(local, remote, callback=step)
 
     def mkdir_private(self, path: str):
         self.run(f"mkdir -p {shlex.quote(path)} && chmod 700 {shlex.quote(path)}")
+
+    def sweep_uploads(self):
+        """Remove upload folders of this user that a stopped deploy left behind (older than a day)."""
+        parent, base = posixpath.split(REMOTE_DIR)
+        self.run(f"find {shlex.quote(parent or '/')} -maxdepth 1 -type d -name {shlex.quote(base + '-*')} "
+                 f"-user \"$(id -u)\" -mmin +{int(STALE_UPLOADS_MIN)} -exec rm -rf {{}} + 2>/dev/null || true",
+                 timeout=60, check=False)
 
 
 class _TrustOnFirstUse:
@@ -234,11 +344,43 @@ def _upload_script(r: Remote, rdir: str) -> str:
     return dst
 
 
-def deploy(server: dict, secrets, bundle: str, *, mode="stage", names=None, log=print, allow_unsecured=None) -> dict:
-    """mode: stage (hub restarts when empty), restart (now, if nobody is online), files (install only)."""
+def _cleanup(r: Remote, server: dict, secrets, rdir: str, log):
+    """Remove the upload folder; over a new connection when a cancel dropped this one."""
+    cmd = f"rm -rf {shlex.quote(rdir)}"
+    if r.alive():
+        try:
+            r.run(cmd, timeout=60, check=False)
+            return
+        except Exception:  # noqa: BLE001 - the connection went away: try a new one
+            pass
+    try:
+        with Remote(server, secrets, log=log, timeout=15) as r2:
+            r2.run(cmd, timeout=60, check=False)
+        log("removed the partial upload from the server" if r.aborted else "removed the upload folder from the server")
+    except Exception as e:  # noqa: BLE001
+        log(f"could not remove {rdir} from the server ({e}): the next deploy removes it")
+
+
+def _progress(log):
+    last = [0.0]
+
+    def prog(done, total):
+        if total and time.time() - last[0] > 2:
+            last[0] = time.time()
+            log(f"  {done * 100 // total}%")
+    return prog
+
+
+def deploy(server: dict, secrets, bundle: str, *, mode="stage", names=None, log=print, allow_unsecured=None,
+           job=None) -> dict:
+    """mode: stage (hub restarts when empty), restart (now, if nobody is online), files (install only).
+    job: the Studio job running it, whose cancel stops the upload at once (nothing is installed then);
+    a cancel that comes while the server installs waits for the end of that."""
     names = _names(server, names)
     flag = {"stage": "--stage", "restart": "--restart", "files": ""}[mode]
     unsecured = server.get("allow_unsecured") if allow_unsecured is None else allow_unsecured
+    stop = _Stop(job)
+    stop.check()
     rdir = f"{REMOTE_DIR}-{uuid.uuid4().hex[:8]}"
     lines = []
 
@@ -248,25 +390,21 @@ def deploy(server: dict, secrets, bundle: str, *, mode="stage", names=None, log=
 
     with Remote(server, secrets, log=log) as r:
         log(f"connected to {server['user']}@{server['host']}")
-        r.mkdir_private(rdir)
         try:
-            script = _upload_script(r, rdir)
-            size = os.path.getsize(bundle)
-            log(f"uploading {os.path.basename(bundle)} ({size / 1048576:.1f} MiB)")
-            last = [0.0]
-
-            def prog(done, total):
-                if total and time.time() - last[0] > 2:
-                    last[0] = time.time()
-                    log(f"  {done * 100 // total}%")
-
-            r.put(bundle, posixpath.join(rdir, "bundle.tgz"), progress=prog)
+            with stop.dropping(r, "uploading"):
+                r.sweep_uploads()
+                r.mkdir_private(rdir)
+                script = _upload_script(r, rdir)
+                size = os.path.getsize(bundle)
+                log(f"uploading {os.path.basename(bundle)} ({size / 1048576:.1f} MiB)")
+                r.put(bundle, posixpath.join(rdir, "bundle.tgz"), progress=_progress(log))
             cmd = (f"{_env(server)} bash {shlex.quote(script)} deploy {shlex.quote(posixpath.join(rdir, 'bundle.tgz'))} "
                    + " ".join(shlex.quote(n) for n in names) + (f" {flag}" if flag else "")
                    + (" --allow-unsecured" if unsecured else ""))
-            code, _ = r.run(cmd, timeout=900, on_line=on_line, check=False)
+            with stop.unstoppable("the install on the server", "cancelled before the server installed anything"):
+                code, _ = r.run(cmd, timeout=900, on_line=on_line, check=False)
         finally:
-            r.run(f"rm -rf {shlex.quote(rdir)}", check=False)
+            _cleanup(r, server, secrets, rdir, log)
     outcome = {"code": code, "names": names, "mode": mode, "lines": lines[-200:]}
     outcome["staged"] = [l for l in lines if "STAGED:" in l]
     outcome["live"] = [l for l in lines if "LIVE:" in l or "no restart needed" in l]
@@ -289,11 +427,14 @@ def remote_toolkit_version(r: "Remote") -> str | None:
 
 
 def deploy_map(server: dict, secrets, bundle: str, *, names=None, toolkit=None, keep_placement=True,
-               restart=True, log=print) -> dict:
+               restart=True, log=print, job=None) -> dict:
     """Install a map bundle (mlo.deploy.bundle: the map + f2o77_maps) on each server folder with
     map_deploy.sh.  toolkit(host_version) -> a toolkit .tgz path for that host (the light one when
-    the host already has the runtime) or None to leave the baker as it is."""
+    the host already has the runtime) or None to leave the baker as it is.  job: as for deploy();
+    a cancel while one folder installs stops before the next."""
     names = _names(server, names)
+    stop = _Stop(job)
+    stop.check()
     rdir = f"{REMOTE_DIR}-{uuid.uuid4().hex[:8]}"
     results, lines = [], []
 
@@ -303,36 +444,36 @@ def deploy_map(server: dict, secrets, bundle: str, *, names=None, toolkit=None, 
 
     with Remote(server, secrets, log=log) as r:
         log(f"connected to {server['user']}@{server['host']}")
-        have = remote_toolkit_version(r)
-        log(f"map baker on the host: {have or 'not installed'}")
-        r.mkdir_private(rdir)
         try:
-            for name, src in (("run.sh", remote_script("map_deploy.sh")), ("server_deploy.sh", deploy_script()),
-                              ("baker_install.sh", remote_script("baker_install.sh"))):
-                if not os.path.isfile(src):
-                    raise DeployError(f"{os.path.basename(src)} is missing from the app")
-                r.put(src, posixpath.join(rdir, name))
-            tk = toolkit(have) if toolkit else None
-            sent = {"host_had": have, "uploaded": bool(tk), "bytes": os.path.getsize(tk) if tk else 0}
-            last = [0.0]
-
-            def prog(done, total):
-                if total and time.time() - last[0] > 2:
-                    last[0] = time.time()
-                    log(f"  {done * 100 // total}%")
-
-            if tk:
-                log(f"uploading the map baker ({os.path.getsize(tk) / 1048576:.1f} MiB)")
-                r.put(tk, posixpath.join(rdir, "baker-toolkit.tgz"), progress=prog)
-            log(f"uploading {os.path.basename(bundle)} ({os.path.getsize(bundle) / 1048576:.1f} MiB)")
-            r.put(bundle, posixpath.join(rdir, "bundle.tgz"), progress=prog)
-            for name in names:
+            with stop.dropping(r, "uploading"):
+                have = remote_toolkit_version(r)
+                log(f"map baker on the host: {have or 'not installed'}")
+                r.sweep_uploads()
+                r.mkdir_private(rdir)
+                for name, src in (("run.sh", remote_script("map_deploy.sh")), ("server_deploy.sh", deploy_script()),
+                                  ("baker_install.sh", remote_script("baker_install.sh"))):
+                    if not os.path.isfile(src):
+                        raise DeployError(f"{os.path.basename(src)} is missing from the app")
+                    r.put(src, posixpath.join(rdir, name))
+                tk = toolkit(have) if toolkit else None
+                stop.check("cancelled before the upload: nothing was installed")
+                sent = {"host_had": have, "uploaded": bool(tk), "bytes": os.path.getsize(tk) if tk else 0}
+                prog = _progress(log)
+                if tk:
+                    log(f"uploading the map baker ({os.path.getsize(tk) / 1048576:.1f} MiB)")
+                    r.put(tk, posixpath.join(rdir, "baker-toolkit.tgz"), progress=prog)
+                log(f"uploading {os.path.basename(bundle)} ({os.path.getsize(bundle) / 1048576:.1f} MiB)")
+                r.put(bundle, posixpath.join(rdir, "bundle.tgz"), progress=prog)
+            for i, name in enumerate(names):
+                before = ("cancelled before the server installed anything" if not i else
+                          f"cancelled: installed on {', '.join(names[:i])}, not on {', '.join(names[i:])}")
                 log(f"== {name}")
                 start = len(lines)
                 env = (f"{_env(server)} MAP_DEPLOY_KEEP_PLACEMENT={1 if keep_placement else 0} "
                        f"MAP_DEPLOY_RESTART={1 if restart else 0}")
-                code, _ = r.run(f"cd {shlex.quote(rdir)} && {env} bash run.sh {shlex.quote(name)}", timeout=1800,
-                                on_line=on_line, check=False)
+                with stop.unstoppable(f"the install on {name}", before):
+                    code, _ = r.run(f"cd {shlex.quote(rdir)} && {env} bash run.sh {shlex.quote(name)}", timeout=1800,
+                                    on_line=on_line, check=False)
                 summary = None
                 for x in reversed(lines[start:]):
                     m = RESULT_RX.match(x.strip())
@@ -345,7 +486,7 @@ def deploy_map(server: dict, secrets, bundle: str, *, names=None, toolkit=None, 
                 results.append({"name": name, "code": code, "result": summary,
                                 "lines": [x for x in lines[start:] if not RESULT_RX.match(x.strip())][-250:]})
         finally:
-            r.run(f"rm -rf {shlex.quote(rdir)}", check=False)
+            _cleanup(r, server, secrets, rdir, log)
     failed = [x for x in results if x["code"] not in (0, 5, 6)]
     out = {"names": names, "servers": results, "toolkit": sent}
     if failed:

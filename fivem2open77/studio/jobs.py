@@ -5,6 +5,7 @@ EventBus, which the /api/events endpoint relays to every open UI as server-sent 
 """
 from __future__ import annotations
 
+import contextlib
 import queue
 import threading
 import time
@@ -65,6 +66,9 @@ class Job:
         self.finished = None
         self.cancel_event = threading.Event()
         self.on_cancel = []            # callables run when cancel is requested (kill a subprocess...)
+        self.cancel_late = None        # the step a cancel came during, when that step can't stop half-way
+        self._shields = []
+        self._lock = threading.Lock()
 
     # ---- used by job functions
     def log(self, *parts):
@@ -86,24 +90,57 @@ class Job:
         if self.cancel_event.is_set():
             raise JobCancelled()
 
+    @contextlib.contextmanager
+    def shield(self, why):
+        """A step that must not stop half-way (a server installing files, restarting): a cancel asked
+        for inside waits for its end, then stops the job before anything that follows."""
+        with self._lock:
+            self._shields.append(why)
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._shields.pop()
+                late = self.cancel_late is not None and not self._shields and not self.cancel_event.is_set()
+            if late:
+                self._cancel_now(f"stopping now: {self.cancel_late} is over")
+
     # ---- control
     def cancel(self):
+        """Stop the job: at once, or, inside a step that must not stop half-way, right after it.
+        False when the job has already ended."""
         if self.state in ("done", "failed", "cancelled"):
             return False
+        with self._lock:
+            step = self._shields[-1] if self._shields and not self.cancel_event.is_set() else None
+            first = step is not None and self.cancel_late is None
+            if first:
+                self.cancel_late = step
+        if step is not None:
+            if first:
+                self.log(f"cancel requested during {step}: that can't stop half-way; the job stops as soon as it is over")
+                self.manager.bus.publish({"type": "job", "job": self.summary()})
+            return True
+        self._cancel_now("cancel requested")
+        return True
+
+    def _cancel_now(self, msg):
         self.cancel_event.set()
         for fn in list(self.on_cancel):
             try:
                 fn()
             except Exception:  # noqa: BLE001
                 pass
-        self.log("cancel requested")
-        return True
+        self.log(msg)
+        self.manager.bus.publish({"type": "job", "job": self.summary()})
 
     def summary(self) -> dict:
         return {"id": self.id, "kind": self.kind, "title": self.title, "project": self.project, "state": self.state,
                 "progress": self.progress, "step": self.meta.get("step"), "error": self.error,
                 "created": self.created, "started": self.started, "finished": self.finished,
-                "lines": len(self.lines)}
+                "lines": len(self.lines),
+                "stopping": self.state in ("queued", "running")
+                and (self.cancel_event.is_set() or self.cancel_late is not None)}
 
     def detail(self, since=0) -> dict:
         d = self.summary()
@@ -156,12 +193,21 @@ class JobManager:
             job.started = time.time()
             self.bus.publish({"type": "job", "job": job.summary()})
             job.result = fn(job)
-            job.state = "cancelled" if job.cancel_event.is_set() else "done"
+            if job.cancel_event.is_set() and job.cancel_late is None:
+                job.state = "cancelled"
+            else:
+                job.state = "done"
+                if job.cancel_late is not None:
+                    # the cancel came during a step that could not stop, and nothing came after it
+                    job.log(f"finished: the cancel came during {job.cancel_late}, which completed, and nothing "
+                            "was left after it")
         except JobCancelled:
             job.state = "cancelled"
         except Exception as e:  # noqa: BLE001 - reported to the UI
             if job.cancel_event.is_set():
                 job.state = "cancelled"
+                if getattr(e, "log_on_cancel", False) and str(e):
+                    job.log(str(e))            # what the stop left done (a deploy: where it installed)
             else:
                 job.state = "failed"
                 job.error = str(e) or e.__class__.__name__

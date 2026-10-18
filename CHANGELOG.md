@@ -1,5 +1,27 @@
 # Changelog
 
+## Studio 1.7.1 · converter 1.6.0 (2026-10-18)
+
+### Cancel stops an install
+
+* Cancelling an install on a server did nothing while the bundle uploaded: the SFTP upload ran on to
+  the end on a slow link (minutes for a car bundle), and the server then installed it. Now a cancel
+  during the upload drops the SSH connection at once, nothing is installed, and the partial upload
+  is removed from the server over a new connection (an upload folder a stopped deploy could not
+  remove goes with a later deploy, after a day). Packing the bundle stops too.
+* Once the server runs the install script (backups, files, restart), a cancel waits for its end
+  instead of cutting it half-way: the job says so, the Activity page shows *stopping*, and nothing
+  after that step runs (a map going to two server folders stops before the second). A job whose
+  last step was that one ends *done*. The `cancel_job` tool answers `stops_after` with the step;
+  the terminal's Ctrl+C waits for the end of the step and prints what it did.
+
+### Fixes
+
+* Answers are strict JSON whatever a build report holds: a map floor or wall too small to take a
+  coverage sample gave `NaN` in its report, which a browser's `JSON.parse` (the Studio's own
+  pages) and MCP clients refuse, losing the whole answer. Such a surface counts as 0 % holes, and
+  any NaN or infinity goes out as `null` (the API, the event stream and MCP).
+
 ## Studio 1.7.0 · converter 1.6.0 (2026-10-18)
 
 ### A terminal in the Studio

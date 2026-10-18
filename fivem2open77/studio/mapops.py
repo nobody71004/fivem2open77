@@ -585,7 +585,7 @@ class MapOps:
                 job.log(f"bundle: {', '.join(bundle['resources'])} ({bundle['bytes'] / 1048576:.1f} MiB)")
                 tk = (lambda have: self.baker_toolkit(have, log=job.log)) if baker else None
                 res = deploy_mod.deploy_map(server, self.secrets, bundle["path"], names=names, toolkit=tk,
-                                            keep_placement=keep_placement, restart=restart, log=job.log)
+                                            keep_placement=keep_placement, restart=restart, log=job.log, job=job)
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
             self.links.forget(sid)            # the manager may have a new token / listener

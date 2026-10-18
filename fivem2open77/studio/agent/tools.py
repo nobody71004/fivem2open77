@@ -68,14 +68,18 @@ class Context:
     def wait_job(self, job, timeout=3600):
         t0 = time.time()
         soft = getattr(self.session, "soft_timeout", None)
+        asked = False
         while job.state in ("queued", "running"):
-            if self.session.stopping:
+            if self.session.stopping and not asked:
+                asked = True
                 job.cancel()
-                raise ToolError("stopped by the user")
+                if getattr(job, "cancel_late", None) is None:
+                    raise ToolError("stopped by the user")
+                # a step that can't stop half-way (a server installing): the job stops after it; wait for that
             if time.time() - t0 > timeout:
                 job.cancel()
                 raise ToolError("timed out")
-            if soft and time.time() - t0 > soft:
+            if soft and time.time() - t0 > soft and not asked:
                 raise StillRunning(job)
             time.sleep(0.25)
         if job.state != "done":
