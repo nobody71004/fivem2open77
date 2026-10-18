@@ -5,6 +5,8 @@
 DIR given by --downloads holds:
     python-3.12.*-embed-amd64.zip        python.org embeddable package
     dotnet-runtime-8.0.*-win-x64.zip     .NET 8 runtime (runs WolvenKit.CLI.dll)
+    dotnet-runtime-8.0.*-linux-x64.tar.gz  .NET 8 for Linux: the map baker's runtime, which the Studio packs into
+                                         the toolkit it uploads to Linux server hosts (tools/baker/dotnet-linux-x64)
     7z*-x64.exe                          7-Zip installer (7z.exe and 7z.dll are taken from it)
     lzma*.7z                             LZMA SDK (7zSD.sfx, the self-extracting setup stub: it gets the app's
                                          icon, host/app.ico, with peicon.py)
@@ -16,6 +18,7 @@ Layout (F2O77_HOME):
     app/fivem2open77/                           the converter and the Studio (Python)
     tools/deploy/                               server_deploy.sh and the command-line deploy scripts
     tools/wolvenkit/  tools/7zip/               bundled tools
+    tools/baker/dotnet-linux-x64/               .NET 8 for Linux (the map baker's runtime, for server hosts)
     runtime/python/  runtime/dotnet/            bundled runtimes
     LICENSES/                                   third-party licences
 Needs 7z on PATH (p7zip / 7-Zip) to unpack and pack, and pefile (pip) to put the icon on the setup.
@@ -33,7 +36,7 @@ import sys
 import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-VERSION = "1.7.2"
+VERSION = "1.7.3"
 
 SFX_CONFIG = """;!@Install@!UTF-8!
 Title="fivem2open77 Studio {version}"
@@ -151,6 +154,19 @@ def build(a):
         if os.path.isfile(os.path.join(dn, f)):
             shutil.copy2(os.path.join(dn, f), os.path.join(lic, f".NET-{f}"))
 
+    # .NET 8 for Linux: the map baker's runtime. The Studio packs it, with WolvenKit (whose release
+    # carries libkraken.so), into the toolkit it uploads to a Linux server host, so a map moved in game
+    # is rebuilt there (mlo/toolkit.py). Up to 1.7.2 it was never put in: Settings > Tools showed it
+    # missing and maps installed from Windows got no baker.
+    sys.path.insert(0, ROOT)
+    from fivem2open77.studio import linuxdotnet
+    lx = os.path.join(app, "tools", "baker", "dotnet-linux-x64")
+    lx_tgz = one(os.path.join(dl, "dotnet-runtime-8.0.*-linux-x64.tar.gz"))
+    res = linuxdotnet.unpack(lx_tgz, lx)
+    if not linuxdotnet.is_root(lx):
+        raise SystemExit(f"{lx_tgz} did not unpack to a linux-x64 .NET 8 runtime")
+    print(f"tools/baker/dotnet-linux-x64: .NET {res['runtime']}, {res['files']} files")
+
     # 7-Zip
     sz = os.path.join(app, "tools", "7zip")
     os.makedirs(sz)
@@ -185,7 +201,8 @@ def build(a):
         f.write('@echo off\n"%~dp0runtime\\python\\python.exe" -X utf8 -m fivem2open77 %*\n')
 
     manifest = {"version": VERSION, "wheels": names, "python": os.path.basename(pyzip),
-                "dotnet": os.path.basename(one(os.path.join(dl, "dotnet-runtime-8.0.*-win-x64.zip")))}
+                "dotnet": os.path.basename(one(os.path.join(dl, "dotnet-runtime-8.0.*-win-x64.zip"))),
+                "dotnet_linux": os.path.basename(lx_tgz)}
     with open(os.path.join(app, "app", "build-info.json"), "w") as f:
         json.dump(manifest, f, indent=1)
 

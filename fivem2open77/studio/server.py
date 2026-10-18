@@ -326,6 +326,11 @@ def api_tools_donor(h, q):
     h.json(h.studio.prepare_donors().summary())
 
 
+@route("POST", r"/api/tools/linux_dotnet")
+def api_tools_linux_dotnet(h, q):
+    h.json(h.studio.get_linux_dotnet().summary())
+
+
 @route("GET", r"/api/sounds")
 def api_sounds(h, q):
     h.json({"sounds": sound_mod.choices(), "characters": sound_mod.BY_CHARACTER})

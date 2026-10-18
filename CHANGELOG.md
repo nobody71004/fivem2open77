@@ -1,5 +1,21 @@
 # Changelog
 
+## Studio 1.7.3 · converter 1.6.0 (2026-10-18)
+
+### .NET 8 for Linux, the map baker's runtime, comes with the app
+
+* Settings > Tools showed *.NET 8 for Linux (map baker)* missing on every Windows install: the app
+  was meant to carry it (the tool list said "bundled with the app") but the package never put it in.
+  Without it a map installed from Windows got no map baker on the server, so a map moved in game
+  could not be rebuilt there (the Deploy tab said so). The app now carries Microsoft's .NET 8.0.31
+  for linux-x64 in `tools\baker\dotnet-linux-x64` -- the same runtime as the app's own, the file
+  checked against Microsoft's published hash -- and packs it, with the bundled WolvenKit (its
+  release carries the Linux libraries), into the toolkit it installs next to the server.
+* An install without it -- running from source, a folder an antivirus emptied -- gets a *Download*
+  button on that row: the same pinned file, checked byte for byte, unpacked into the workspace
+  (nothing is installed if the file is not the pinned one or the download stops). The Deploy tab's
+  note links there.
+
 ## Studio 1.7.2 · converter 1.6.0 (2026-10-18)
 
 ### The F2077 icon and logo
