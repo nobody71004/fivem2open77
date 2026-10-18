@@ -9,8 +9,6 @@
 }
 ::selection { background: #8870e766; }
 #titlebar { background: linear-gradient(100deg, #101522, #141427); }
-#titlebar .brand svg path:first-child { fill: var(--accent); }
-#titlebar .brand svg path:last-child { stroke: var(--accent-ink); }
 #rail { background: #0d1020; }
 #rail a.active { box-shadow: inset 2px 0 var(--accent); background: linear-gradient(90deg, #9ef3ed18, transparent); }
 #main:not(.home-page) { background: radial-gradient(ellipse at 95% 0%, #6750ac0c, transparent 50%), var(--bg-app); }
@@ -21,10 +19,24 @@
 .home-page::before { content: ""; position: fixed; pointer-events: none; inset: var(--titlebar) 0 var(--statusbar) var(--rail); z-index: -1;
   background: radial-gradient(ellipse at 77% 28%, #7244b32e, transparent 45%), radial-gradient(ellipse at 20% 55%, #20617519, transparent 55%); }
 .eyebrow { font-family: var(--mono); font-size: 10px; letter-spacing: .17em; color: var(--accent); }
-.home-heading { border-bottom: 1px solid #b5c8f11c; padding-bottom: 19px; }
-.home-heading .eyebrow { display: flex; align-items: center; gap: 8px; }
+/* the F2077 logo: the neon wall, whole, over a blurred copy of itself that fills the width */
+.brand-banner { position: relative; height: clamp(170px, 18vw, 270px); display: grid; place-items: center; overflow: hidden;
+  isolation: isolate; border: 1px solid #9ef3ed22; border-radius: 14px; background: #04060d;
+  box-shadow: 0 22px 60px -30px #3fb6ff55; }
+.brand-backdrop { position: absolute; inset: -40px; z-index: -1; background: url(/img/logo.jpg) center 52% / cover no-repeat;
+  filter: blur(24px) saturate(1.3) brightness(.58); transform: scale(1.08); }
+.brand-banner::after { content: ""; position: absolute; inset: 0; z-index: 1; pointer-events: none;
+  background: linear-gradient(90deg, #04060dc4, transparent 32%, transparent 68%, #04060dc4),
+    repeating-linear-gradient(0deg, transparent 0 3px, #ffffff06 3px 4px); }
+.brand-logo { position: absolute; top: 0; left: 50%; translate: -50% 0; height: 100%; width: auto; max-width: 80%;
+  object-fit: cover; display: block;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 13%, #000 87%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 13%, #000 87%, transparent);
+  transform: translate3d(calc(var(--pointer-x, 0px) * -.5), calc(var(--pointer-y, 0px) * -.5), 0); }
+.brand-copy { position: absolute; z-index: 2; left: 22px; bottom: 18px; display: grid; gap: 6px; color: var(--text-2); font-size: 12px; }
+.brand-copy .eyebrow { display: flex; align-items: center; gap: 8px; }
+.brand-banner .motion-toggle { position: absolute; z-index: 2; top: 14px; right: 14px; background: #04060d99; }
 .signal { width: 5px; height: 5px; background: var(--accent); border-radius: 50%; box-shadow: 0 0 12px var(--accent); }
-.home-heading-row { display: flex; justify-content: space-between; align-items: center; margin-top: 5px; color: var(--text-2); font-size: 12px; }
 .motion-toggle { background: transparent; color: var(--text-2); }
 .universe-hero { min-height: 360px; display: grid; grid-template-columns: 1.15fr 1fr; align-items: center; gap: 26px; padding: 38px 0 26px; }
 .hero-copy { z-index: 1; }
@@ -99,6 +111,8 @@
   .home-stats > div { padding-left: 12px; }
   .home-stats > div:nth-child(3) { border: 0; padding-left: 0; }
   .home-bottom { flex-direction: column; }
+  .brand-copy { display: none; }
+  #titlebar .brand img { width: 28px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .orbit { animation: none !important; }

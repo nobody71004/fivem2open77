@@ -28,7 +28,7 @@ namespace Fivem2Open77.Studio
             this.backend = backend;
             this.useBrowser = useBrowser;
             Text = Program.AppName;
-            try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+            Icon = AppIcon.Load() ?? Icon;
             ForeColor = Color.FromArgb(230, 233, 240);
             StartPosition = FormStartPosition.CenterScreen;
             MinimumSize = new Size(1000, 680);

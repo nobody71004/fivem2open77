@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/brand/f2077-logo.jpg" alt="F2077: fivem2open77" width="100%"></p>
+
 # fivem2open77
 
 Converts a FiveM (GTA V) add-on vehicle into a drivable Cyberpunk 2077 car for **Open77**, in one
@@ -321,12 +323,13 @@ longer matches this game build) and either installed in the local game for a tes
 `%LOCALAPPDATA%\Programs\fivem2open77` with everything bundled: Python + numpy, WolvenKit CLI, the
 .NET 8 runtime, 7-Zip. Data lives in `%LOCALAPPDATA%\fivem2open77\studio`. Build it with
 `tools/package/build_windows.py` (see its docstring; the window is `host/`, a .NET Framework 4.8
-WinForms + WebView2 app that needs no runtime install). What each release changes is in
-[CHANGELOG.md](CHANGELOG.md).
+WinForms + WebView2 app that needs no runtime install). Its icon and logo, the F2077 emblem and the
+F2077 neon wall, come from `docs/brand` (`tools/brand/make_brand.py` makes the files). What each
+release changes is in [CHANGELOG.md](CHANGELOG.md).
 
-* **Home**: the app opens on Night City as a hologram on a projector pad (once the 3D city of Live
-  maps is built; a planet scene before that), with your own converted cars and MLOs showcased (their
-  real build thumbnails and status, straight into each project).
+* **Home**: the app opens on the F2077 logo, then Night City as a hologram on a projector pad (once
+  the 3D city of Live maps is built; a planet scene before that), with your own converted cars and
+  MLOs showcased (their real build thumbnails and status, straight into each project).
 * **The look (Neural HUD)**: glass panels over a living background — a hex lattice the cursor
   lights, a horizon grid, data motes, shockwaves where you click — and a cursor with a light trail,
   sparks, a reticle and target-lock brackets on what it is over; panel borders light up where the
@@ -404,7 +407,10 @@ WinForms + WebView2 app that needs no runtime install). What each release change
   history (kept with the workspace), Ctrl+C stops the running command, Ctrl+L clears. Jobs show as
   live progress lines with their log folded under them, renders as images, JSON in colour. What
   agents run (their terminal lines and their tool calls) shows here as it runs, labelled with the
-  agent. `python -m fivem2open77 term` is the same terminal in a command prompt.
+  agent. The Terminal page's side panel (quick commands, the agents at work, every command and tool
+  to click onto the prompt) sits beside the console; *Side panel* hides it (remembered), and in a
+  narrow window opens it over the console. `python -m fivem2open77 term` is the same terminal in a
+  command prompt.
 * **Agents drive the whole app, not the screen**: besides the tools, MCP clients get `terminal`
   (any command line, as above; `terminal_output` follows a long one), `studio_api` (any endpoint of
   the Studio's API, `studio_api_routes` lists them), `agent_start` / `agent_send` / `agent_status` /

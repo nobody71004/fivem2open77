@@ -10,17 +10,44 @@ export function terminalPage(root, parts) {
   const filter = h("input", { type: "search", placeholder: "find a tool or command", spellcheck: false });
   const ref = h("div.ref");
   const live = h("div.agents-live");
-  const side = h("div.term-side",
+  const side = h("div.term-side", { id: "term-side" },
     h("div.card", h("h3", "Quick"), h("div.chips",
       ["status", "jobs", "projects", "servers", "qc_report", "agent", "routes", "help"].map((c) =>
-        h("button.btn.small", { type: "button", onclick: () => t.run(c) }, c)))),
+        h("button.btn.small", { type: "button", onclick: () => { closeDrawer(); t.run(c); } }, c)))),
     h("div.card", h("h3", "Agents at work"), live),
     h("div.card", h("h3", "Commands & tools"), filter, ref));
   const grid = h("div.term-grid", consoleBox, side);
+
+  // The side panel: beside the console, or (a narrow window) over it while asked for.  Shown or not is
+  // remembered for wide windows.
+  const narrow = matchMedia("(max-width: 980px)");
+  let wanted = true, drawer = false;
+  try { wanted = localStorage.getItem("studio-term-side") !== "off"; } catch (_) { /* storage optional */ }
+  const sideBtn = h("button.btn.small.ghost.side-toggle", { type: "button", "aria-controls": "term-side", onclick: () => {
+    if (narrow.matches) drawer = !drawer;
+    else {
+      wanted = !wanted;
+      try { localStorage.setItem("studio-term-side", wanted ? "on" : "off"); } catch (_) { /* storage optional */ }
+    }
+    layout();
+  } }, "Side panel");
+  function layout() {
+    const shown = narrow.matches ? drawer : wanted;
+    grid.classList.toggle("no-side", !narrow.matches && !wanted);
+    grid.classList.toggle("side-open", narrow.matches && drawer);
+    sideBtn.setAttribute("aria-expanded", String(shown));
+    sideBtn.classList.toggle("on", shown);
+  }
+  function closeDrawer() {
+    if (drawer) { drawer = false; layout(); }
+  }
+  side.addEventListener("keydown", (e) => { if (e.key === "Escape" && drawer) { closeDrawer(); t.focus(); } });
+  narrow.addEventListener("change", layout);
+  layout();
+
   root.append(h("div.page-head", h("h1", "Terminal"),
     h("span.sub", "every Studio tool is a command · what agents run shows here · Ctrl+` opens it anywhere"),
-    h("div.grow"),
-    h("button.btn.small.ghost", { onclick: () => grid.classList.toggle("no-side") }, "Side panel"),
+    h("div.grow"), sideBtn,
     h("button.btn.small", { onclick: () => t.run("help") }, "Help")), grid);
 
   const t = mountTerminal(consoleBox, { initial: parts && parts[0] === "run" && parts[1] ? decodeURIComponent(parts.slice(1).join("/")) : null });
@@ -44,7 +71,7 @@ export function terminalPage(root, parts) {
     for (const g of [...groups.keys()].sort((a, b) => (order.indexOf(a) + 99) % 99 - (order.indexOf(b) + 99) % 99)) {
       ref.append(h("div.grp", `${g} · ${groups.get(g).length}`));
       for (const it of groups.get(g)) {
-        ref.append(h("div.it", { title: it.about || "", onclick: () => t.insert(it.insert.trimEnd() + " ") },
+        ref.append(h("div.it", { title: it.about || "", onclick: () => { closeDrawer(); t.insert(it.insert.trimEnd() + " "); } },
           h("span", it.name), h("span.d", it.about || ""), it.risk && it.risk !== "read" ? h("span.r." + it.risk, it.risk) : null));
       }
     }
@@ -78,5 +105,5 @@ export function terminalPage(root, parts) {
       renderLive.t = setTimeout(renderLive, 400);
     }
   });
-  return { dispose: () => { off(); t.dispose(); } };
+  return { dispose: () => { off(); narrow.removeEventListener("change", layout); t.dispose(); } };
 }

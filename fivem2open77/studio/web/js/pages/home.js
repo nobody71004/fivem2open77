@@ -28,8 +28,11 @@ export function homePage(root) {
   const content = h("div.home-content");
   const featured = h("div.featured-grid"), library = h("div.showcase-grid"), stats = h("div.home-stats");
   const motionButton = h("button.btn.small.motion-toggle", { type: "button", "aria-pressed": false }, "Motion: off");
-  const heading = h("div.home-heading", h("div.eyebrow", h("span.signal"), "OPEN77 CREATION SYSTEM"),
-    h("div.home-heading-row", h("span", "Your universe. No limits."), motionButton));
+  const heading = h("section.brand-banner", { "aria-label": "F2077 · fivem2open77 Studio" },
+    h("div.brand-backdrop", { "aria-hidden": "true" }),
+    h("img.brand-logo", { src: "/img/logo.jpg", alt: "F2077", decoding: "async" }),
+    h("div.brand-copy", h("div.eyebrow", h("span.signal"), "OPEN77 CREATION SYSTEM"), h("span", "Your universe. No limits.")),
+    motionButton);
   content.append(heading,
     h("section.universe-hero", { "aria-labelledby": "home-title" },
       h("div.hero-copy", h("span.eyebrow", "FROM LOS SANTOS TO NIGHT CITY"),

@@ -5,8 +5,10 @@
 .term-page { display: flex; flex-direction: column; height: calc(100vh - var(--titlebar) - var(--statusbar)); padding-bottom: 14px !important; }
 .term-page .page-head { flex: none; }
 .term-page .page-head .sub { font-family: var(--mono); font-size: 11px; letter-spacing: .04em; }
-.term-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 12px; }
+.term-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 12px; position: relative; }
 .term-grid.no-side { grid-template-columns: minmax(0, 1fr); }
+.term-grid.no-side .term-side { display: none; }
+.term-page .page-head .side-toggle.on { border-color: var(--accent); color: var(--accent); }
 .term-side { display: flex; flex-direction: column; gap: 12px; min-height: 0; overflow: auto; }
 .term-side .card { flex: none; }
 .term-side .ref { max-height: 52vh; overflow: auto; margin: 8px -6px 0; padding: 0 6px; }
@@ -155,4 +157,12 @@ table.tt .st-done, table.tt .st-ok { color: #7cf5b0; } table.tt .st-failed { col
 #sb-term:hover { color: var(--accent); }
 #sb-term.live { color: var(--sun, #ffd23f); }
 @media (prefers-reduced-motion: reduce) { #term-dock { transition: none; } .tblk.live::before, .term-bar.busy .sig, .tjob .jl .bar.indef > i { animation: none; } }
-@media (max-width: 980px) { .term-grid { grid-template-columns: minmax(0, 1fr); } .term-side { display: none; } }
+@media (max-width: 980px) {
+  .term-grid { grid-template-columns: minmax(0, 1fr); }
+  .term-side { display: none; }
+  /* asked for: over the console, from the right */
+  .term-grid.side-open .term-side { display: flex; position: absolute; top: 0; right: 0; bottom: 0; width: min(330px, 88%); z-index: 6;
+    padding: 0 2px 0 12px; background: var(--bg-panel, #0b0f1a); border-left: 1px solid var(--line-strong, #2a3348);
+    box-shadow: -24px 0 48px -12px rgba(0, 0, 0, .8); animation: term-side-in .18s ease-out; }
+}
+@keyframes term-side-in { from { transform: translateX(24px); opacity: 0; } }

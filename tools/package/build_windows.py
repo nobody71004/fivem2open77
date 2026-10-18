@@ -6,7 +6,8 @@ DIR given by --downloads holds:
     python-3.12.*-embed-amd64.zip        python.org embeddable package
     dotnet-runtime-8.0.*-win-x64.zip     .NET 8 runtime (runs WolvenKit.CLI.dll)
     7z*-x64.exe                          7-Zip installer (7z.exe and 7z.dll are taken from it)
-    lzma*.7z                             LZMA SDK (7zSD.sfx, the self-extracting setup stub)
+    lzma*.7z                             LZMA SDK (7zSD.sfx, the self-extracting setup stub: it gets the app's
+                                         icon, host/app.ico, with peicon.py)
     wheels/*.whl                         numpy + paramiko and their dependencies for win_amd64 / cp312
 --wolvenkit: an extracted WolvenKit.Console release; --host: the built fivem2open77-studio.exe folder.
 
@@ -17,7 +18,7 @@ Layout (F2O77_HOME):
     tools/wolvenkit/  tools/7zip/               bundled tools
     runtime/python/  runtime/dotnet/            bundled runtimes
     LICENSES/                                   third-party licences
-Needs 7z on PATH (p7zip / 7-Zip) to unpack and pack.
+Needs 7z on PATH (p7zip / 7-Zip) to unpack and pack, and pefile (pip) to put the icon on the setup.
 """
 from __future__ import annotations
 
@@ -32,7 +33,7 @@ import sys
 import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-VERSION = "1.7.1"
+VERSION = "1.7.2"
 
 SFX_CONFIG = """;!@Install@!UTF-8!
 Title="fivem2open77 Studio {version}"
@@ -193,6 +194,10 @@ def build(a):
     shutil.rmtree(sfx_dir, ignore_errors=True)
     os.makedirs(sfx_dir)
     sh("7z", "e", "-y", f"-o{sfx_dir}", one(os.path.join(dl, "lzma*.7z")), "bin/7zSD.sfx")
+    # the setup shows the app's icon, not 7-Zip's
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from peicon import set_icon
+    set_icon(os.path.join(sfx_dir, "7zSD.sfx"), os.path.join(ROOT, "host", "app.ico"))
     archive = os.path.join(out, "_app.7z")
     if os.path.exists(archive):
         os.remove(archive)

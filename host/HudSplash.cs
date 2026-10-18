@@ -1,7 +1,8 @@
 // The Studio's start screen and the installer's window: the web app's Neural HUD drawn natively
 // while the server starts.  A hex lattice that lights up around the cursor, a horizon grid running
 // towards you, drifting motes wired to the cursor, a slow scan, the emblem with turning rings and a
-// pulse, a decoding title, a segmented progress bar, HUD read-outs in the corners -- and the cursor:
+// pulse (the F2077 emblem at its core), a decoding title, a segmented progress bar, HUD read-outs in
+// the corners -- and the cursor:
 // a turning reticle, a light trail, sparks, click shockwaves that ripple the lattice, and lock
 // brackets on the one button it can have.  GDI+, double buffered, about 60 fps, and only while it
 // is on screen (the timer stops when it is hidden).
@@ -10,6 +11,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using System.Drawing.Text;
 using System.Windows.Forms;
 
@@ -81,6 +83,11 @@ namespace Fivem2Open77.Studio
         float LW => Width / S;                   // the logical size everything is laid out in
         float LH => Height / S;
         Font titleFont, tagFont, monoFont, monoSmall, glyphFont;
+        // the F2077 emblem (host/emblem.png, built into the exe); the drawn "F" when it cannot be read
+        readonly Bitmap emblem = LoadEmblem();
+        Bitmap emblemAt;                         // the emblem at the screen's size, made once per dpi
+        float emblemAtScale;
+        const float EmblemW = 136f;              // its logical width in the core
 
         public HudSplash()
         {
@@ -119,6 +126,7 @@ namespace Fivem2Open77.Studio
                 timer.Dispose();
                 backdrop?.Dispose();
                 titleFont.Dispose(); tagFont.Dispose(); monoFont.Dispose(); monoSmall.Dispose(); glyphFont.Dispose();
+                emblem?.Dispose(); emblemAt?.Dispose();
             }
             base.Dispose(disposing);
         }
@@ -511,7 +519,40 @@ namespace Fivem2Open77.Studio
                 for (int i = 0; i < 2; i++) g.DrawArc(pen, c.X - 74, c.Y - 74, 148, 148, -t * 75f + i * 180f, 78f);
             using (var pen = new Pen(Alpha(Y, 0.7f), 1.4f))
                 g.DrawArc(pen, c.X - 82, c.Y - 82, 164, 164, t * 130f, 18f);
-            // the core: a hexagon with a gradient rim and a glow
+            // the core: the emblem, or a hexagon with the drawn F
+            bool drawn = DrawEmblemImage(g, c, t);
+            if (!drawn) DrawGlyphCore(g, c, t);
+            // a glint running round the core
+            double ga = t * 2.4;
+            float gr = drawn ? 80f : 54f;
+            var gp = new PointF(c.X + (float)Math.Cos(ga) * gr, c.Y + (float)Math.Sin(ga) * gr);
+            using (var b = new SolidBrush(Alpha(Ink, 0.9f)))
+                g.FillEllipse(b, gp.X - 2.2f, gp.Y - 2.2f, 4.4f, 4.4f);
+        }
+
+        /// <summary>The F2077 emblem on a dark disc, with a halo that breathes.  False when it could not be read.</summary>
+        bool DrawEmblemImage(Graphics g, PointF c, float t)
+        {
+            var em = EmblemAtScale();
+            if (em == null) return false;
+            using (var path = new GraphicsPath())
+            {
+                path.AddEllipse(c.X - 76, c.Y - 76, 152, 152);
+                using (var pg = new PathGradientBrush(path) { CenterColor = Color.FromArgb(230, 5, 10, 22), SurroundColors = new[] { Color.FromArgb(0, 5, 10, 22) } })
+                    g.FillEllipse(pg, c.X - 76, c.Y - 76, 152, 152);
+            }
+            float h = EmblemW * em.Height / em.Width;
+            float pulse = 0.5f + 0.5f * (float)Math.Sin(t * 2.2);
+            foreach (var (k, a) in new[] { (1.12f, 0.07f + 0.07f * pulse), (1.05f, 0.14f + 0.10f * pulse) })
+                DrawImageAlpha(g, em, new RectangleF(c.X - EmblemW * k / 2, c.Y - h * k / 2, EmblemW * k, h * k), a);
+            g.DrawImage(em, new RectangleF(c.X - EmblemW / 2, c.Y - h / 2, EmblemW, h));
+            return true;
+        }
+
+        /// <summary>The core before the emblem (and when it cannot be read): a hexagon and the letter F.</summary>
+        void DrawGlyphCore(Graphics g, PointF c, float t)
+        {
+            // a hexagon with a gradient rim and a glow
             var hex = Hex(c, 54);
             using (var b = new LinearGradientBrush(new RectangleF(c.X - 54, c.Y - 54, 108, 108), Color.FromArgb(235, 10, 18, 34), Color.FromArgb(235, 22, 10, 30), 60f))
                 g.FillPolygon(b, hex);
@@ -536,11 +577,48 @@ namespace Fivem2Open77.Studio
                 using (var b = new LinearGradientBrush(new RectangleF(c.X - 30, c.Y - 30, 60, 60), Ink, A, 90f))
                     g.FillPath(b, path);
             }
-            // a glint running round the core
-            double ga = t * 2.4;
-            var gp = new PointF(c.X + (float)Math.Cos(ga) * 54, c.Y + (float)Math.Sin(ga) * 54);
-            using (var b = new SolidBrush(Alpha(Ink, 0.9f)))
-                g.FillEllipse(b, gp.X - 2.2f, gp.Y - 2.2f, 4.4f, 4.4f);
+        }
+
+        static Bitmap LoadEmblem()
+        {
+            try
+            {
+                using (var s = typeof(HudSplash).Assembly.GetManifestResourceStream("Fivem2Open77.Studio.emblem.png"))
+                {
+                    if (s == null) return null;
+                    using (var b = new Bitmap(s)) return new Bitmap(b);   // a copy: a Bitmap goes on reading its stream
+                }
+            }
+            catch { return null; }
+        }
+
+        Bitmap EmblemAtScale()
+        {
+            if (emblem == null) return null;
+            if (emblemAt != null && Math.Abs(emblemAtScale - S) < 0.001f) return emblemAt;
+            emblemAt?.Dispose();
+            int w = Math.Max(1, (int)Math.Round(EmblemW * S)), h = Math.Max(1, (int)Math.Round(EmblemW * S * emblem.Height / emblem.Width));
+            var b = new Bitmap(w, h, PixelFormat.Format32bppPArgb);
+            using (var bg = Graphics.FromImage(b))
+            {
+                bg.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                bg.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                bg.CompositingQuality = CompositingQuality.HighQuality;
+                bg.DrawImage(emblem, new Rectangle(0, 0, w, h));
+            }
+            emblemAt = b;
+            emblemAtScale = S;
+            return b;
+        }
+
+        static void DrawImageAlpha(Graphics g, Image img, RectangleF r, float alpha)
+        {
+            using (var ia = new ImageAttributes())
+            {
+                ia.SetColorMatrix(new ColorMatrix { Matrix33 = Math.Max(0f, Math.Min(1f, alpha)) });
+                g.DrawImage(img, new[] { new PointF(r.Left, r.Top), new PointF(r.Right, r.Top), new PointF(r.Left, r.Bottom) },
+                            new RectangleF(0, 0, img.Width, img.Height), GraphicsUnit.Pixel, ia);
+            }
         }
 
         float DrawTitle(Graphics g, float y, float t)

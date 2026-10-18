@@ -49,8 +49,8 @@ html[data-fx=off] #main { background: radial-gradient(ellipse at 90% 0%, #6750ac
   animation: fx-scanx 7s linear infinite; }
 @keyframes fx-scanx { to { background-position: 140% 0; } }
 #titlebar .brand { border-right: 1px solid var(--line); position: relative; }
-#titlebar .brand svg { filter: drop-shadow(0 0 8px rgba(158, 243, 237, .55)); transition: transform .3s, filter .3s; }
-#titlebar .brand:hover svg { transform: rotate(-8deg) scale(1.08); filter: drop-shadow(0 0 14px rgba(158, 243, 237, .9)); }
+#titlebar .brand img { filter: drop-shadow(0 0 7px rgba(79, 190, 255, .45)); transition: transform .3s, filter .3s; }
+#titlebar .brand:hover img { transform: scale(1.1); filter: drop-shadow(0 0 13px rgba(79, 190, 255, .85)); }
 #titlebar .product b { letter-spacing: .04em; }
 #titlebar .product span { font-family: var(--mono); font-size: 10.5px; letter-spacing: .22em; text-transform: uppercase; color: var(--accent); opacity: .8; }
 #crumbs a, #crumbs span { font-family: var(--sans); }
