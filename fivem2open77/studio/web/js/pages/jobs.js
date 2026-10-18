@@ -17,7 +17,8 @@ export function jobsPage(root) {
       tbody.append(h("tr", { style: { cursor: "pointer" }, onclick: () => show(j.id) },
         h("td", fmtTime(j.created)), h("td", j.title), h("td", pill(j.state), h("span.muted", prog)),
         h("td.muted", j.step || j.error || ""),
-        h("td", ["running", "queued"].includes(j.state) ? h("button.btn.small.danger", { onclick: (e) => { e.stopPropagation(); api.post(`/jobs/${j.id}/cancel`); } }, "Cancel") : "")));
+        h("td", !["running", "queued"].includes(j.state) ? "" : j.stopping ? h("span.muted", "stopping…")
+          : h("button.btn.small.danger", { onclick: (e) => { e.stopPropagation(); api.post(`/jobs/${j.id}/cancel`); } }, "Cancel"))));
     }
   }
 

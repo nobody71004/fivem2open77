@@ -145,7 +145,10 @@ def test_bundles_install_and_read_back(tmp_path):
 
 class _Job:
     def __init__(self):
+        import threading
         self.lines = []
+        self.cancel_event = threading.Event()
+        self.on_cancel = []
 
     def log(self, s):
         self.lines.append(s)
@@ -178,8 +181,9 @@ def test_studio_repacks_only_changed_bundles(tmp_path, monkeypatch):
            "standalone": {"i8rpncs": "Vehicle.i8rpncs"}, "versions": {"f2o77_cars_1": "1.1.0", "f2o77_cars_2": "1.1.0"}}
     sent = {}
 
-    def fake_deploy(server, secrets, path, mode, names, log):
+    def fake_deploy(server, secrets, path, mode, names, log, job=None):
         import tarfile
+        sent["job"] = job                    # the job goes along: its cancel stops the upload
         with tarfile.open(path) as t:
             sent["names"] = sorted({m.name.split("/")[3] for m in t.getmembers()})
             sent["lua"] = t.extractfile("resources/assets/vehicles/f2o77_cars_2/open77.lua").read().decode()
@@ -191,6 +195,7 @@ def test_studio_repacks_only_changed_bundles(tmp_path, monkeypatch):
     r = Studio._deploy_car_bundles(me, job, {"id": "xyberrp"}, "open77-xbuniverse", inv, best, "stage")
     # bundle 1 is unchanged; bundle 2 has the new urus; the car installed on its own is updated in place
     assert r["bundles"] == ["f2o77_cars_2"] and sent["names"] == ["f2o77_cars_2", "i8rpncs"], (r, sent, job.lines)
+    assert sent["job"] is job
     assert 'version "1.2.0"' in sent["lua"]
     assert any("f2o77_cars_1 unchanged" in l for l in job.lines)
     assert best["Vehicle.urus"]["project"].data["deployments"][-1]["bundle"] == "f2o77_cars_2"

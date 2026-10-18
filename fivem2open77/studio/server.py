@@ -990,7 +990,8 @@ def api_job_cancel(h, q, jid):
     j = h.studio.jobs.get(jid)
     if not j:
         raise HttpError(404, "no such job")
-    h.json({"cancelled": j.cancel()})
+    ok = j.cancel()
+    h.json({"cancelled": ok, **({"stops_after": j.cancel_late} if ok and j.cancel_late else {})})
 
 
 @route("GET", r"/api/events")

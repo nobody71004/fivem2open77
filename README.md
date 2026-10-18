@@ -376,7 +376,9 @@ WinForms + WebView2 app that needs no runtime install). What each release change
   on first use and checked after). Modes: *stage* (default: installed now, the car hub restarts the
   server when nobody is online), *restart now* (refused while players are online), *files only*.
   Server status shows the Open77 build, players online, the converted cars installed and the hub's
-  queue. Passwords and API keys are encrypted for your Windows account (DPAPI).
+  queue. Passwords and API keys are encrypted for your Windows account (DPAPI). Cancel stops an
+  install at once while it uploads (nothing is installed, the partial upload is removed); once the
+  server is installing, it stops right after that step, never half-way through it.
 * **AI agent**: Claude (API key) or Ollama (local) drives the same operations through tools —
   inspect, render (the model looks at the parts renders), edit the profile, build, check, deploy,
   read server logs — asking you before changes or server actions depending on the permission level.

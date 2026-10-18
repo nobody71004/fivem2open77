@@ -612,7 +612,9 @@ class Run:
         p = job.progress
         pct = f" {round(p * 100)}%" if isinstance(p, (int, float)) and job.state == "running" else ""
         step = job.meta.get("step")
-        t = f"job {job.id} {job.title}: {job.state}{pct}" + (f" -- {step}" if step and job.state == "running" else "")
+        stopping = job.state in ("queued", "running") and (job.cancel_event.is_set() or job.cancel_late is not None)
+        t = (f"job {job.id} {job.title}: {job.state}{pct}" + (" (stopping)" if stopping else "")
+             + (f" -- {step}" if step and job.state == "running" else ""))
         if job.state == "failed" and job.error:
             t += f" -- {job.error}"
         self._add({"k": "job", "t": t, "job": job.id, "title": job.title, "state": job.state, "p": p, "step": step,
@@ -662,7 +664,7 @@ class Run:
             for entry in job.lines[i:n]:
                 self.out("log", entry.get("text", ""), job=job.id)
             i = n
-            sig = (job.state, job.progress, job.meta.get("step"), job.error)
+            sig = (job.state, job.progress, job.meta.get("step"), job.error, job.cancel_event.is_set(), job.cancel_late)
             if sig != last:
                 self.job_line(job)
                 last = sig
@@ -1362,7 +1364,9 @@ class Terminal:
     def c_cancel(self, run, words, raw):
         j = self._job(words[0] if words else "")
         ok = j.cancel()
-        run.out("ok" if ok else "info", f"job {j.id}: {'cancel requested' if ok else 'not running (' + j.state + ')'}")
+        said = (f"stops when {j.cancel_late} is over" if ok and j.cancel_late else "cancel requested" if ok
+                else f"not running ({j.state})")
+        run.out("ok" if ok else "info", f"job {j.id}: {said}")
         return True
 
     # ---- the AI agent

@@ -29,7 +29,7 @@ from .settings import Settings
 from .tools import Toolbox
 from .worldops import WorldOps
 
-APP_VERSION = "1.7.0"
+APP_VERSION = "1.7.1"
 
 
 def _stamp(path) -> list:
@@ -435,9 +435,10 @@ class Studio(MapOps, WorldOps):
             tmp = tempfile.mkdtemp(prefix="f2o77-pack-")
             try:
                 outs = [os.path.join(q.build_dir(b["n"]), "out") for q, b in built]
-                bundle = deploy_mod.make_bundle(os.path.join(tmp, "bundle.tgz"), build_outs=outs, include_hub=include_hub)
+                bundle = deploy_mod.make_bundle(os.path.join(tmp, "bundle.tgz"), build_outs=outs, include_hub=include_hub,
+                                                cancel=job.cancel_event)
                 job.log(f"bundle: {len(bundle['resources'])} resources ({bundle['bytes'] / 1048576:.1f} MiB)")
-                res = deploy_mod.deploy(server, self.secrets, bundle["path"], mode=mode, names=names, log=job.log)
+                res = deploy_mod.deploy(server, self.secrets, bundle["path"], mode=mode, names=names, log=job.log, job=job)
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
             for q, b in built:
@@ -680,9 +681,10 @@ class Studio(MapOps, WorldOps):
                         "names": [r["folder"] for r in results]}
             tmp = tempfile.mkdtemp(prefix="f2o77-bundle-")
             try:
-                bundle = deploy_mod.make_bundle(os.path.join(tmp, "bundle.tgz"), build_out=out, include_hub=include_hub)
+                bundle = deploy_mod.make_bundle(os.path.join(tmp, "bundle.tgz"), build_out=out, include_hub=include_hub,
+                                                cancel=job.cancel_event)
                 job.log(f"bundle: {', '.join(bundle['resources'])} ({bundle['bytes'] / 1048576:.1f} MiB)")
-                res = deploy_mod.deploy(server, self.secrets, bundle["path"], mode=mode, names=names, log=job.log)
+                res = deploy_mod.deploy(server, self.secrets, bundle["path"], mode=mode, names=names, log=job.log, job=job)
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
             entry = {"time": time.time(), "server": sid, "names": res["names"], "mode": mode, "build": b["n"],
@@ -755,6 +757,7 @@ class Studio(MapOps, WorldOps):
         try:
             dirs, changed, deployed = {}, [], []
             for bname, recs in sorted(assignment.items(), key=lambda kv: carbundle._bundle_no(kv[0])):
+                job.check()
                 old = (inv.get("bundles") or {}).get(bname) or {}
                 have = old.get("cars") or {}
                 if have and set(have) == set(recs) and all(have.get(r) == best[r]["car"]["info"].get("version") for r in recs):
@@ -787,9 +790,9 @@ class Studio(MapOps, WorldOps):
             if not dirs:
                 job.log(f"{folder}: every car is up to date")
                 return {"folder": folder, "bundles": [], "cars": 0, "result": None}
-            bundle = deploy_mod.make_bundle(os.path.join(tmp, "bundle.tgz"), resource_dirs=dirs)
+            bundle = deploy_mod.make_bundle(os.path.join(tmp, "bundle.tgz"), resource_dirs=dirs, cancel=job.cancel_event)
             job.log(f"{folder}: uploading {len(dirs)} resources ({bundle['bytes'] / 1048576:.0f} MiB)")
-            res = deploy_mod.deploy(server, self.secrets, bundle["path"], mode=mode, names=[folder], log=job.log)
+            res = deploy_mod.deploy(server, self.secrets, bundle["path"], mode=mode, names=[folder], log=job.log, job=job)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
         for rec in set(deployed):
@@ -853,8 +856,9 @@ class Studio(MapOps, WorldOps):
             def fn(job):
                 tmp = tempfile.mkdtemp(prefix="f2o77-hub-")
                 try:
-                    b = deploy_mod.make_bundle(os.path.join(tmp, "hub.tgz"), include_hub=True)
-                    return deploy_mod.deploy(server, self.secrets, b["path"], mode=mode, names=kw.get("names"), log=job.log)
+                    b = deploy_mod.make_bundle(os.path.join(tmp, "hub.tgz"), include_hub=True, cancel=job.cancel_event)
+                    return deploy_mod.deploy(server, self.secrets, b["path"], mode=mode, names=kw.get("names"), log=job.log,
+                                             job=job)
                 finally:
                     shutil.rmtree(tmp, ignore_errors=True)
             title = f"Install the car hub on {server['label']}"

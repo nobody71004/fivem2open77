@@ -609,6 +609,7 @@ function buildTab(root, ctx) {
       bar.className = "progress" + (j.progress == null && j.state === "running" ? " indef" : "");
       bar.firstChild.style.width = `${(j.progress || (j.state === "done" ? 1 : 0)) * 100}%`;
       step.textContent = j.step || "";
+      if (j.stopping && !cancel.disabled) { cancel.disabled = true; cancel.textContent = "Stopping…"; }
       clear(log).append(...logLines(j.allLines));
       log.scrollTop = log.scrollHeight;
     }).then((j) => {
