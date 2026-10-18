@@ -2,7 +2,7 @@
 // built before a converter fix (stale), what fails a check and why, and the schedule that keeps it so.
 import { api, waitJob } from "../api.js";
 import { onEvent } from "../store.js";
-import { h, clear, toast, fmtAgo, fmtTime, icon } from "../ui.js";
+import { h, clear, put, toast, fmtAgo, fmtTime, icon } from "../ui.js";
 
 const LABEL = { ok: "ok", warn: "ok, notes", fail: "fails a check", failed: "build failed", stale: "built before a fix",
   unbuilt: "not built", skipped: "skipped" };
@@ -56,7 +56,7 @@ export function qualityPage(root) {
         [1, 3, 6, 12, 24].map((n) => h("option", { value: n, selected: Number(s.interval_hours || 6) === n }, `${n} h`)))),
       h("label", h("input", { type: "checkbox", checked: s.auto_rebuild !== false, onchange: (e) => save({ auto_rebuild: e.target.checked }) }),
         " rebuild what fails or was built before a fix"));
-    clear(summary).append(
+    put(clear(summary),
       h("div.qc-tiles", tiles), controls,
       h("p.muted", { style: { margin: "10px 0 0" } },
         s.enabled === false ? "Automatic checks are off (Settings)." :
