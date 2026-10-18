@@ -30,6 +30,9 @@ from .agent.tools import CAR_TOOLS, Context, StillRunning, Tool, ToolError, _obj
 
 PROTOCOLS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")     # the initialize-handshake era
 NOT_OFFERED = ("ask_user", "finish")          # MCP clients talk to their user themselves
+# deploy-risk tools that gate what they run themselves (a terminal line, an API call, the AI agent's
+# call): the Studio click is asked for the server change inside, not for the call
+SELF_GATED = ("terminal", "studio_api", "agent_approve")
 SESSION_TTL = 24 * 3600
 
 INSTRUCTIONS = """fivem2open77 Studio: converts FiveM (GTA V) cars and maps/MLOs into Open77 (Cyberpunk 2077
@@ -37,7 +40,10 @@ multiplayer) resources, builds them with WolvenKit, installs them on the user's 
 converted maps on running servers, and edits Night City itself (delete / move / replace / add objects and ground
 pieces, their collision following). Read the resource f2o77://guide first; call studio_status to see what is set
 up. Project tools work on the session's project: import_resource, new_world_edit and open_project switch it (or
-pass "project" to any project tool). Long calls answer {"status": "running", "job"}: call wait_job until done."""
+pass "project" to any project tool). Long calls answer {"status": "running", "job"}: call wait_job until done.
+The whole app is yours without the screen: terminal runs any Studio command line (help lists them), studio_api
+calls any endpoint of the Studio (studio_api_routes lists them), agent_start / agent_send / agent_status /
+agent_approve / agent_stop drive the Studio's own AI agent, studio_ui shows the user a page of the Studio."""
 
 
 def token_path(workspace: str) -> str:
@@ -113,6 +119,21 @@ def guide() -> str:
         "build_car, build_map, build_world_edit and the deploys can take minutes. When a call answers",
         '{"status": "running", "job": "<id>"}, the work goes on in the Studio: call wait_job with that id',
         "(each call waits up to a minute) until it says done or failed. The user sees every job in the Studio.",
+        "",
+        "## The whole app, without the screen",
+        "- terminal: the Studio's command line, the same one the user has in the app (Terminal page). Every tool is a",
+        "  command (`build_car`, `deploy_car prod mode=stage`, `wait_job <id>`); built-ins: help, tools, status, projects,",
+        "  use <project>, servers, jobs, log <job> -f, wait <job>, cancel <job>, agent ..., api METHOD /api/..., routes,",
+        "  cli <converter args>, ui <page>, settings key=value, history. `a && b` chains. Each line you run shows up in",
+        "  the user's terminal as it runs. A command that outlives `seconds` answers running with a run id: follow it",
+        "  with terminal_output. System commands (sh / !) only when the user allowed them (Settings > Agents).",
+        "- studio_api: any endpoint of the Studio's own API (studio_api_routes lists them with what each does): what",
+        "  the app's buttons call. Uploads, secrets, the MCP token and approvals are the user's and are refused.",
+        "- The Studio's AI agent: agent_start (a goal, optionally a project), then agent_status / agent_send /",
+        "  agent_approve / agent_stop. It works in the Studio, the user sees it on the Agent page.",
+        "- studio_ui: show the user a page (a project, the quality page, the terminal...) while you work, and a note.",
+        "- Installs and restarts (deploy risk) wait for the user's click in the Studio when Settings > Agents says so,",
+        "  however they are asked for: a tool, a terminal line, an API call or the AI agent.",
     ])
 
 
@@ -191,7 +212,8 @@ class McpSession:
     @property
     def label(self) -> str:
         n = self.client["name"].lower()
-        for key, nice in (("claude-code", "Claude Code"), ("claude", "Claude"), ("codex", "Codex"), ("cursor", "Cursor"),
+        for key, nice in (("fivem2open77-term", "Command prompt"), ("fivem2open77-qc", "Quality sweep"),
+                          ("claude-code", "Claude Code"), ("claude", "Claude"), ("codex", "Codex"), ("cursor", "Cursor"),
                           ("vscode", "VS Code"), ("visual studio code", "VS Code"), ("windsurf", "Windsurf"),
                           ("f2o77-test", "Test client")):
             if key in n:
@@ -342,7 +364,250 @@ class McpHub:
                 raise ToolError("no such job")
             return text({"cancelled": job.cancel()})
 
-        return [
+        # ---------------------------------------------------------------- the whole app, without the screen
+        def term_answer(run, since=0, fmt="text"):
+            v = run.view(since)
+            if fmt == "lines":
+                blocks = [{"type": "text", "text": json.dumps({k: v[k] for k in ("run", "state", "exit", "next", "lines")},
+                                                               default=str)}]
+                return blocks, v["state"] == "failed"
+            parts, images = [], []
+            for line in v["lines"]:
+                k = line.get("k")
+                if k == "ctl":
+                    continue
+                if k == "img" and line.get("data") and len(images) < 4:
+                    images.append({"type": "image", "png": line["data"], "mimeType": line.get("mime") or "image/png"})
+                parts.append(("$ " if k == "in" else "") + line.get("t", ""))
+            body = "\n".join(parts)
+            if len(body) > 40000:
+                body = "(the start is cut: terminal_output with since reads it all)\n" + body[-40000:]
+            tail = {"run": v["run"], "state": v["state"], "exit": v["exit"], "next": v["next"]}
+            if v["state"] == "running":
+                tail["then"] = "terminal_output with this run (and since=next) follows it; cancel=true stops it"
+            blocks = [{"type": "text", "text": body + "\n" + json.dumps(tail)}] + images
+            return blocks, v["state"] == "failed"
+
+        def t_terminal(ctx, args):
+            line = str(args.get("command") or "").strip()
+            if not line:
+                raise ToolError("command: a Studio command line (help lists the commands)")
+            term = self.studio.terminal
+            ts = term.session_for_mcp(ctx.session.s)
+            run = term.run(ts, line)
+            limit = max(1.0, min(600.0, float(args.get("seconds") or self.settings()["call_seconds"])))
+            t0 = time.time()
+            while not run.done.wait(0.25):
+                if ctx.session.stopping:
+                    term.cancel(run.id)
+                    run.done.wait(5)
+                    break
+                if time.time() - t0 > limit:
+                    break
+            return term_answer(run, 0, args.get("format") or "text")
+
+        def t_terminal_output(ctx, args):
+            term = self.studio.terminal
+            try:
+                run = term.get_run(str(args.get("run") or ""))
+            except Exception as e:  # noqa: BLE001 - TermError
+                raise ToolError(str(e))
+            if run.session.mcp is not ctx.session.s:
+                raise ToolError("that run is not one of this session's (terminal answers the run ids it starts)")
+            if args.get("cancel"):
+                term.cancel(run.id)
+                run.done.wait(10)
+            since = int(args.get("since") or 0)
+            limit = max(0.0, min(600.0, float(args.get("seconds", 30))))
+            t0 = time.time()
+            while run.state == "running" and time.time() - t0 < limit and not ctx.session.stopping:
+                if run.count > since and time.time() - t0 > 1.0:
+                    run.done.wait(0.75)                 # new output: answer with it (and with its end, when close)
+                    break
+                time.sleep(0.25)
+            return term_answer(run, since, args.get("format") or "text")
+
+        def t_api(ctx, args):
+            from .server import call_route
+            from .terminal import TermError, api_guard, api_path
+            method = str(args.get("method") or "GET").upper()
+            try:
+                path = api_path(args.get("path"))
+                risk = api_guard(method, path.split("?")[0], args.get("body"))
+            except TermError as e:
+                raise ToolError(str(e))
+            if risk == "deploy" and self.settings()["approval"] == "studio":
+                ok, note = self._approve(ctx.session.s, f"{method} {path}", args.get("body") or {}, ctx.session)
+                if not ok:
+                    raise ToolError("the user declined this in the Studio" + (f": {note}" if note else ""))
+            ans = call_route(self.studio, method, path, body=args.get("body"), query=args.get("query"))
+            st = ans["status"]
+            if "json" in ans:
+                txt = json.dumps(ans["json"], indent=1, default=str)
+                if len(txt) > 60000:
+                    txt = txt[:60000] + "\n... (cut: ask for less)"
+                return [{"type": "text", "text": f"HTTP {st}\n{txt}"}], st >= 400
+            if ans.get("data") is not None and (ans.get("content_type") or "").startswith("image/"):
+                return [{"type": "text", "text": f"HTTP {st} {ans['content_type']}"},
+                        {"type": "image", "png": base64.b64encode(ans["data"]).decode(), "mimeType": ans["content_type"]}], False
+            if "file" in ans:
+                return text({"status": st, "file": ans["file"], "bytes": ans.get("bytes"), "content_type": ans.get("content_type")})
+            return text({"status": st, "content_type": ans.get("content_type"), "bytes": len(ans.get("data") or b"")})
+
+        def t_routes(ctx, args):
+            from .server import route_list
+            from .terminal import API_REFUSED
+            flt = str(args.get("filter") or "").lower()
+            out = []
+            for r in route_list():
+                if flt and flt not in r["path"].lower() and flt not in r["about"].lower():
+                    continue
+                refused = any((m is None or m == r["method"]) and re.match("^" + rx + "$", re.sub(r"\{[^}]+\}", "x", r["path"]))
+                              for m, rx, _why in API_REFUSED) and r["path"] not in ("/api/terminal/spec", "/api/terminal/history")
+                out.append(f"{r['method']:6s} {r['path']}  -- {r['about']}" + ("  [the user's]" if refused else ""))
+            return text("\n".join(out) or "(no endpoint matches)")
+
+        def t_ui(ctx, args):
+            from .terminal import TermError
+            term = self.studio.terminal
+            try:
+                target = term.ui_target(page=args.get("page"), project=args.get("project"), tab=args.get("tab")) \
+                    if (args.get("page") or args.get("project")) else None
+            except TermError as e:
+                raise ToolError(str(e))
+            except Exception as e:  # noqa: BLE001 - an unknown project
+                raise ToolError(str(e))
+            msg = str(args.get("message") or "").strip()[:300] or None
+            label = ctx.session.s.label
+            if target:
+                n = term.ui_navigate(target, by=label, message=msg)
+            else:
+                if not msg:
+                    raise ToolError("page, project or message")
+                self.studio.bus.publish({"type": "ui", "action": "toast", "text": f"{label}: {msg}", "by": label})
+                n = len(self.studio.bus._subs)
+            return text({"shown": target, "message": msg, "windows": n,
+                         "note": None if n else "no Studio window is open: the user does not see it"})
+
+        def agent_answer(s, since, seconds, cs):
+            from .terminal import agent_compact, agent_follow
+            if seconds > 0:
+                agent_follow(s, since, lambda ev: None, stop=lambda: cs.stopping, timeout=seconds)
+            v = agent_compact(s.view(since))
+            return text(v), s.status == "failed"
+
+        def t_agent_start(ctx, args):
+            from .terminal import TermError, agent_autonomy, agents_of
+            from .agent.providers import ProviderError
+            goal = str(args.get("goal") or "").strip()
+            if not goal:
+                raise ToolError("goal: what the Studio's agent should do")
+            try:
+                m = agents_of(self.studio)
+                pid = self._resolve_project(args["project"]) if args.get("project") else ctx.session.project
+                v = m.start(project=pid, goal=goal, autonomy=agent_autonomy(self.studio, args.get("autonomy"), "mcp"),
+                            provider=args.get("provider"))
+            except (TermError, ProviderError) as e:
+                raise ToolError(str(e))
+            s = m.sessions[v["id"]]
+            ctx.session.s.publish("agent", agent=s.id)
+            return agent_answer(s, 0, max(0.0, min(300.0, float(args.get("seconds", 45)))), ctx.session)
+
+        def _agent(args):
+            from .terminal import TermError, agent_session
+            try:
+                return agent_session(self.studio, args.get("session"))
+            except TermError as e:
+                raise ToolError(str(e))
+
+        def t_agent_send(ctx, args):
+            s = _agent(args)
+            msg = str(args.get("text") or "").strip()
+            if not msg:
+                raise ToolError("text: what to tell the agent")
+            before = len(s.events)
+            self.studio.agents.message(s.id, msg)
+            return agent_answer(s, before, max(0.0, min(300.0, float(args.get("seconds", 45)))), ctx.session)
+
+        def t_agent_status(ctx, args):
+            if not args.get("session"):
+                if self.studio.agents is None:
+                    raise ToolError("the Studio's AI agent is not available")
+                return text([{k: x.get(k) for k in ("id", "status", "goal", "project", "steps", "created")}
+                             for x in self.studio.agents.list()[:30]] or "no session yet: agent_start")
+            s = _agent(args)
+            return agent_answer(s, int(args.get("since") or 0), max(0.0, min(300.0, float(args.get("seconds", 0)))),
+                                ctx.session)
+
+        def t_agent_approve(ctx, args):
+            s = _agent(args)
+            p = s.pending
+            if not p:
+                raise ToolError("the agent is not waiting for an approval")
+            approve = bool(args.get("approve"))
+            if approve and p.get("risk") == "deploy" and self.settings()["approval"] == "studio":
+                raise ToolError("installs and restarts wait for the user's click in the Studio (its Agent page)")
+            before = len(s.events)
+            self.studio.agents.approve(s.id, p["call_id"], approve, args.get("note"))
+            return agent_answer(s, before, max(0.0, min(300.0, float(args.get("seconds", 45)))), ctx.session)
+
+        def t_agent_stop(ctx, args):
+            s = _agent(args)
+            self.studio.agents.stop(s.id)
+            return text({"session": s.id, "stopping": True})
+
+        SESSION = {"type": "string", "description": "the agent session id (agent_status lists them)"}
+        WAIT = {"type": "number", "description": "seconds to follow the agent before answering (default 45, at most 300)"}
+        app_tools = [
+            Tool("terminal", "Run a command line in the Studio's terminal -- the same one the user has in the app, and they "
+                 "see your line run there. Every Studio tool is a command (build_car, deploy_car prod mode=stage); "
+                 "built-ins: help, tools, status, projects, use <project>, servers, jobs, log <job> -f, wait <job>, "
+                 "cancel <job>, agent start|say|approve|decline|stop|watch, api METHOD /api/..., routes, cli <converter "
+                 "args>, ui <page>, settings key=value, history; `a && b` chains; sh/! system commands only when the user "
+                 "allowed them. Answers the output; a longer command answers running with its run id (terminal_output).",
+                 _obj({"command": {"type": "string"}, "seconds": {"type": "number", "description": "how long to wait "
+                       "for it (default: the Studio's call_seconds)"}, "format": {"type": "string", "enum": ["text", "lines"]}},
+                      ["command"]), "deploy", t_terminal),
+            Tool("terminal_output", "Follow a terminal command that answered running: its output from line `since` on, "
+                 "waiting up to `seconds` (default 30) for more or for its end; cancel=true stops it (Ctrl+C).",
+                 _obj({"run": {"type": "string"}, "since": {"type": "integer"}, "seconds": {"type": "number"},
+                       "cancel": {"type": "boolean"}, "format": {"type": "string", "enum": ["text", "lines"]}}, ["run"]),
+                 "read", t_terminal_output),
+            Tool("studio_api", "Call any endpoint of the Studio's own API -- what the app's buttons call (studio_api_routes "
+                 "lists them). method GET|POST|PUT|PATCH|DELETE, path like /api/projects/<id>/profile, body (JSON) and "
+                 "query. PNG answers come back as images. Uploads, secrets, the MCP token and approvals are the user's.",
+                 _obj({"method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]},
+                       "path": {"type": "string"}, "body": {}, "query": {"type": "object"}}, ["path"]),
+                 "deploy", t_api),
+            Tool("studio_api_routes", "Every endpoint of the Studio's API with what it does (filter by text).",
+                 _obj({"filter": {"type": "string"}}), "read", t_routes),
+            Tool("studio_ui", "Show the user something in the Studio's window while you work: a page (home, cars, maps, "
+                 "world, live, servers, quality, agent, activity, terminal, settings, agents), a project (with a tab: "
+                 "overview, mapping, handling, sound, build, deploy...), and/or a short message. No clicks, no screen.",
+                 _obj({"page": {"type": "string"}, "project": {"type": "string"}, "tab": {"type": "string"},
+                       "message": {"type": "string"}}), "read", t_ui),
+            Tool("agent_start", "Start the Studio's own AI agent (Claude or a local Ollama model, set up in the Studio) on a "
+                 "goal, optionally on a project, and follow it until it waits (seconds). It works in the Studio with the "
+                 "Studio's tools; the user watches it on the Agent page. autonomy: ask (approve every change), auto_safe "
+                 "(approve server changes), full (never ask; capped to auto_safe when the user wants to approve installs).",
+                 _obj({"goal": {"type": "string"}, "project": {"type": "string"},
+                       "autonomy": {"type": "string", "enum": ["ask", "auto_safe", "full"]},
+                       "provider": {"type": "string", "enum": ["anthropic", "ollama"]}, "seconds": WAIT}, ["goal"]),
+                 "change", t_agent_start),
+            Tool("agent_send", "Write to the Studio's AI agent: the answer to its question, or what to do next; then follow "
+                 "it until it waits (seconds).", _obj({"session": SESSION, "text": {"type": "string"}, "seconds": WAIT},
+                                                      ["session", "text"]), "change", t_agent_send),
+            Tool("agent_status", "The Studio's AI agent: without session its sessions; with one what it said and did "
+                 "from event `since`, its status and what it waits for (seconds > 0 waits for it to settle).",
+                 _obj({"session": SESSION, "since": {"type": "integer"}, "seconds": {"type": "number"}}), "read", t_agent_status),
+            Tool("agent_approve", "Decide the call the Studio's AI agent waits on (approve true or false, with a note). "
+                 "Installs and restarts wait for the user's own click when they asked for that.",
+                 _obj({"session": SESSION, "approve": {"type": "boolean"}, "note": {"type": "string"}, "seconds": WAIT},
+                      ["session", "approve"]), "deploy", t_agent_approve),
+            Tool("agent_stop", "Stop the Studio's AI agent.", _obj({"session": SESSION}, ["session"]), "change", t_agent_stop),
+        ]
+
+        return app_tools + [
             Tool("studio_status", "What is set up in the Studio: WolvenKit, the game folder, the donor files, servers, "
                  "projects, running jobs, the world index. Call it first.", _obj(), "read", t_status),
             Tool("wait_job", "Wait for a Studio job a call answered as running (up to `seconds`, default 50, each call); "
@@ -375,7 +640,8 @@ class McpHub:
         from .agent.maptools import LIVE_TOOLS
         server_tools = set(LIVE_TOOLS) | {"list_servers", "server_status", "read_server_log", "restart_server",
                                           "deploy_car", "deploy_all_cars", "deploy_map", "deploy_world_edit", "remove_world_edit",
-                                          "enable_agent_api"}
+                                          "enable_agent_api", "terminal", "studio_api", "agent_start", "agent_send",
+                                          "agent_approve"}
         out = []
         for name in sorted(self.tools):
             t = self.tools[name]
@@ -391,6 +657,16 @@ class McpHub:
                                 "openWorldHint": name in server_tools},
             })
         return out
+
+    def fingerprint(self) -> dict:
+        """Hashes of what a client lists: tools, prompts, resources (and the Studio's version)."""
+        import hashlib
+
+        def h(v):
+            return hashlib.sha1(json.dumps(v, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:16]
+        return {"version": _app_version(), "tools": h(self.tool_list()),
+                "prompts": h({k: [v["description"], v["arguments"]] for k, v in PROMPTS.items()}),
+                "resources": h([r["uri"] for r in self.resource_list()])}
 
     # ---- sessions
     def _session(self, sid) -> McpSession | None:
@@ -432,7 +708,12 @@ class McpHub:
         params = msg.get("params") or {}
         if not isinstance(method, str):
             return (None if mid is None else _err(mid, -32600, "invalid request")), sid
-        self.last_activity = time.time()
+        if method == "f2o77/fingerprint":
+            # what the stdio bridge polls to tell its client the tool list changed (a Studio update): not
+            # activity, so a Studio started for agents still stops when they are done
+            return (None if mid is None else _ok(mid, self.fingerprint())), sid
+        if method != "ping":
+            self.last_activity = time.time()
         if method == "initialize":
             want = params.get("protocolVersion")
             proto = want if want in PROTOCOLS else PROTOCOLS[0]
@@ -441,8 +722,8 @@ class McpHub:
                 self.sessions[s.id] = s
             s.publish("connected", client=s.client)
             return _ok(mid, {"protocolVersion": proto,
-                             "capabilities": {"tools": {"listChanged": False}, "resources": {"listChanged": False, "subscribe": False},
-                                              "prompts": {"listChanged": False}, "logging": {}},
+                             "capabilities": {"tools": {"listChanged": True}, "resources": {"listChanged": True, "subscribe": False},
+                                              "prompts": {"listChanged": True}, "logging": {}},
                              "serverInfo": {"name": "fivem2open77-studio", "title": "fivem2open77 Studio", "version": _app_version()},
                              "instructions": INSTRUCTIONS}), s.id
         if method == "ping":
@@ -558,7 +839,7 @@ class McpHub:
             want = args.pop("project", None) if name in self.project_tools else None
             if want:
                 cs.switch_project(self._resolve_project(want))
-            if tool.risk == "deploy" and self.settings()["approval"] == "studio":
+            if tool.risk == "deploy" and name not in SELF_GATED and self.settings()["approval"] == "studio":
                 ok, note = self._approve(s, name, args, cs)
                 if not ok:
                     raise ToolError("the user declined this in the Studio" + (f": {note}" if note else ""))

@@ -14,6 +14,8 @@ import { livePage } from "./pages/live.js";
 import { worldPage } from "./pages/world.js";
 import { studioAgentPage } from "./pages/agent.js";
 import { qualityPage } from "./pages/quality.js";
+import { terminalPage } from "./pages/terminal.js";
+import { mountTerminal, prefs as termPrefs } from "./term.js";
 import { initFx, fxRoute } from "./fx.js";
 import { initDiag } from "./diag.js";
 
@@ -21,7 +23,7 @@ let current = null;          // { dispose() }
 
 const SECTIONS = {
   home: "Home", projects: "Cars", project: "Cars", maps: "Maps", map: "Maps", world: "World", live: "Live maps",
-  servers: "Servers", agent: "Agent", jobs: "Activity", settings: "Settings", quality: "Quality",
+  servers: "Servers", agent: "Agent", jobs: "Activity", settings: "Settings", quality: "Quality", terminal: "Terminal",
 };
 const NAV_OF = { project: "projects", map: "maps" };
 const agentsLive = new Map();      // MCP session -> { label, tool } while a call runs
@@ -97,6 +99,7 @@ function connectEvents() {
       if (ev.kind === "approval") toast(`${ev.label} wants to run ${ev.approval.tool}: Settings > Agents`, "err");
       updateChrome();
     }
+    if (ev.type === "ui") onUi(ev);
     if (ev.type === "job") {
       const before = store.jobs.get(ev.job.id);
       store.jobs.set(ev.job.id, ev.job);
@@ -123,7 +126,8 @@ function route() {
   setCrumbs([[SECTIONS[parts[0]] || "Cars", `#/${nav}`]]);
   const pages = { home: homePage, projects: projectsPage, project: projectPage, maps: mapsPage, map: mapPage, live: livePage,
     world: worldPage, agent: studioAgentPage, servers: serversPage, settings: settingsPage, jobs: jobsPage,
-    quality: qualityPage };
+    quality: qualityPage, terminal: terminalPage };
+  if (parts[0] === "terminal") dock(false);
   const page = pages[parts[0]] || homePage;
   try {
     current = page(main, parts.slice(1)) || null;
@@ -134,10 +138,45 @@ function route() {
   fxRoute(main);
 }
 
+// ------------------------------------------------------------------ agents showing the user something (studio_ui)
+function onUi(ev) {
+  if (ev.action === "navigate" && ev.hash) {
+    if (!termPrefs().followAgents) {
+      toast(`${ev.by || "An agent"} wants to show you ${ev.hash.replace("#/", "")}` + (ev.message ? ` — ${ev.message}` : ""), "");
+      return;
+    }
+    if (location.hash !== ev.hash) location.hash = ev.hash;
+    toast(`${ev.by || "An agent"}: ${ev.message || "showing " + ev.hash.replace("#/", "")}`, "");
+  } else if (ev.action === "toast" && ev.text) {
+    toast(ev.text, ev.kind || "");
+  } else if (ev.action === "terminal") {
+    dock(true);
+  }
+}
+
+// ------------------------------------------------------------------ the terminal dock (Ctrl+`)
+let dockTerm = null;
+function dock(open) {
+  const el = document.getElementById("term-dock");
+  if (!el) return;
+  const onPage = (location.hash || "").startsWith("#/terminal");
+  const want = open === undefined ? !el.classList.contains("open") : open;
+  if (want && onPage) return;              // the page is the terminal already
+  if (want && !dockTerm) {
+    clear(el);
+    dockTerm = mountTerminal(el, { onClose: () => dock(false), onBusy: (on) => {
+      const b = document.getElementById("sb-term");
+      if (b) b.classList.toggle("live", on);
+    } });
+  }
+  el.classList.toggle("open", want);
+  if (want && dockTerm) setTimeout(() => dockTerm.focus(), 60);
+}
+
 // ------------------------------------------------------------------ command palette
 function paletteItems() {
   const items = Object.entries({ home: "Home", projects: "Cars", maps: "Maps", world: "World edits", live: "Live maps", servers: "Servers",
-    quality: "Quality", agent: "Agent", jobs: "Activity", settings: "Settings" }).map(([k, v]) => ({ what: v, kind: "section", href: `#/${k}` }));
+    quality: "Quality", agent: "Agent", terminal: "Terminal", jobs: "Activity", settings: "Settings" }).map(([k, v]) => ({ what: v, kind: "section", href: `#/${k}` }));
   const st = store.state;
   if (st) {
     for (const p of st.projects || []) {
@@ -150,6 +189,7 @@ function paletteItems() {
   items.push({ what: "Import a FiveM map or MLO", kind: "action", href: "#/maps" });
   items.push({ what: "Edit the world around a spot", kind: "action", href: "#/world" });
   items.push({ what: "Connect an AI agent (MCP)", kind: "action", href: "#/settings/agents" });
+  items.push({ what: "Open the terminal here (Ctrl+`)", kind: "action", run: () => dock(true) });
   return items;
 }
 
@@ -161,7 +201,7 @@ function openPalette() {
   const back = h("div.modal-back", { onclick: (e) => { if (e.target === back) close(); } },
     h("div.modal.palette", input, results));
   function close() { back.remove(); }
-  function go(r) { close(); if (r) location.hash = r.href; }
+  function go(r) { close(); if (r && r.run) r.run(); else if (r) location.hash = r.href; }
   function render() {
     const q = input.value.trim().toLowerCase();
     const all = paletteItems();
@@ -204,6 +244,12 @@ async function boot() {
   document.getElementById("cmdk").addEventListener("click", openPalette);
   window.addEventListener("keydown", (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openPalette(); }
+    if (e.ctrlKey && (e.key === "`" || e.code === "Backquote")) { e.preventDefault(); dock(); }
+  });
+  const sbTerm = document.getElementById("sb-term");
+  if (sbTerm) sbTerm.addEventListener("click", () => {
+    if ((location.hash || "").startsWith("#/terminal")) return;
+    dock();
   });
   try {
     await refreshState();

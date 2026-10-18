@@ -7,6 +7,12 @@ bridge starts it (the Studio app with its window on Windows, so the user sees wh
 When the Studio restarts in between, the bridge finds it again and opens a new session for the client
 on its own.  Standard library only.
 
+THE TOOL LIST FOLLOWS THE STUDIO.  A client lists the tools once, when it connects, and a bridge lives as
+long as its client -- so a Studio update (new tools) went unseen until the client was restarted.  The
+bridge polls the Studio's fingerprint of what it lists (``f2o77/fingerprint``: not activity, a Studio
+started for agents still stops when idle) and, when it changed, tells the client
+``notifications/tools/list_changed`` (prompts, resources likewise); the client lists them again.
+
 A bridge started by a Microsoft Store (MSIX) app runs in that app's package container: files it writes
 under AppData land in the app's own copy.  It never starts the Studio there (a Studio started in the
 container would keep new projects and builds where the Studio started normally does not see them) and
@@ -76,6 +82,11 @@ class Bridge:
         self.lock = threading.Lock()
         self.pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="mcp-bridge")
         self.launched_at = 0.0
+        self.fp = None                 # the Studio's fingerprint of what it lists (tools, prompts, resources)
+        self.client_ready = False      # the client said notifications/initialized: it may be notified
+        self.watch_every = 15.0
+        self.watcher = None
+        self.closed = False
 
     # ---- log
     def log(self, msg):
@@ -204,6 +215,72 @@ class Bridge:
             if self.init_params is not None:
                 self._initialize(self.init_params, "f2o77-bridge-reinit")
                 self.log("new session with the Studio (it was restarted)")
+        self.check_lists()
+
+    # ---- the lists follow the Studio
+    def fingerprint(self):
+        """The Studio's fingerprint of what it lists, None when it has none (before 1.7); raises
+        OSError/HTTPException when it is not reachable and BridgeError when it lost this session."""
+        st, _h, data = self._post({"jsonrpc": "2.0", "id": "f2o77-fp", "method": "f2o77/fingerprint"}, timeout=10.0)
+        if st == 404:
+            raise BridgeError("the Studio does not know this session (it was restarted)")
+        if st != 200 or not data:
+            return None
+        try:
+            ans = json.loads(data)
+        except ValueError:
+            return None
+        res = ans.get("result") if isinstance(ans, dict) else None
+        return res if isinstance(res, dict) else None
+
+    def check_lists(self, fp=None, fetched=False):
+        """Tell the client which lists changed since the last look (the first look only remembers)."""
+        if not fetched:
+            try:
+                fp = self.fingerprint()
+            except (OSError, http.client.HTTPException, BridgeError, ValueError):
+                return
+        first = not self.fp_seen
+        self.fp_seen = True
+        old, self.fp = self.fp, fp
+        if first or old == fp:
+            return
+        if old is None or fp is None:
+            changed = ("tools", "prompts", "resources")
+        else:
+            changed = tuple(k for k in ("tools", "prompts", "resources") if old.get(k) != fp.get(k))
+        if old and fp and old.get("version") != fp.get("version"):
+            self.log(f"the Studio is {fp.get('version')} now (was {old.get('version')}): the client lists again")
+        if changed and self.client_ready:
+            for k in changed:
+                self.send({"jsonrpc": "2.0", "method": f"notifications/{k}/list_changed"})
+
+    fp_seen = False
+
+    def watch(self):
+        """Every watch_every seconds: has what the Studio lists changed (an update, a restart)?  It finds a
+        Studio that was restarted, and never starts one."""
+        while not self.closed:
+            time.sleep(self.watch_every)
+            if self.closed or not self.client_ready or self.init_params is None:
+                continue
+            try:
+                if self.port is None:
+                    if self.find():
+                        self._reconnect()           # (it checks the lists)
+                    continue
+                fp = self.fingerprint()
+            except BridgeError:
+                try:
+                    if self.find():
+                        self._reconnect()
+                except (BridgeError, OSError, http.client.HTTPException) as e:
+                    self.log(f"lost the Studio ({e})")
+                continue
+            except (OSError, http.client.HTTPException):
+                self.port = None
+                continue
+            self.check_lists(fp, fetched=True)
 
     def relay(self, msg: dict):
         """One message from the client -> the Studio; its answer (or None)."""
@@ -217,7 +294,14 @@ class Bridge:
                     ans = self._initialize(self.init_params, mid)
                 finally:
                     self.init_done.set()
+            self.check_lists()
             return ans
+        if method == "notifications/initialized":
+            self.client_ready = True
+            if self.watcher is None and self.watch_every:
+                self.watcher = threading.Thread(target=self.watch, daemon=True, name="mcp-bridge-watch")
+                self.watcher.start()
+            return None                                  # the bridge said it to the Studio already
         if not self.init_done.is_set():
             # before initialize: a client of the stateless 2026-07-28 era asks server/discover first and falls
             # back to initialize when it is not spoken (as the Studio would answer); ping needs no session
@@ -299,6 +383,7 @@ class Bridge:
         self.log(f"bridge for workspace {self.ws}")
         for line in iter(stdin.readline, b""):
             self.handle_line(line)
+        self.closed = True
         self.pool.shutdown(wait=True)
 
 

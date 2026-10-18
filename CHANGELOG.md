@@ -1,5 +1,45 @@
 # Changelog
 
+## Studio 1.7.0 · converter 1.6.0 (2026-10-18)
+
+### A terminal in the Studio
+
+* **Terminal** (the rail, or Ctrl+` on any page, docked under it): one command line for the whole
+  Studio. Every tool the AI agent and MCP clients have is a command (`build_car`, `deploy_car prod
+  mode=stage`, `render_car mode=parts`...), with built-ins to list and follow jobs (`jobs`,
+  `log <job> -f`, `wait`, `cancel`), drive the AI agent (`agent start <goal>`, `agent say`,
+  `agent approve`...), call any API endpoint (`api GET /api/qc`, `routes`), run the converter's
+  command line (`cli sounds`), a system command (`sh` / `!`, PowerShell by default), open a page
+  (`ui quality`), read and change settings, and pick the project tools work on (`use urus`).
+  Tab completion of commands, arguments, values, projects, servers and jobs; the arguments of the
+  command being typed under the prompt; history kept with the workspace; Ctrl+C stops; `&&` and `;`
+  chain. Jobs are live progress lines with their logs folded under them, renders show inline, JSON
+  in colour.
+* `python -m fivem2open77 term` is the same terminal in a command prompt (one line, or a prompt).
+
+### Agents drive the whole app without taking over the screen
+
+* New MCP tools: `terminal` and `terminal_output` (the terminal, the same one the user sees: their
+  lines show up there, labelled), `studio_api` and `studio_api_routes` (any endpoint the app's
+  buttons call), `agent_start`, `agent_send`, `agent_status`, `agent_approve`, `agent_stop` (the
+  Studio's own AI agent), `studio_ui` (show the user a page and a note). The Terminal page shows
+  what each agent runs as it runs.
+* What stays the user's: system commands and the converter's command line (it runs the programs it
+  is told to) are off for agents until Settings > Agents allows them; secrets, the MCP token,
+  approvals, the MCP settings, the servers (they hold credentials), the programs the Studio runs,
+  whether an install may unsecure a server's mods and where the Claude key is sent cannot be changed
+  by an agent; the user's own terminal lines and history are not readable by agents; uploads are not
+  offered (agents give paths).
+  With "installs and restarts also wait for a click here", every server change an agent asks for --
+  a tool, a terminal line, an API call, or the AI agent it started (whose full autonomy is then
+  capped to asking before server changes) -- waits for the user's click.
+* The tool list follows the Studio: the stdio bridge polls the Studio's fingerprint of what it lists
+  and tells its client `notifications/tools/list_changed` (and for prompts and resources) when an
+  update or a restart changed them, so new tools show up without restarting Claude, Codex or Cursor.
+  (A client still running a bridge from before 1.7 needs one restart to get this bridge.)
+
+The converter's output is unchanged: nothing is rebuilt.
+
 ## Studio 1.6.3 · converter 1.6.0 (2026-10-18)
 
 ### A car deploy that cannot read the server installs nothing

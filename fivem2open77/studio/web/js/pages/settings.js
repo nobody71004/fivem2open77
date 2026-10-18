@@ -65,6 +65,10 @@ function agents(body) {
       h("option", { value: "studio" }, "installs and restarts also wait for a click here"));
     appr.value = m.approval;
     const secs = h("input", { type: "number", min: 10, max: 600, value: m.call_seconds, style: { width: "90px" } });
+    const shell = h("input", { type: "checkbox", checked: !!m.shell });
+    const tshell = h("select", [["auto", "automatic (PowerShell on Windows)"], ["powershell", "PowerShell"], ["cmd", "Command Prompt (cmd)"],
+      ["bash", "bash"], ["sh", "sh"]].map(([v, l]) => h("option", { value: v }, l)));
+    tshell.value = (store.state.settings.terminal || {}).shell || "auto";
     put(clear(top), info.pending.length ? h("div.card", { style: { borderColor: "var(--accent-line)" } },
       h("h3", icon("alert"), "Waiting for you"),
       info.pending.map((p) => h("div.approval", { style: { marginBottom: "8px" } },
@@ -79,12 +83,22 @@ function agents(body) {
       h("div.form", { style: { marginTop: "8px" } },
         h("label.field", "MCP server", h("label.row", on, h("span", "on (agents can connect)"))),
         h("label.field", "Before an agent changes a server", appr),
-        h("label.field", "A long call answers \u201crunning\u201d after (s)", secs)),
+        h("label.field", "A long call answers \u201crunning\u201d after (s)", secs),
+        h("label.field", "System commands", h("label.row", shell, h("span", "Let agents run system commands in the Studio's terminal (sh, !, cli)")))),
+      h("p.help", "Agents drive everything else without your screen: the terminal (every tool as a command), the Studio's API, ",
+        "its own AI agent and its pages (studio_ui). System commands and the converter's command line stay yours unless you tick the box: ",
+        "they can do anything this Windows user can. Servers, secrets, approvals and these settings stay yours either way."),
       h("div.row", { style: { marginTop: "12px" } }, h("div.grow"),
         h("button.btn.primary", { onclick: async () => {
-          await save({ mcp: { enabled: on.checked, approval: appr.value, call_seconds: Number(secs.value) } });
+          await save({ mcp: { enabled: on.checked, approval: appr.value, call_seconds: Number(secs.value), shell: shell.checked } });
           load();
         } }, "Save"))),
+    h("div.card", h("h3", icon("terminal"), "Terminal"),
+      h("p.help", "The Studio's command line (Terminal, or Ctrl+` on any page): every tool is a command, plus jobs, the AI agent, the API, ",
+        "the converter's command line and system commands. ", h("code", "python -m fivem2open77 term"), " opens it in a command prompt."),
+      h("div.form", h("label.field", "System commands run in", tshell)),
+      h("div.row", { style: { marginTop: "12px" } }, h("a.btn", { href: "#/terminal" }, "Open the terminal"), h("div.grow"),
+        h("button.btn.primary", { onclick: async () => { if (await save({ terminal: { shell: tshell.value } })) load(); } }, "Save"))),
     h("div.card", h("h3", icon("world"), "NCWE world editor · 60 native tools"),
       h("p.help", "The built-in agent and every connected MCP client can use the complete NCWE beta.3 toolset as ncwe_* tools: assets, screenshots, raycasts, rooms, lights, sound, collision, roads, elevators, prefabs, imports and exports. NCWE edits its own project, not the converted MLO automatically."),
       h("div.form", h("label.field", "NCWE MCP executable", ncwePath),
