@@ -32,7 +32,7 @@ import sys
 import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-VERSION = "1.6.3"
+VERSION = "1.7.0"
 
 SFX_CONFIG = """;!@Install@!UTF-8!
 Title="fivem2open77 Studio {version}"
@@ -56,9 +56,11 @@ Data:    %LOCALAPPDATA%\\fivem2open77\\studio   (projects, builds, settings, log
 First run: Settings > Tools finds your Cyberpunk 2077 install and extracts the donor car's files
 from it (once, about a minute).  The game's files are never shipped with the app.
 
-Command line (same converter):
-    runtime\\python\\python.exe -m fivem2open77 convert <car.zip|rar|7z|folder> --out <dir> --door-chime chime.mp3
-    runtime\\python\\python.exe -m fivem2open77 --help
+Command line (same converter; f2o77.cmd in this folder is short for runtime\\python\\python.exe -m fivem2open77):
+    f2o77 term                     the Studio's terminal in this command prompt (every Studio tool is a command)
+    f2o77 term status              one command line, then its exit code
+    f2o77 convert <car.zip|rar|7z|folder> --out <dir> --door-chime chime.mp3
+    f2o77 --help
 
 Bundled third-party software (licences in LICENSES\\): Python, numpy, paramiko, cryptography,
 PyNaCl, bcrypt, cffi, pycparser, .NET runtime, WolvenKit CLI, 7-Zip, three.js, Microsoft Edge
@@ -177,6 +179,9 @@ def build(a):
                 "https://www.nuget.org/packages/Microsoft.Web.WebView2/\n")
     with open(os.path.join(app, "README.txt"), "w", encoding="utf-8", newline="\r\n") as f:
         f.write(README.format(version=VERSION))
+    # the converter's and the Studio terminal's command line, from this folder (f2o77 term)
+    with open(os.path.join(app, "f2o77.cmd"), "w", encoding="ascii", newline="\r\n") as f:
+        f.write('@echo off\n"%~dp0runtime\\python\\python.exe" -X utf8 -m fivem2open77 %*\n')
 
     manifest = {"version": VERSION, "wheels": names, "python": os.path.basename(pyzip),
                 "dotnet": os.path.basename(one(os.path.join(dl, "dotnet-runtime-8.0.*-win-x64.zip")))}

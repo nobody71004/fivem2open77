@@ -29,7 +29,7 @@ from .settings import Settings
 from .tools import Toolbox
 from .worldops import WorldOps
 
-APP_VERSION = "1.6.3"
+APP_VERSION = "1.7.0"
 
 
 def _stamp(path) -> list:
@@ -63,6 +63,9 @@ class Studio(MapOps, WorldOps):
         self.agents = None          # set by agent.manager
         from .mcp import McpHub
         self.mcp = McpHub(self)     # agents outside the Studio (mcp.py)
+        from .terminal import Terminal
+        self.terminal = Terminal(self)   # one command line for all of it (terminal.py)
+        self.http_port = 0          # set by serve(): in-process API calls name it (server.call_route)
         from .qcsweep import QualityControl
         self.qc = QualityControl(self)   # quality checks around the clock (qcsweep.py); serve() starts its clock
 

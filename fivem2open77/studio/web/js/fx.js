@@ -14,7 +14,7 @@
 // viewers) the cursor is left clean for precise work.
 const KEY = "f2o77.fx";
 const LEVELS = ["full", "lite", "off"];
-const PRECISE = ".c3-canvas, .viewer canvas, .we-canvas, canvas.sheet, .live-stage .plan canvas, .stage canvas";
+const PRECISE = ".c3-canvas, .viewer canvas, .we-canvas, canvas.sheet, .live-stage .plan canvas, .stage canvas, .term";
 const LOCKABLE = "a[href], button:not(:disabled), .btn, input:not([type=hidden]), select, textarea, [role=button], tr.link, .showcase, .car-card, .chip, .res, label.choice";
 const SPOT = ".card, .showcase, .car-card, .modal, .home-stats > div, .c3-veil-in, .banner, .empty, .dropzone";
 const MAGNET = ".btn.primary, .hero-actions .btn";

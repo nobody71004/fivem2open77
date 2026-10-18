@@ -56,6 +56,31 @@ class HttpError(Exception):
         self.extra = extra or {}
 
 
+def error_answer(e: Exception):
+    """(status, body) the API answers for an exception a route raised; None for a bug (a 500)."""
+    if isinstance(e, HttpError):
+        return e.status, {"error": str(e), **e.extra}
+    if isinstance(e, profile_mod.ProfileError):
+        return 400, {"error": "invalid profile", "errors": e.errors}
+    if isinstance(e, SettingsError):
+        return 400, {"error": "invalid settings", "errors": e.errors}
+    if isinstance(e, MapOptionsError):
+        return 400, {"error": "invalid map options", "errors": e.errors}
+    if isinstance(e, EditError):
+        return 400, {"error": f"invalid edit: {e}"}
+    if isinstance(e, LookMissing):
+        return 409, {"error": str(e), "look": "missing"}
+    if isinstance(e, Unreachable):
+        return 503, {"error": str(e), "reachable": False}
+    if isinstance(e, LinkError):
+        return 409, {"error": str(e)}
+    if isinstance(e, DeployError):
+        return 502, {"error": str(e)}
+    if isinstance(e, (ProjectError, ValueError, KeyError)):
+        return 400, {"error": str(e) or e.__class__.__name__}
+    return None
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "fivem2open77-studio"
     protocol_version = "HTTP/1.1"
@@ -170,32 +195,15 @@ class Handler(BaseHTTPRequestHandler):
         self._body_read = False
         try:
             self.handle_one()
-        except HttpError as e:
-            self.json({"error": str(e), **e.extra}, status=e.status)
-        except profile_mod.ProfileError as e:
-            self.json({"error": "invalid profile", "errors": e.errors}, status=400)
-        except SettingsError as e:
-            self.json({"error": "invalid settings", "errors": e.errors}, status=400)
-        except MapOptionsError as e:
-            self.json({"error": "invalid map options", "errors": e.errors}, status=400)
-        except EditError as e:
-            self.json({"error": f"invalid edit: {e}"}, status=400)
-        except LookMissing as e:
-            self.json({"error": str(e), "look": "missing"}, status=409)
-        except Unreachable as e:
-            self.json({"error": str(e), "reachable": False}, status=503)
-        except LinkError as e:
-            self.json({"error": str(e)}, status=409)
-        except DeployError as e:
-            self.json({"error": str(e)}, status=502)
-        except (ProjectError, ValueError, KeyError) as e:
-            self.json({"error": str(e) or e.__class__.__name__}, status=400)
         except (BrokenPipeError, ConnectionResetError):
             pass
         except Exception as e:  # noqa: BLE001
-            traceback.print_exc()
+            ans = error_answer(e)
+            if ans is None:
+                traceback.print_exc()
+                ans = 500, {"error": f"{e.__class__.__name__}: {e}"}
             try:
-                self.json({"error": f"{e.__class__.__name__}: {e}"}, status=500)
+                self.json(ans[1], status=ans[0])
             except OSError:
                 pass
         finally:
@@ -1117,6 +1125,240 @@ def api_mcp_connect(h, q):
     h.json(mcpclients.connect(str(b.get("client") or ""), h.studio.workspace, remove=bool(b.get("remove"))))
 
 
+# ---------------------------------------------------------------- the terminal (terminal.py)
+def _term_errors(fn):
+    from .terminal import TermError
+
+    def wrapped(h, q, *a):
+        try:
+            return fn(h, q, *a)
+        except TermError as e:
+            raise HttpError(400, str(e)) from e
+    wrapped.__name__ = fn.__name__
+    wrapped.__doc__ = fn.__doc__
+    return wrapped
+
+
+@route("GET", r"/api/terminal/spec")
+@_term_errors
+def api_term_spec(h, q):
+    h.json(h.studio.terminal.spec())
+
+
+@route("POST", r"/api/terminal/sessions")
+@_term_errors
+def api_term_session(h, q):
+    b = h.body_json() or {}
+    h.json(h.studio.terminal.session(str(b.get("id") or "") or None).info())
+
+
+@route("GET", r"/api/terminal/sessions/([a-f0-9]{12})")
+@_term_errors
+def api_term_scrollback(h, q, sid):
+    h.json(h.studio.terminal.scrollback(sid, int(q.get("since", 0)), int(q.get("limit", 600))))
+
+
+@route("POST", r"/api/terminal/run")
+@_term_errors
+def api_term_run(h, q):
+    b = h.body_json() or {}
+    t = h.studio.terminal
+    s = t.session(str(b.get("session") or "") or None)
+    r = t.run(s, str(b.get("line") or ""))
+    h.json({"run": r.id, "session": s.id})
+
+
+@route("GET", r"/api/terminal/runs/([a-f0-9]{12})")
+@_term_errors
+def api_term_run_view(h, q, rid):
+    h.json(h.studio.terminal.run_view(rid, int(q.get("since", 0))))
+
+
+@route("POST", r"/api/terminal/runs/([a-f0-9]{12})/cancel")
+@_term_errors
+def api_term_cancel(h, q, rid):
+    h.json({"cancelled": h.studio.terminal.cancel(rid)})
+
+
+@route("GET", r"/api/terminal/history")
+def api_term_history(h, q):
+    h.json(h.studio.terminal.history[-max(1, min(1000, int(q.get("n", 200)))):])
+
+
+# ====================================================================== the API, called inside the Studio
+ROUTE_ABOUT = {
+    "api_health": "is the Studio up", "api_state": "everything the window shows at start: settings (no secrets), tools, "
+    "projects, jobs, quality", "api_settings": "the settings (no secrets)", "api_settings_patch": "change settings (a JSON "
+    "merge patch)", "api_secret": "set a secret (the user's)", "api_tools": "WolvenKit, .NET, 7-Zip, the game and the donor "
+    "files: found or not", "api_tools_donor": "extract the donor cars' files from the game", "api_sounds": "Cyberpunk engine "
+    "sounds a car can use", "api_donors": "the donor cars", "api_profile_schema": "the car profile's schema and defaults",
+    "api_ncwe_assets": "a map's NCWE imports", "api_ncwe_asset_contents": "what one NCWE import holds",
+    "api_ncwe_asset_add": "add an NCWE export to a map (upload)", "api_ncwe_asset_remove": "take an NCWE import off a map",
+    "api_ncwe_import": "import an NCWE export from a path", "api_upload": "upload a file (the window's drop zone)",
+    "api_packs": "the car packs", "api_pack_create": "import a car pack (path)", "api_pack": "one car pack and its cars",
+    "api_pack_import": "make projects of a pack's cars", "api_pack_build": "build a pack's cars",
+    "api_pack_deploy": "install a pack's cars on a server", "api_server_all_cars": "install every good car on a server "
+    "(car bundles)", "api_pack_delete": "delete a car pack", "api_projects": "every project", "api_project_create":
+    "import a FiveM car or map (path) as a project", "api_project": "one project", "api_project_patch": "rename a project and "
+    "the like", "api_project_delete": "delete a project", "api_profile": "a car's profile (saved and effective)",
+    "api_profile_put": "replace a car's profile", "api_profile_patch": "change a car's profile (JSON merge patch)",
+    "api_profile_validate": "check a profile without saving it", "api_inspect": "what the converter sees in a car",
+    "api_preview": "a car's 3D preview (glb)", "api_render": "a car render (png: view, mode)", "api_sheet": "a car's contact "
+    "sheet (png)", "api_neon_sheet": "a car's neon kit renders (png)", "api_thumb": "a project's thumbnail (png)",
+    "api_map_state": "a map: look, options, districts, builds", "api_map_options_patch": "change a map's options",
+    "api_map_options_put": "replace a map's options", "api_map_options_validate": "check map options without saving",
+    "api_map_city": "a whole-city map's districts", "api_map_district": "pick a district of a city map",
+    "api_map_look": "look at a map (its first read)", "api_map_render": "a map render (png: view, mode, size)",
+    "api_map_glb": "a map's 3D preview (glb)", "api_map_game": "install a map in this PC's game (test boot)",
+    "api_diag": "the window's error reports", "api_citymap_status": "the Live maps 3D city: built or not",
+    "api_citymap_build": "build the Live maps 3D city from the game", "api_citymap_file": "the 3D city's files",
+    "api_world_status": "Night City's world index", "api_world_prepare": "build Night City's world index",
+    "api_world_query": "Night City's objects around a spot", "api_world_object": "one Night City object in detail",
+    "api_world_state": "a world edit", "api_world_patch": "rename a world edit", "api_world_apply": "add changes to a "
+    "world edit", "api_world_drop": "drop one change of a world edit", "api_world_undo": "undo or redo in a world edit",
+    "api_world_game": "install a world edit in this PC's game", "api_handling_preview": "a car's handling with overrides "
+    "(not saved)", "api_chime_upload": "a car's door chime (upload)", "api_chime_get": "a car's door chime",
+    "api_build": "build a project", "api_builds": "a project's builds", "api_build_info": "one build's report",
+    "api_build_qa": "check a build again", "api_build_download": "a build as a zip", "api_deploy": "install a project's "
+    "build on a server", "api_rebuild_deploy": "rebuild a map and install it", "api_open_folder": "open a project's "
+    "folder in Explorer", "api_servers": "the servers (no secrets)", "api_server_put": "add or change a server",
+    "api_server_import": "add servers from a list", "api_server_delete": "remove a server", "api_server_world_remove":
+    "take a world edit off a server", "api_server_action": "a server job: test, status, restart, hub, agent-api",
+    "api_qc": "the latest quality sweep", "api_qc_run": "run a quality sweep", "api_qc_schedule": "the Windows "
+    "background sweep", "api_fleet": "the servers' versions; upgrade them all (confirm)", "api_live_status":
+    "a server's live maps", "api_live_players": "players online and where", "api_live_map": "one live map",
+    "api_live_wait": "wait for a map move", "api_live_op": "a live map operation (spot, preset, apply, cancel, goto)",
+    "api_server_logs": "a server's log", "api_jobs": "jobs", "api_job": "one job: log, result", "api_job_cancel":
+    "stop a job", "api_events": "the live event stream (the window)", "api_ai_models": "the AI models a provider offers",
+    "api_ai_test": "test the AI provider", "api_agent_sessions": "the AI agent's sessions", "api_agent_start":
+    "start the AI agent", "api_agent_get": "an AI agent session and its events", "api_agent_msg": "write to the AI agent",
+    "api_agent_approve": "decide what the AI agent waits on", "api_agent_stop": "stop the AI agent", "api_mcp": "agents "
+    "outside the Studio: settings, sessions, apps", "api_mcp_token": "the MCP token", "api_mcp_token_reset": "a new MCP "
+    "token", "api_mcp_approve": "decide an agent's call (the user)", "api_mcp_end": "end an agent's session",
+    "api_mcp_connect": "connect an app to the Studio", "api_term_spec": "the terminal's commands, tools and names",
+    "api_term_session": "a terminal session", "api_term_scrollback": "a terminal session's output",
+    "api_term_run": "run a terminal command line", "api_term_run_view": "a terminal run's output",
+    "api_term_cancel": "stop a terminal run (Ctrl+C)", "api_term_history": "the commands typed in the terminal",
+}
+_GROUP_NAMES = (("projects", "project"), ("packs", "pack"), ("jobs", "job"), ("sessions", "session"), ("servers", "server"),
+                ("maps", "map"), ("builds", "n"), ("edits", "group"), ("ncwe_assets", "name"), ("runs", "run"))
+
+
+def route_template(rx) -> str:
+    """/api/projects/{project}/builds/{n} for a route's pattern."""
+    pat = rx.pattern[1:-1] if hasattr(rx, "pattern") else str(rx)
+    names = dict(_GROUP_NAMES)
+    out, i = [], 0
+    while i < len(pat):
+        c = pat[i]
+        if c == "\\" and i + 1 < len(pat):
+            out.append(pat[i + 1])
+            i += 2
+            continue
+        if c != "(":
+            out.append(c)
+            i += 1
+            continue
+        depth, j = 1, i + 1
+        while j < len(pat) and depth:
+            depth += {"(": 1, ")": -1}.get(pat[j], 0)
+            j += 1
+        inner = pat[i + 1:j - 1]
+        prev = "".join(out).rstrip("/").rsplit("/", 1)[-1]
+        if "|" in inner and re.fullmatch(r"[\w\-.\\|]+", inner):
+            name = inner.replace("\\", "")
+        elif inner.startswith("[A-Za-z]"):
+            name = "op"
+        else:
+            name = names.get(prev, "value")
+        out.append("{" + name + "}")
+        i = j
+    return "".join(out)
+
+
+def route_list() -> list:
+    return [{"method": m, "path": route_template(rx), "about": ROUTE_ABOUT.get(fn.__name__) or
+             ((fn.__doc__ or "").strip().splitlines() or [fn.__name__.replace("api_", "").replace("_", " ")])[0]}
+            for m, rx, fn in ROUTES]
+
+
+class _NoServer:
+    stopping = False
+
+    def __init__(self, port=0):
+        self.server_address = ("127.0.0.1", port)
+
+
+class _InProcess:
+    """A route's view of one API call made inside the Studio (the terminal's `api`, the studio_api
+    MCP tool): the same handlers, no socket."""
+
+    def __init__(self, studio, method, body):
+        self.studio = studio
+        self.command = method
+        self._body = body
+        self.server = _NoServer(int(getattr(studio, "http_port", 0) or 0))
+        self.headers = {}
+        self.answer = None
+        self.close_connection = True
+
+    def json(self, obj, status=200, headers=None):
+        self.answer = {"status": status, "json": json.loads(json.dumps(obj, default=str))}
+
+    def _send(self, status, body: bytes, ctype="application/json", headers=None):
+        self.answer = {"status": status, "content_type": ctype.split(";")[0], "data": bytes(body or b"")}
+
+    def file(self, path, ctype=None, download_name=None, immutable=False):
+        if not os.path.isfile(path):
+            raise HttpError(404, "not found")
+        self.answer = {"status": 200, "file": path, "bytes": os.path.getsize(path),
+                       "content_type": ctype or mimetypes.guess_type(path)[0] or "application/octet-stream"}
+        if (self.answer["content_type"] or "").startswith("image/") and self.answer["bytes"] <= 8 << 20:
+            with open(path, "rb") as f:
+                self.answer["data"] = f.read()
+
+    def body_json(self):
+        if self._body in (None, ""):
+            return {}
+        if isinstance(self._body, (dict, list)):
+            return json.loads(json.dumps(self._body))
+        raise HttpError(400, "the body must be a JSON object")
+
+    def raw_body(self, limit=0):
+        raise HttpError(400, "uploads are not offered here: give the Studio a path on this PC instead")
+
+    def send_response(self, *a):
+        raise HttpError(400, "a live stream cannot be called here")
+
+
+def call_route(studio, method: str, path: str, body=None, query=None) -> dict:
+    """One API call inside the Studio: {"status", "json"} or {"status", "content_type", "data"/"file"}."""
+    url = urllib.parse.urlsplit(path)
+    p = url.path if url.path.startswith("/api/") else "/api/" + url.path.lstrip("/")
+    q = {k: v[-1] for k, v in urllib.parse.parse_qs(url.query).items()}
+    q.update({str(k): str(v) for k, v in (query or {}).items()})
+    m = method.upper()
+    h = _InProcess(studio, m, body)
+    for want, rx, fn in ROUTES:
+        if want != m and not (want == "GET" and m == "HEAD"):
+            continue
+        mm = rx.match(p)
+        if not mm:
+            continue
+        if fn.__name__ == "api_events":
+            return {"status": 400, "json": {"error": "the live event stream cannot be called here"}}
+        try:
+            fn(h, q, *mm.groups())
+        except Exception as e:  # noqa: BLE001 - answered as the HTTP API would
+            ans = error_answer(e)
+            if ans is None:
+                traceback.print_exc()
+                ans = 500, {"error": f"{e.__class__.__name__}: {e}"}
+            return {"status": ans[0], "json": ans[1]}
+        return h.answer or {"status": 204, "json": None}
+    return {"status": 404, "json": {"error": f"no such endpoint: {m} {p}"}}
+
+
 # ====================================================================== run
 class StudioServer(ThreadingHTTPServer):
     daemon_threads = True
@@ -1203,6 +1445,7 @@ def serve(host="127.0.0.1", port=0, workspace=None, token=None, ready_file=None,
     token = token or os.environ.get("F2O77_TOKEN") or pysecrets.token_urlsafe(24)
     httpd = StudioServer((host, port), studio, token)
     real_port = httpd.server_address[1]
+    studio.http_port = real_port
     url = f"http://127.0.0.1:{real_port}/auth?token={token}"
     info = {"port": real_port, "token": token, "url": url, "pid": os.getpid(), "workspace": studio.workspace}
     if ready_file:

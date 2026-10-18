@@ -39,7 +39,10 @@ DEFAULTS = {
         "approval": "client",                # client: the agent's app asks; studio: deploys wait for a click here
         "ncwe_launch": False,                # attach to the signed-in NCWE editor unless explicitly enabled
         "call_seconds": 45,                  # a call that runs longer answers "running" (wait_job follows it)
+        "shell": False,                      # agents may run system commands in the Studio's terminal (sh / !)
     },
+    # the Studio's terminal (terminal.py): the shell its system commands run in
+    "terminal": {"shell": "auto"},           # auto (PowerShell on Windows, sh elsewhere) | powershell | cmd | bash | sh
 }
 
 SERVER_DEFAULTS = {
@@ -164,6 +167,11 @@ def validate(data: dict) -> dict:
         m["call_seconds"] = max(10, min(600, int(m.get("call_seconds"))))
     except (TypeError, ValueError):
         errors.append("mcp.call_seconds: a number")
+    if not isinstance(m.get("shell"), bool):
+        errors.append("mcp.shell: true or false")
+    t = d["terminal"]
+    if t.get("shell") not in ("auto", "powershell", "cmd", "bash", "sh"):
+        errors.append("terminal.shell: auto, powershell, cmd, bash or sh")
     if errors:
         raise SettingsError(errors)
     return d
@@ -186,7 +194,7 @@ class Settings:
         except SettingsError:
             # keep what is valid: fall back section by section
             out = copy.deepcopy(DEFAULTS)
-            for k in ("paths", "ai", "deploy", "build", "mcp", "qc"):
+            for k in ("paths", "ai", "deploy", "build", "mcp", "qc", "terminal"):
                 try:
                     out = validate(_merge(out, {k: raw.get(k, {})}))
                 except SettingsError:

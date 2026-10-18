@@ -105,6 +105,8 @@ python -m fivem2open77 sounds                                  Cyberpunk engine 
 python -m fivem2open77 donor --game <dir>                      extract and cache donor files
 python -m fivem2open77 qc [--rebuild] [--in-process]           quality sweep of every Studio project
 python -m fivem2open77 studio [--port N] [--open]              the app (local web UI + API)
+python -m fivem2open77 term [command line]                     the Studio's terminal here (a prompt without one)
+python -m fivem2open77 mcp                                     the Studio as an MCP server (stdio), for agents
 ```
 
 ## Profiles: overriding what the converter decides
@@ -388,6 +390,31 @@ WinForms + WebView2 app that needs no runtime install). What each release change
   actions do.
   The API is plain JSON on `http://127.0.0.1:<port>/api/...` (token in a cookie), so scripts can use
   it too.
+* **Terminal** (the rail, or Ctrl+` on any page): the Studio's command line. Every tool is a command
+  (`build_car`, `deploy_car prod mode=stage`, `wait_job <id>`), with `key=value`, `--key value`, a
+  JSON object or the required arguments in order, `&&` and `;` to chain. Built-ins: `help`, `tools`,
+  `status`, `projects`, `use <project>` (its tools default to it), `servers`, `jobs`, `log <job> -f`,
+  `wait`, `cancel`, `agent start|say|approve|decline|stop|attach|watch` (the AI agent, from here),
+  `api METHOD /api/...` and `routes` (the whole API), `cli <args>` (the converter's command line),
+  `sh <command>` / `!<command>` (PowerShell on Windows, or the shell set in Settings > Agents),
+  `cd`, `ui <page>`, `settings key=value`, `history`. Tab completes commands, arguments, enum
+  values, projects, servers and job ids, a line under the prompt shows what the command takes; ↑/↓
+  history (kept with the workspace), Ctrl+C stops the running command, Ctrl+L clears. Jobs show as
+  live progress lines with their log folded under them, renders as images, JSON in colour. What
+  agents run (their terminal lines and their tool calls) shows here as it runs, labelled with the
+  agent. `python -m fivem2open77 term` is the same terminal in a command prompt.
+* **Agents drive the whole app, not the screen**: besides the tools, MCP clients get `terminal`
+  (any command line, as above; `terminal_output` follows a long one), `studio_api` (any endpoint of
+  the Studio's API, `studio_api_routes` lists them), `agent_start` / `agent_send` / `agent_status` /
+  `agent_approve` / `agent_stop` (the Studio's own AI agent) and `studio_ui` (show the user a page
+  and a note). No computer use is needed. What stays the user's: system commands and the converter's
+  command line (off for agents until Settings > Agents allows them), secrets and the MCP token,
+  approvals, the MCP settings, the servers, the programs the Studio runs, unsecured installs and where
+  the Claude key goes, and the user's own terminal lines; installs and restarts wait for the user's
+  click in the Studio when Settings > Agents says so, however they are asked for (a tool, a terminal
+  line, an API call or the AI agent, whose full autonomy is then capped). When the Studio is updated
+  the stdio bridge tells its client the tool list changed (`notifications/tools/list_changed`), so
+  new tools show up without restarting the client.
 
 ## The car hub (`f2o77_hub`)
 

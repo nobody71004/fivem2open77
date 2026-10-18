@@ -7,6 +7,7 @@
   python -m fivem2open77 sounds                         Cyberpunk engine sounds a car can use
   python -m fivem2open77 studio [--port N]              the converter app (web UI + API)
   python -m fivem2open77 mcp                            MCP server (stdio) for agents, relaying to the Studio
+  python -m fivem2open77 term [command line]            the Studio's terminal here (every Studio tool is a command)
   python -m fivem2open77 mlo <fivem map/MLO> --out <dir> [--place x,y,z[,yaw]]   baked map + placer
   python -m fivem2open77 mlo-inspect | mlo-bake | mlo-install | mlo-bundle | mlo-manager-bundle (see mlo/cli.py)
 """
@@ -98,6 +99,11 @@ def cmd_sounds(a):
 def cmd_mcp(a):
     from .studio.bridge import main as bridge_main
     return bridge_main(a)
+
+
+def cmd_term(a):
+    from .studio.termcli import main as term_main
+    return term_main(a)
 
 
 def cmd_studio(a):
@@ -228,6 +234,13 @@ def main(argv=None):
     mc.add_argument("--headless", action="store_true", help="start the Studio without its window (stops when idle)")
     mc.add_argument("--log", help="write the bridge's log here (default: <workspace>/logs/mcp-bridge.log)")
     mc.set_defaults(fn=cmd_mcp)
+
+    te = sub.add_parser("term", help="the Studio's terminal here: one command line, or a prompt (every Studio tool is a command)")
+    te.add_argument("--workspace", help="the Studio's projects/settings folder (default: the usual one)")
+    te.add_argument("--attach-only", action="store_true", help="never start the Studio: fail when it is not running")
+    te.add_argument("--no-color", action="store_true", help="plain text")
+    te.add_argument("command", nargs=argparse.REMAINDER, help="a command line, like: status, or \"build_car && deploy_car prod\"")
+    te.set_defaults(fn=cmd_term)
 
     qc = sub.add_parser("qc", help="quality sweep of every Studio project (rebuilds what fails or is stale)")
     qc.add_argument("--workspace", help="the Studio's projects/settings folder (default: the usual one)")
