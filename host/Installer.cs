@@ -91,6 +91,7 @@ namespace Fivem2Open77.Studio
                     k.SetValue("NoRepair", 1, RegistryValueKind.DWord);
                     k.SetValue("EstimatedSize", (int)(DirSize(target) / 1024), RegistryValueKind.DWord);
                 }
+                AppIcon.RefreshShell();
                 if (launch) Process.Start(new ProcessStartInfo(exe) { UseShellExecute = true, WorkingDirectory = target });
                 else if (!quiet) MessageBox.Show(Program.AppName + " is installed.", Program.AppName);
                 return 0;
@@ -317,7 +318,7 @@ namespace Fivem2Open77.Studio
         public ProgressForm(string text)
         {
             Text = Program.AppName;
-            try { Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+            Icon = AppIcon.Load() ?? Icon;
             FormBorderStyle = FormBorderStyle.None;
             StartPosition = FormStartPosition.CenterScreen;
             ShowInTaskbar = true;

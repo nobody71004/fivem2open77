@@ -11,7 +11,7 @@
     <RootNamespace>Fivem2Open77.Studio</RootNamespace>
     <ApplicationIcon>app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>1.7.1</Version>
+    <Version>1.7.2</Version>
     <Company>fivem2open77</Company>
     <Product>fivem2open77 Studio</Product>
     <Description>FiveM cars and MLOs for Open77, with AI-assisted world editing</Description>
@@ -19,6 +19,12 @@
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <DebugType>none</DebugType>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- the F2077 icon with all its sizes (the windows' icon) and the emblem the start screen draws;
+         made by tools/brand/make_brand.py -->
+    <EmbeddedResource Include="app.ico" LogicalName="Fivem2Open77.Studio.app.ico" />
+    <EmbeddedResource Include="emblem.png" LogicalName="Fivem2Open77.Studio.emblem.png" />
+  </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net48" Version="1.0.3" PrivateAssets="all" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />

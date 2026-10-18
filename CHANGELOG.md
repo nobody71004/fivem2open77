@@ -1,5 +1,25 @@
 # Changelog
 
+## Studio 1.7.2 · converter 1.6.0 (2026-10-18)
+
+### The F2077 icon and logo
+
+* The app's icon is the F2077 emblem: the exe, its windows, the Start menu and desktop shortcuts,
+  Apps & features, and the setup itself (it showed 7-Zip's icon). The windows take every size of the
+  icon (they had one 32 px image, which the title bar and a high-dpi taskbar blurred), and after an
+  update the installer asks Explorer to refresh its icons, so the shortcuts show the new one.
+* The start screen and the installer's window have the emblem at their core, and the app's title bar
+  and its browser tab show it.
+* The F2077 neon wall is the logo: the Home page opens with it, and so does the README.
+* `tools/brand/make_brand.py` makes every icon and logo file from the two images in `docs/brand`.
+
+### Fixes
+
+* Terminal: *Side panel* hid nothing. It dropped the panel under the console, squeezing the console
+  into a strip, and in a window narrower than 980 px the panel could not be shown at all. Now it hides
+  the panel and gives the console the room (remembered), and in a narrow window it opens the panel over
+  the console (Esc, or picking a command, closes it).
+
 ## Studio 1.7.1 · converter 1.6.0 (2026-10-18)
 
 ### Cancel stops an install
