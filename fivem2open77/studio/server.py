@@ -28,7 +28,7 @@ from .deploy import DeployError
 from .maplink import LinkError, Unreachable
 from .maps import LookMissing, MapOptionsError
 from .paths import default_workspace, web_dir
-from . import ncweassets
+from . import jsonutil, ncweassets
 from .projects import ProjectError
 from .settings import SettingsError
 from ..world.edits import EditError
@@ -108,7 +108,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def json(self, obj, status=200, headers=None):
-        self._send(status, json.dumps(obj, default=str).encode("utf-8"), headers=headers)
+        self._send(status, jsonutil.dumps_bytes(obj), headers=headers)
 
     def body_json(self):
         self._body_read = True
@@ -1015,7 +1015,7 @@ def api_events(h, q):
                     h.wfile.flush()
                     last = time.time()
                 continue
-            h.wfile.write(b"data: " + json.dumps(ev, default=str).encode("utf-8") + b"\n\n")
+            h.wfile.write(b"data: " + jsonutil.dumps_bytes(ev) + b"\n\n")
             h.wfile.flush()
             last = time.time()
     except (BrokenPipeError, ConnectionResetError, OSError):

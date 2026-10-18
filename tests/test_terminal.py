@@ -507,3 +507,27 @@ def test_bridge_tells_its_client_when_the_tools_change(monkeypatch):
         b.closed = True
     finally:
         live.close()
+
+
+def test_answers_are_strict_json_whatever_a_report_holds():
+    """A NaN in an old build report (a floor too small to sample) went out as NaN, which a browser's
+    JSON.parse refuses: the whole answer was lost.  It goes out as null."""
+    from fivem2open77.studio import jsonutil
+    assert jsonutil.dumps({"a": float("nan"), "b": [1.5, float("inf")], "c": {"d": float("-inf")}}) == \
+        '{"a": null, "b": [1.5, null], "c": {"d": null}}'
+    assert json.loads(jsonutil.dumps({"x": 1})) == {"x": 1}
+    live = _Live()
+    try:
+        live.studio.bus.publish({"type": "test"})
+        from fivem2open77.studio import server as srv
+        # a route answering a NaN answers strict JSON over HTTP
+        @srv.route("GET", r"/api/__nan_test")
+        def _nan(h, q):
+            h.json({"floor_holes_pct": float("nan")})
+        try:
+            st, body = live.req("GET", "/api/__nan_test")
+            assert st == 200 and body == {"floor_holes_pct": None}
+        finally:
+            srv.ROUTES[:] = [r for r in srv.ROUTES if r[2] is not _nan]
+    finally:
+        live.close()

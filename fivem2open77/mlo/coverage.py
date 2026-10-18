@@ -299,7 +299,8 @@ def coverage(scene, model, *, density=2.0, max_samples=400_000, seed=7, solid_do
             walk_hole += hole.sum() * w
             walk_sink += sink.sum() * w
             walk_n += len(pts)
-            src.update({"floor_m2": round(area, 1), "floor_holes_pct": round(100.0 * hole.mean(), 2)})
+            src.update({"floor_m2": round(area, 1),          # (a floor too small for a sample has no holes to count)
+                        "floor_holes_pct": round(100.0 * hole.mean(), 2) if len(hole) else 0.0})
             for p in pts[hole]:
                 k = (int(math.floor(p[0] / hole_cell)), int(math.floor(p[1] / hole_cell)))
                 holes[k][0] += w
@@ -318,7 +319,7 @@ def coverage(scene, model, *, density=2.0, max_samples=400_000, seed=7, solid_do
             wall_area += area
             wall_hole += hole.sum() * w
             wall_n += len(pts)
-            src.update({"wall_m2": round(area, 1), "wall_holes_pct": round(100.0 * hole.mean(), 2)})
+            src.update({"wall_m2": round(area, 1), "wall_holes_pct": round(100.0 * hole.mean(), 2) if len(hole) else 0.0})
         per_source.append(src)
     out["walkable"] = {"m2": round(walk_area, 1), "samples": walk_n,
                        "covered_pct": round(100.0 * (1 - walk_hole / walk_area), 2) if walk_area else 100.0,
