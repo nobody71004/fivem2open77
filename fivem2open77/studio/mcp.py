@@ -933,7 +933,8 @@ class McpHub:
             h["Mcp-Session-Id"] = new_sid
         if answer is None:
             return 202, h, b""
-        return 200, h, json.dumps(answer, default=str).encode("utf-8")
+        from .jsonutil import dumps_bytes
+        return 200, h, dumps_bytes(answer)
 
 
 # ----------------------------------------------------------------------------- helpers
