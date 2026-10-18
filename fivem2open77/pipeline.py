@@ -20,7 +20,7 @@ from .cp77 import app as app_mod
 from .cp77 import ent as ent_mod
 from .cp77 import package
 from .cp77 import sound as sound_mod
-from .cp77.donor import DONORS, DonorCache, choose_donor
+from .cp77.donor import DONORS, DonorCache, choose_donor, missing_corners
 from .cp77.materials import material_json, neon_material
 from .cp77.mesh import ordered_submeshes, template_doc, write_glb
 from .cp77.phys import build_phys
@@ -35,7 +35,7 @@ from .model.build import SIDE_NAMES, VehicleBuilder
 
 MOD_ROOT = "fivem2open77"
 TEXTURE_PACKAGE_BUDGET = 40 * 1024 * 1024   # raw xbm bytes per texture archive (zip stays < 64 MiB)
-VERSION = "1.4.2"
+VERSION = "1.5.0"
 
 
 def _sanitize(name: str) -> str:
@@ -89,6 +89,43 @@ def apply_light_overrides(v, conf: dict):
             light.light_type = c["type"]
         keep.append(light)
     v.lights = keep
+
+
+def slot_bones(donor_ent_doc) -> dict:
+    """vehicle_slots slot -> rig bone, as the donor entity's slot component maps them."""
+    from .cp77.handles import materialize
+    from .cp77.wkjson import index_handles
+    index = index_handles(donor_ent_doc)
+    for c in donor_ent_doc["Data"]["RootChunk"]["components"]:
+        c = materialize(c, index)
+        if c.get("$type") == "entSlotComponent" and value_of(c.get("name")) == "vehicle_slots":
+            return {value_of(sl.get("slotName")): value_of(sl.get("boneName")) for sl in c.get("slots", [])}
+    return {}
+
+
+def rig_bone_names(rig_doc) -> list:
+    return [value_of(n) for n in rig_doc["Data"]["RootChunk"]["boneNames"]]
+
+
+def bind_parts(v, donor_rig_doc, donor_ent_doc) -> dict:
+    """Check every part's slot against the donor: a part bound to a slot whose bone the donor's rig
+    lacks would be left behind at the car's origin in game, so it is fixed to the body instead.
+    Returns {"bones": part -> bone, "detached": [parts], "rig": [bone names], "slots": {slot: bone}}."""
+    slots = slot_bones(donor_ent_doc)
+    rig = set(rig_bone_names(donor_rig_doc))
+    bones, detached = {}, []
+    for pname, part in list(v.parts.items()):
+        if not part.slot:
+            continue
+        bone = slots.get(part.slot, part.slot)
+        bones[pname] = bone
+        if bone not in rig:
+            v.detach_to_body(pname)
+            detached.append(pname)
+    if detached:
+        v.warnings.append("the donor's rig has no bone for " + ", ".join(
+            f"{p} ({bones[p]})" for p in detached) + ": fixed to the body")
+    return {"bones": bones, "detached": detached, "rig": sorted(rig), "slots": slots}
 
 
 class Converter:
@@ -154,14 +191,20 @@ class Converter:
             return {n: other[n] for n in have}
         return lid_mapping(v, donor_rig)
 
-    def convert_vehicle(self, src) -> dict:
+    def convert_vehicle(self, src, dry: bool = False) -> dict:
+        """dry: stop after the rigs, the TweakDB record and the quality checks (no files written,
+        no WolvenKit): what the Studio's quality sweep runs on every car."""
         t0 = time.time()
         log = self.log
         self._step()
         v = self.build_vehicle(src)
         name = v.name
-        donor = choose_donor(v, None if self.profile["donor"] == "auto" else self.profile["donor"])
+        requested = None if self.profile["donor"] == "auto" else self.profile["donor"]
+        donor = choose_donor(v, requested)
         prof = DONORS[donor]
+        if requested and donor != requested:
+            v.warnings.append(f"donor {requested} has no doors at {', '.join(missing_corners(v, requested))} "
+                              f"(their parts would be left behind at the car's origin in game): {donor} is used")
         log(f"[{name}] {v.display_name}: {sum(p.vertex_count() for p in v.parts.values())} verts, "
             f"{len(v.parts)} parts, {len(v.textures)} textures; donor {prof['label']}")
         self.cache.ensure(donor)
@@ -172,6 +215,11 @@ class Converter:
             v.rename_parts(lids)
             log(f"[{name}] lids ({self.profile['parts']['lids']}): " + ", ".join(
                 f"{'front' if v.bones[new]['t'][1] > 0 else 'rear'} lid {old} -> {new}" for old, new in sorted(lids.items())))
+        donor_ent = self.cache.load(prof["ent"])
+        bindings = bind_parts(v, donor_rig, donor_ent)
+        for pname in bindings["detached"]:
+            log(f"[{name}] {pname}: the donor's rig has no {bindings['bones'][pname]} bone; "
+                "the part is fixed to the body (it does not open)")
         sound = sound_mod.resolve(self.profile["sound"]["engine"], v, prof["sound"])
         log(f"[{name}] engine sound: {sound['label']} ({sound['player']}; {sound['source']})")
 
@@ -195,13 +243,32 @@ class Converter:
 
         # ---------------------------------------------------------- donor bbox (Root space)
         body_tpl = self.cache.load(prof["mesh_template"])
-        bb = body_tpl["Data"]["RootChunk"]["boundingBox"]
-        dz = 0.44
+        donor_body = self.cache.load(prof.get("body_mesh") or prof["mesh_template"])
+        bb = donor_body["Data"]["RootChunk"]["boundingBox"]
+        dz = 0.44                    # the donor body hangs from Base, 0.44 m above Root in every donor rig
         donor_bbox = ((bb["Min"]["X"], bb["Min"]["Y"], bb["Min"]["Z"] + dz), (bb["Max"]["X"], bb["Max"]["Y"], bb["Max"]["Z"] + dz))
 
         # ---------------------------------------------------------- rigs + animations
         rig_doc, vrig_doc, frames, alignments = build_rigs(
             v, donor_rig, self.cache.load(prof["vehicle_rig"]), prof, donor_bbox)
+        # ---------------------------------------------------------- TweakDB record + quality checks
+        record = f"Vehicle.{name}"
+        spawn_look = name if v.neon is None or v.neon.default == "off" else f"{name}_neon_{v.neon.default}"
+        name_key = f"{MOD_ROOT}_{name}_name"
+        tweak_text, hp = build_tweak(v, prof, record=record, ent_path=paths["ent"], appearance=spawn_look,
+                                     name_key=name_key, handling=self.profile["handling"], sound=sound,
+                                     destroyed_appearance=name, seating=v.seat_fit)
+        from . import qc as qc_mod
+        from .cp77.tweak import camera_class
+        qc_facts = qc_mod.car_facts(v, donor, prof, bindings, frames, tweak_text, hp,
+                                    camera=camera_class(v), profile=self.profile)
+        qc_result = qc_mod.check_car({"qc": qc_facts, "version": VERSION})
+        for chk in qc_result["checks"]:
+            if not chk["ok"]:
+                log(f"[{name}] QC {'FAIL' if chk['level'] == 'error' else 'warn'} {chk['id']}: {chk['message']}")
+        if dry:
+            return {"name": name, "record": record, "donor": donor, "qc": qc_facts, "qc_result": qc_result,
+                    "warnings": list(v.warnings), "seconds": round(time.time() - t0, 1)}
         save(rig_doc, jpath(paths["rig"]))
         save(vrig_doc, jpath(paths["vehicle_rig"]))
         anims = copy.deepcopy(self.cache.load(prof["anims"]))
@@ -238,7 +305,9 @@ class Converter:
 
         # ---------------------------------------------------------- meshes
         part_bone = {}
-        for part in v.parts:
+        for part, pp in v.parts.items():
+            if not pp.slot:
+                continue                          # fixed to the body (or a parent part): no bone frame of its own
             if part.startswith("door_"):
                 part_bone[part] = f"door_{SIDE_NAMES[part.split('_')[1]]}_a"
             elif part in ("hood_a", "trunk_a"):
@@ -292,9 +361,8 @@ class Converter:
             log(f"[{name}] neon kit: {', '.join(f'{t.side} {t.length:.2f} m' for t in v.neon.tubes)}; "
                 f"{len(v.neon.colors)} colours, starts {v.neon.default}; {len(v.neon.lights)} soft lights "
                 f"{up} cm up wash the road {v.neon.spread:.1f} m around the car")
-        save(ent_mod.build_ent(v, self.cache.load(prof["ent"]), paths, name, donor_bbox), jpath(paths["ent"]))
+        save(ent_mod.build_ent(v, donor_ent, paths, name, donor_bbox), jpath(paths["ent"]))
         save(build_phys(v, self.cache.load(prof["phys"])), jpath(paths["phys"]))
-        name_key = f"{MOD_ROOT}_{name}_name"
         save(package.localization_doc([(name_key, v.display_name)]), jpath(paths["loc"]))
 
         # ---------------------------------------------------------- WolvenKit: JSON -> CR2W, glb import
@@ -343,11 +411,6 @@ class Converter:
             packed[aname] = out
 
         # ---------------------------------------------------------- tweaks, .xl, zips, resource
-        record = f"Vehicle.{name}"
-        spawn_look = name if v.neon is None or v.neon.default == "off" else f"{name}_neon_{v.neon.default}"
-        tweak_text, hp = build_tweak(v, prof, record=record, ent_path=paths["ent"], appearance=spawn_look,
-                                     name_key=name_key, handling=self.profile["handling"], sound=sound,
-                                     destroyed_appearance=name, seating=v.seat_fit)
         tweak_file = os.path.join(work, f"{name}.yaml")
         with open(tweak_file, "w", encoding="utf-8", newline="\n") as f:
             f.write(tweak_text)
@@ -390,6 +453,9 @@ class Converter:
                 labels={key: label for key, label, _ in v.neon.colors}, base_appearance=name),
             "profile": self.profile,
             "warnings": v.warnings,
+            "qc": qc_facts,
+            "qc_result": {"ok": qc_result["ok"], "failed": [c["id"] for c in qc_result["checks"]
+                                                            if not c["ok"] and c["level"] == "error"]},
         }
         chime = self.profile["chime"]
         chime_file = chime["file"] if chime["enabled"] else None

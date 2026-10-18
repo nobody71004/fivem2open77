@@ -23,6 +23,37 @@ DONOR_REF = {
 }
 
 
+# Third person camera presets by body size (the TweakDB records of a vanilla car of that size)
+CAMERAS = {
+    "sport": "Camera.VehicleTPP_4w_911",                                   # Porsche 911
+    "sedan": "Camera.VehicleTPP_4w_Archer_Hella",                          # Archer Hella
+    "suv": "Camera.VehicleTPP_v_standard25_mahir_supron_CameraPreset",     # Mahir Supron
+    "truck": "Camera.VehicleTPP_4w_Truck_Preset",                          # Thorton Mackinaw
+}
+CAMERA_VIEWS = ("High_Close", "High_Medium", "High_Far", "High_DriverCombatClose", "High_DriverCombatMedium",
+                "High_DriverCombatFar", "Low_Close", "Low_Medium", "Low_Far", "Low_DriverCombatClose",
+                "Low_DriverCombatMedium", "Low_DriverCombatFar")
+
+
+def camera_class(vehicle) -> str:
+    """sport / sedan / suv / truck from the body's size: how high the roof is above the road (wheel
+    centres are at Z 0) and how long the car is."""
+    (x0, y0, z0), (x1, y1, z1) = vehicle.bbox
+    radius = max((a.radius for a in getattr(vehicle, "axles", {}).values()), default=0.34)
+    height, length = z1 + radius, y1 - y0
+    if height >= 2.1 or length >= 5.7:
+        return "truck"
+    if height >= 1.55:
+        return "suv"
+    if height < 1.25 and length < 5.0:
+        return "sport"
+    return "sedan"
+
+
+def camera_presets(kind: str) -> list:
+    return [f"{CAMERAS[kind]}_{v}" for v in CAMERA_VIEWS]
+
+
 def _clamp(v, lo, hi):
     return float(min(hi, max(lo, v)))
 
@@ -120,7 +151,7 @@ def handling_profile(vehicle, prof, overrides=None) -> dict:
     fallback = wheels.get("front") or wheels.get("back") or {"tireRadius": 0.34, "rimRadius": 0.24, "tireWidth": 0.28}
     for axle in ("front", "back"):
         wheels.setdefault(axle, dict(fallback))
-    # the profile may set each axle's lateral wheel offset (metres); else the donor's value is used
+    # the profile may set each axle's lateral wheel offset (metres); else 0 (see build_tweak)
     for axle, off in (o.get("wheel_offset") or {}).items():
         if axle in wheels:
             wheels[axle]["offset"] = float(off)
@@ -182,7 +213,15 @@ def build_tweak(vehicle, prof, *, record: str, ent_path: str, appearance: str, n
         "destruction": destruction,
         "customizeLights": "false",
         "hasVisualCustomization": "false",
+        # GTA wheels stand upright where the model has them: no donor camber (the 911 leans its
+        # wheels 1.5 degrees and moves the rear ones 2.7 cm)
+        "leftFrontCamber": "0", "rightFrontCamber": "0", "leftBackCamber": "0", "rightBackCamber": "0",
+        "leftFrontCamberOffset": _vec((0, 0, 0)), "rightFrontCamberOffset": _vec((0, 0, 0)),
+        "leftBackCamberOffset": _vec((0, 0, 0)), "rightBackCamberOffset": _vec((0, 0, 0)),
     }
+    cam = camera_class(vehicle)
+    if cam != prof.get("camera", "sport"):
+        main["tppCameraPresets"] = camera_presets(cam)
     if sound and sound.get("override"):
         # engine/wheel/bump sounds: names of sound setups in the game's audio metadata
         main["player_audio_resource"] = sound["player"]
@@ -212,13 +251,15 @@ def build_tweak(vehicle, prof, *, record: str, ent_path: str, appearance: str, n
     # wheel dimensions (visual tyre size used by the simulation)
     y.record(wheel_dims, {"$type": "VehicleWheelDimensionsSetup",
                           "frontPreset": f"{wheel_dims}_front", "backPreset": f"{wheel_dims}_back"})
-    donor_offset = {"front": 0.1, "back": 0.08}
     for axle in ("front", "back"):
         w = hp["wheels"].get(axle) or hp["wheels"].get("front" if axle == "back" else "back")
+        # wheelOffset moves the tyre out from its wheel bone along the axle.  A vanilla car's wheel
+        # bones sit inboard of its tyres (the 911: 0.70 m out, tyres at 0.80), ours sit at the GTA
+        # wheel centres already: 0, unless the profile asks (handling.wheel_offset)
         y.record(f"{wheel_dims}_{axle}", {"$type": "VehicleWheelDimensionsPreset",
                                           "rimRadius": _f(w["rimRadius"]), "tireRadius": _f(w["tireRadius"]),
                                           "tireWidth": _f(w["tireWidth"]),
-                                          "wheelOffset": _f(w.get("offset", donor_offset[axle]))})
+                                          "wheelOffset": _f(w.get("offset", 0.0))})
 
     # drivetrain layout
     roles = {
@@ -262,7 +303,7 @@ def build_tweak(vehicle, prof, *, record: str, ent_path: str, appearance: str, n
     # destruction: keep the donor's damage model but drop part lists that name donor components
     (x0, y0, z0), (x1, y1, z1) = vehicle.bbox
     y.record(destruction, {
-        "$base": f"{base}_inline8",
+        "$base": t.get("destruction") or f"{base}_inline8",
         "lights": [], "glass": [], "detachableParts": [], "deformableParts": [],
         "gridDimensions": _vec((x1 - x0, y1 - y0, 0.25)),
         "vehicleDimensions": _vec(((x1 - x0) / 2, (y1 - y0) / 2 * 1.33, 0.35)),

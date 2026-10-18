@@ -170,6 +170,12 @@ def build_rigs(vehicle, donor_rig_doc, donor_vrig_doc, profile, donor_bbox):
             if ergo is not None and name in ("seat_front_left", "seat_front_right"):
                 t = np.array([t[0], ergo[1], float(np.clip(ergo[2], t[2] - 0.08, t[2] + 0.08))])
             explicit[name] = _mat(t, np.eye(3))
+    # seat backrests (four-door donors) keep their place on their seat
+    for seat in ("seat_front_left", "seat_front_right", "seat_back_left", "seat_back_right"):
+        rest = seat.replace("seat_", "backrest_", 1)
+        if rest in idx and seat in explicit and seat in idx:
+            off = dabs[idx[rest]][:3, 3] - dabs[idx[seat]][:3, 3]
+            explicit[rest] = _mat(explicit[seat][:3, 3] + off, dabs[idx[rest]][:3, :3])
     if "steering_wheel_zro" in vehicle.bones and "steering_wheel_zro" in idx:
         b = vehicle.bones["steering_wheel_zro"]
         # keep the donor's column frame (its turn animation spins about the frame's local Y),

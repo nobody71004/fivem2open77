@@ -129,8 +129,37 @@ class Vehicle:
     markers: dict = field(default_factory=dict)      # GTA helper bones (neon_l ...) -> Root-space position
     neon: object = None                              # model.neon.NeonKit when the car has an underglow kit
     seat_fit: object = None                          # model.seats.SeatFit: posture, head room, exits
+    static_wheels: list = field(default_factory=list)  # GTA wheel bones of extra axles drawn fixed to the body
     warnings: list = field(default_factory=list)
     report: dict = field(default_factory=dict)
+
+    def detach_to_body(self, name: str, host: str = "body_01"):
+        """Make a part static: bound to the body instead of a rig bone of its own (a donor whose rig
+        has no such bone -- rear quarter windows on a two-door donor).  Its geometry, and the lights
+        that hang off it, are re-expressed in the body's frame; it no longer moves on its own."""
+        part = self.parts[name]
+        t, r = (np.asarray(x, np.float64) for x in self.part_frames.get(name, (np.zeros(3), np.eye(3))))
+        tb, rb = (np.asarray(x, np.float64) for x in self.part_frames.get(host, (np.zeros(3), np.eye(3))))
+        to_body = r.T @ rb                       # bone-local direction -> body-local direction
+        for s in part.submeshes:
+            if len(s.positions):
+                root = s.positions.astype(np.float64) @ r.T + t
+                s.positions = ((root - tb) @ rb).astype(s.positions.dtype)
+            if s.normals is not None and len(s.normals):
+                s.normals = (s.normals.astype(np.float64) @ to_body).astype(s.normals.dtype)
+            if s.tangents is not None and len(s.tangents):
+                tan = s.tangents.astype(np.float64).copy()
+                tan[:, :3] = tan[:, :3] @ to_body
+                s.tangents = tan.astype(s.tangents.dtype)
+        for light in self.lights:
+            if light.part == name:
+                root = np.asarray(light.position, np.float64) @ r.T + t
+                light.position = tuple(float(x) for x in (root - tb) @ rb)
+                light.part = host
+        part.slot = None
+        part.parent = host
+        self.part_frames[name] = (tb.copy(), rb.copy())
+        return part
 
     def rename_parts(self, mapping: dict):
         """Rename parts and their rig bones in one go (a swap such as hood_a <-> trunk_a is fine):

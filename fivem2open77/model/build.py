@@ -34,6 +34,7 @@ OPAQUE_GLASS = 0.98   # GTA glass texels at least this opaque are solid (frit, p
 CUTOUT_OFFSET = 0.0006  # metres: the alpha-tested copy of a glass triangle sits this far outside it
 
 WHEEL_BONES = {"wheel_lf": "fl", "wheel_rf": "fr", "wheel_lr": "bl", "wheel_rr": "br"}
+EXTRA_WHEEL = re.compile(r"^wheel_([lr])m(\d+)$")     # middle axles of 6- and 8-wheelers
 DOOR_BONES = {"door_dside_f": "fl", "door_pside_f": "fr", "door_dside_r": "bl", "door_pside_r": "br"}
 WINDOW_BONES = {"window_lf": "fl", "window_rf": "fr", "window_lr": "bl", "window_rr": "br"}
 HUB_BONES = {"hub_lf": "fl", "hub_rf": "fr", "hub_lr": "bl", "hub_rr": "br"}
@@ -1386,6 +1387,51 @@ class VehicleBuilder:
                     v.axles[axle].positions[side] = tuple(self.cp_world(self.names.index(gname))[:3, 3]
                                                           + np.array([self.wheel_dx.get(side, 0.0), 0, 0]))
 
+    # ---------------------------------------------------------- extra axles
+    def add_static_wheels(self):
+        """Wheels on axles beyond the front and the rear one (a 6x6's middle axle: wheel_lm1,
+        wheel_rm1 ...).  Cyberpunk simulates four wheels, so these ride fixed to the body, drawn with
+        the rear axle's wheel and tyre: without them the car would have no wheels there at all."""
+        v = self.vehicle
+        src = {kind: v.parts.get(f"{kind}_back") or v.parts.get(f"{kind}_front") for kind in ("wheel", "tire")}
+        if not any(src.values()):
+            return
+        tb, rb = (np.asarray(x, np.float64) for x in v.part_frames.get("body_01", (np.array([0.0, 0.0, self.base_z]), np.eye(3))))
+        added = []
+        for i, n in enumerate(self.names):
+            m = EXTRA_WHEEL.match(n)
+            if not m:
+                continue
+            side = m.group(1)
+            pos = self.cp_world(i)[:3, 3]
+            # the right side is the left wheel turned half round (as the rig turns the right wheels)
+            r = np.eye(3) if side == "l" else np.diag([-1.0, -1.0, 1.0])
+            to_body = r.T @ rb
+            for kind, part in src.items():
+                if part is None:
+                    continue
+                name = f"{kind}_static_{n[6:]}"
+                subs = []
+                for sm in part.submeshes:
+                    root = sm.positions.astype(np.float64) @ r.T + pos
+                    nrm = None if sm.normals is None else (sm.normals.astype(np.float64) @ to_body).astype(np.float32)
+                    tan = None
+                    if sm.tangents is not None:
+                        tan = sm.tangents.astype(np.float64).copy()
+                        tan[:, :3] = tan[:, :3] @ to_body
+                        tan = tan.astype(np.float32)
+                    subs.append(SubMesh(material=sm.material, positions=((root - tb) @ rb).astype(np.float32),
+                                        normals=nrm, tangents=tan, uv0=sm.uv0, uv1=sm.uv1, colors=sm.colors,
+                                        indices=sm.indices, lod=sm.lod))
+                v.parts[name] = Part(name=name, mesh_name=name, slot=None, parent="body_01", kind=f"{kind}_static",
+                                     submeshes=subs, physical=False, gta_bones=[n])
+                v.part_frames[name] = (tb.copy(), rb.copy())
+            added.append(n)
+        if added:
+            v.static_wheels = added
+            self.warnings.append(f"wheels on a third axle ({', '.join(added)}) ride fixed to the body: Cyberpunk "
+                                 "simulates four wheels (they do not spin or follow the suspension)")
+
     # ------------------------------------------------------------ main
     def build(self) -> Vehicle:
         self.load()
@@ -1415,7 +1461,11 @@ class VehicleBuilder:
         self.collect_lights()
         self.overlay_report = add_paint_overlays(self)
         self.assemble()
+        # doors that open: door parts with geometry (a GTA skeleton often carries all four door
+        # bones whether the body has four doors or two)
+        v.door_count = sum(1 for p in v.parts.values() if p.kind == "door")
         self.rig_overrides()
+        self.add_static_wheels()
         # paint colours from carvariations
         var = self.src.variation
         if var and var.colors:
