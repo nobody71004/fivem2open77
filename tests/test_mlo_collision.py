@@ -84,3 +84,24 @@ def test_doorway_status_with_shared_box_arrays():
     st = D.doorway_status(open_door, pool2, suspects={"shutter_a"}, boxes=D.box_arrays(pool2))
     assert st["status"] == "blocked" and st["blockers"][0]["source"] == "shutter_a"
     assert D.doorway_status(shut_door, pool, boxes=boxes)["status"] == "open"
+
+
+def test_single_player_map_in_a_dlc_rpf(tmp_path):
+    """A single-player map ships as an OpenIV dlc.rpf (models and maps in a nested x64/levels/...
+    archive): find_map_files unpacks it like a single-player car."""
+    import struct
+    from test_neon import _rpf
+    from fivem2open77.mlo.pipeline import find_map_files
+    ydr = b"RSC7" + struct.pack("<III", 165, 0, 0) + b"drawable-bytes"
+    inner = _rpf([("eiffel_tower.ydr", "resource", ydr), ("eiffel.ymap", "resource", ydr)])
+    outer = _rpf([("content.xml", "file", b"<xml/>"), ("x64/levels/gta5/eiffel-tower.rpf", "file", inner)])
+    (tmp_path / "eiffel-tower").mkdir()
+    (tmp_path / "eiffel-tower" / "dlc.rpf").write_bytes(outer)
+    root, stream, coords, name, tmp = find_map_files(str(tmp_path))
+    try:
+        got = sorted(os.path.basename(f) for f in stream)
+        assert got == ["eiffel.ymap", "eiffel_tower.ydr"], got
+        assert tmp and os.path.isdir(tmp)
+    finally:
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)

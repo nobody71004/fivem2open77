@@ -58,6 +58,20 @@ def find_map_files(path: str):
         dn[:] = [d for d in dn if not d.startswith(".")]
         for f in fn:
             files.append(os.path.join(dp, f))
+    # a single-player map ships as an OpenIV dlc.rpf (the ymaps, ytyps and models in a nested
+    # x64/levels/.../<map>.rpf): unpacked next to the rest, like a single-player car (gta/rpf.py)
+    rpfs = [f for f in files if f.lower().endswith(".rpf")]
+    if rpfs:
+        from ..gta import rpf as rpf_mod
+        if tmpdir is None:
+            import tempfile
+            tmpdir = tempfile.mkdtemp(prefix="f2o77-rpf-")
+        for f in rpfs:
+            dest = os.path.join(tmpdir, "rpf", os.path.relpath(f, root))
+            try:
+                files.extend(rpf_mod.extract(f, dest))
+            except rpf_mod.RpfError as e:
+                raise MapInputError(f"{os.path.basename(f)}: {e}") from e
     if any(f.lower().endswith(".fxap") for f in files):
         raise EscrowProtectedError("this resource is protected by Cfx.re asset escrow (.fxap found). Escrowed assets "
                                    "are encrypted for one server licence and cannot be converted.")
