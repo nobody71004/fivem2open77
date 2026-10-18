@@ -4,7 +4,8 @@
   WolvenKit CLI    writes the game files                                      -- bundled with the app
   .NET 8 runtime   runs WolvenKit.CLI.dll                                     -- bundled with the app
   7-Zip            opens .rar/.7z FiveM downloads                             -- bundled with the app
-  .NET 8 (Linux)   the map baker's runtime, uploaded to Linux server hosts    -- bundled with the app
+  .NET 8 (Linux)   the map baker's runtime, packed into its toolkit for Linux -- bundled with the app (from 1.7.3),
+                   server hosts (linuxdotnet.py)                                  or downloaded in Settings > Tools
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ import re
 import shutil
 
 from ..cp77.donor import DONORS, REQUIRED, _paths
+from . import linuxdotnet
 from .paths import IS_WINDOWS, app_home, bundled
 
 EXE = ".exe" if IS_WINDOWS else ""
@@ -147,22 +149,20 @@ def find_wolvenkit(configured: str = "") -> str | None:
 
 
 def _is_linux_dotnet_root(d: str | None) -> bool:
-    if not d or not os.path.isdir(os.path.join(d, "shared", "Microsoft.NETCore.App")):
-        return False
-    host = os.path.join(d, "dotnet")
-    try:
-        with open(host, "rb") as f:
-            if f.read(4) != b"\x7fELF":
-                return False
-    except OSError:
-        return False
-    return any(re.match(r"^8\.", v) for v in os.listdir(os.path.join(d, "shared", "Microsoft.NETCore.App")))
+    return linuxdotnet.is_root(d)
 
 
-def find_linux_dotnet(configured: str = "") -> str | None:
+def linux_dotnet_download_dir(workspace: str) -> str:
+    """Where Settings > Tools puts the runtime when the app does not carry it."""
+    return os.path.join(workspace, "tools", "dotnet-linux-x64")
+
+
+def find_linux_dotnet(configured: str = "", workspace: str | None = None) -> str | None:
     """A linux-x64 .NET 8 runtime folder (dotnet, host/fxr, shared/Microsoft.NETCore.App/8.x) for the map
-    baker on Linux server hosts: bundled with the Windows app; on Linux the system's own will do."""
-    cands = [configured, bundled("tools", "baker", "dotnet-linux-x64"), os.environ.get("F2O77_LINUX_DOTNET")]
+    baker on Linux server hosts: bundled with the Windows app (tools/baker/dotnet-linux-x64), else the
+    one Settings > Tools downloaded into the workspace; on Linux the system's own will do."""
+    cands = [configured, bundled("tools", "baker", "dotnet-linux-x64"),
+             linux_dotnet_download_dir(workspace) if workspace else None, os.environ.get("F2O77_LINUX_DOTNET")]
     if not IS_WINDOWS:
         cands.append(os.environ.get("DOTNET_ROOT"))
         d = shutil.which("dotnet")
@@ -207,7 +207,7 @@ class Toolbox:
         self.dotnet = find_dotnet(p.get("dotnet", ""))
         self.wolvenkit = find_wolvenkit(p.get("wolvenkit", ""))
         self.sevenzip = find_7z(p.get("sevenzip", ""))
-        self.linux_dotnet = find_linux_dotnet(p.get("linux_dotnet", ""))
+        self.linux_dotnet = find_linux_dotnet(p.get("linux_dotnet", ""), workspace)
         games = find_game_dirs() if not _valid_game(p.get("game_dir")) else [(p["game_dir"], "settings")]
         self.games = games
         self.game_dir = games[0][0] if games else None
@@ -247,7 +247,9 @@ class Toolbox:
                       "help": "Donor files extracted from your game (one time, about a minute)."},
             "linux_dotnet": {"ok": bool(self.linux_dotnet), "path": self.linux_dotnet, "optional": True,
                              "help": ".NET 8 for Linux: the map baker's runtime, installed on your server host so "
-                                     "maps moved in game can be rebuilt there."},
+                                     "maps moved in game can be rebuilt there.",
+                             "download": {"version": linuxdotnet.VERSION, "bytes": linuxdotnet.SIZE,
+                                          "url": linuxdotnet.URL}},
         }
         items["ready"] = all(items[k]["ok"] for k in ("wolvenkit", "dotnet")) and (items["donor"]["ok"] or items["game"]["ok"])
         items["app_home"] = app_home()

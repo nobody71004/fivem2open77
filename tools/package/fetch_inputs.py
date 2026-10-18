@@ -3,7 +3,8 @@
     python tools/package/fetch_inputs.py [--dir out/package-downloads] [--check]
 
 Every input is pinned below by URL and sha256, taken from the verified Studio 1.4.1 release build (unchanged for 1.5.0 to 1.6.3):
-the embeddable CPython, the .NET runtime for WolvenKit.CLI, the 7-Zip installer (7z.exe/7z.dll) and
+the embeddable CPython, the .NET runtime for WolvenKit.CLI (and, from 1.7.3, the linux-x64 one the map
+baker's toolkit carries to Linux server hosts), the 7-Zip installer (7z.exe/7z.dll) and
 LZMA SDK (7zSD.sfx stub), the WolvenKit.Console release, and the win_amd64 / cp312 wheels.  A file
 that is present but hashes wrong is re-downloaded; everything is verified before use.  --check only
 verifies (no network), for CI and tests.
@@ -44,6 +45,10 @@ PINNED = [
     ("dotnet-runtime-8.0.31-win-x64.zip",
      "https://builds.dotnet.microsoft.com/dotnet/Runtime/8.0.31/dotnet-runtime-8.0.31-win-x64.zip",
      "7deabbefdc83e378b343c551fe447b86002680eea91355b1f6f81d0c9ab0dcaa"),
+    # .NET 8 for Linux, the map baker's runtime (from 1.7.3; its sha512 is Microsoft's published one)
+    ("dotnet-runtime-8.0.31-linux-x64.tar.gz",
+     "https://builds.dotnet.microsoft.com/dotnet/Runtime/8.0.31/dotnet-runtime-8.0.31-linux-x64.tar.gz",
+     "e2e392eedd49fd5a6eba078d508383fa9191059cb362c9d93cf533d5207b8db6"),
     ("7z2604-x64.exe",
      "https://www.7-zip.org/a/7z2604-x64.exe",
      "d54bf805f9f3704d1e8db2fa3498ae7ef2df0312b40b558e7c71c734430a665d"),

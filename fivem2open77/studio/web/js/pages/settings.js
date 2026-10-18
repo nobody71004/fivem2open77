@@ -199,11 +199,31 @@ function tools(body) {
   const t = st.tools;
   const p = st.settings.paths;
   const inputs = {};
-  const item = (key, label, tool, setting, optional) => {
+  const item = (key, label, tool, setting, optional, fix) => {
     const input = h("input", { type: "text", value: p[setting] || "", placeholder: tool.path || "not found", style: { width: "100%" } });
     inputs[setting] = input;
     return h("div.setup-item", h("span.dot" + (tool.ok ? ".ok" : optional ? ".opt" : "")), h("b", label),
-      h("div", input, h("div.help", tool.ok ? `using ${tool.path}` : tool.help)), h("span", tool.ok ? h("span.ok", "ok") : h("span.err", "missing")));
+      h("div", input, h("div.help", tool.ok ? `using ${tool.path}` : tool.help)),
+      h("span", tool.ok ? h("span.ok", "ok") : fix || h("span.err", "missing")));
+  };
+  // .NET 8 for Linux: in the app from 1.7.3; an install without it downloads Microsoft's file here
+  const linuxLog = h("div");
+  const linuxFix = () => {
+    const d = t.linux_dotnet.download || {};
+    return h("button.btn.small.primary", { "data-fix": "linux_dotnet", onclick: async (e) => {
+      e.target.disabled = true;
+      try {
+        const job = await api.post("/tools/linux_dotnet");
+        const log = h("div.log", { style: { maxHeight: "200px" } });
+        clear(linuxLog).append(log);
+        const j = await waitJob(job.id, (jj) => clear(log).append(...logLines(jj.allLines)));
+        if (j.state === "done") { await refreshState(); location.reload(); return; }
+        log.append(h("div.e", j.error || "the download did not finish"));
+      } catch (err) {
+        toast(err.message, "err");
+      }
+      e.target.disabled = false;
+    } }, d.bytes ? `Download (${Math.round(d.bytes / 1048576)} MB)` : "Download");
   };
   const donor = t.donor;
   const donorLog = h("div");
@@ -216,7 +236,9 @@ function tools(body) {
       item("wolvenkit", "WolvenKit CLI", t.wolvenkit, "wolvenkit"),
       item("dotnet", ".NET 8 runtime", t.dotnet, "dotnet"),
       item("sevenzip", "7-Zip", t.sevenzip, "sevenzip", true),
-      t.linux_dotnet ? item("linux_dotnet", ".NET 8 for Linux (map baker)", t.linux_dotnet, "linux_dotnet", true) : null,
+      t.linux_dotnet ? item("linux_dotnet", ".NET 8 for Linux (map baker)", t.linux_dotnet, "linux_dotnet", true,
+        t.linux_dotnet.ok ? null : linuxFix()) : null,
+      linuxLog,
       h("div.setup-item", h("span.dot" + (donor.ok ? ".ok" : "")), h("b", "Donor files"),
         h("div", h("input", { type: "text", value: p.cache_dir || "", placeholder: donor.path, style: { width: "100%" },
           oninput: (e) => { inputs.cache_dir = e.target; } }), donorList, h("div.help", donor.help)),

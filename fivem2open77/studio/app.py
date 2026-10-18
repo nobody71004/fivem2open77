@@ -29,7 +29,7 @@ from .settings import Settings
 from .tools import Toolbox
 from .worldops import WorldOps
 
-APP_VERSION = "1.7.2"
+APP_VERSION = "1.7.3"
 
 
 def _stamp(path) -> list:
@@ -95,6 +95,24 @@ class Studio(MapOps, WorldOps):
                 job.log(f"donor {name}: ready")
             return tb.status()["donor"]
         return self.jobs.submit("donor", "Prepare donor files from the game", run, heavy=True)
+
+    def get_linux_dotnet(self):
+        """Downloads .NET 8 for Linux (the map baker's runtime, linuxdotnet.py) into the workspace, for
+        an install that does not carry it."""
+        from . import linuxdotnet
+        from .tools import linux_dotnet_download_dir
+
+        def run(job):
+            def progress(done, total):
+                job.set_progress(done / total if total else None, f"{done / 1048576:.0f} of {total / 1048576:.0f} MB")
+            res = linuxdotnet.download(linux_dotnet_download_dir(self.workspace), os.path.join(self.workspace, "downloads"),
+                                       log=job.log, progress=progress, check=job.check)
+            tb = self.toolbox(refresh=True)
+            if not tb.linux_dotnet:
+                raise RuntimeError("the runtime was unpacked but the Studio does not find it")
+            job.log(f"Settings > Tools: .NET 8 for Linux ok ({tb.linux_dotnet})")
+            return dict(tb.status()["linux_dotnet"], runtime=res["runtime"])
+        return self.jobs.submit("tools", "Download .NET 8 for Linux (map baker)", run)
 
     # ------------------------------------------------------------------ state
     def redacted_settings(self) -> dict:

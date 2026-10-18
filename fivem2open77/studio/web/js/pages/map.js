@@ -949,7 +949,8 @@ function deployTab(root, ctx) {
       h("label.choice", keep, h("span", h("b", "Keep the spot it was moved to in game"), h("span.help", " - a map already there is rebuilt at its current spot (off: the build's spot)"))),
       h("label.choice", restart, h("span", h("b", "Restart the server when nobody is online"), h("span.help", " - players get the map at their next launch; otherwise at the next server start"))),
       h("label.choice", baker, h("span", h("b", "Install / update the map baker"), h("span.help", " - rebuilds the map on the server when it is moved in game (.NET + WolvenKit for Linux, ~70 MB the first time)"))),
-      toolsOk ? null : h("div.help.warn", "No Linux .NET runtime on this PC (Settings > Tools): the baker cannot be installed from here."),
+      toolsOk ? null : h("div.help.warn", "No Linux .NET runtime on this PC: the baker cannot be installed from here. ",
+        h("a", { href: "#/settings/tools" }, "Settings > Tools"), " downloads it (.NET 8 for Linux)."),
       h("div.row", { style: { marginTop: "14px" } }, h("button.btn", { onclick: status }, "Check server"), h("div.grow"),
         h("button.btn.primary", { onclick: async () => {
           const chosen = [...names.querySelectorAll("input:checked")].map((i) => i.value);

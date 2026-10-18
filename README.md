@@ -321,7 +321,10 @@ longer matches this game build) and either installed in the local game for a tes
 
 `fivem2open77-studio-<version>-setup.exe` installs per user (no admin) to
 `%LOCALAPPDATA%\Programs\fivem2open77` with everything bundled: Python + numpy, WolvenKit CLI, the
-.NET 8 runtime, 7-Zip. Data lives in `%LOCALAPPDATA%\fivem2open77\studio`. Build it with
+.NET 8 runtime, 7-Zip, and .NET 8 for Linux -- the map baker's runtime, which the Studio packs with
+WolvenKit into the toolkit it installs next to a Linux server, so a map moved in game is rebuilt
+there (Settings > Tools downloads it into the workspace for an install without it). Data lives in
+`%LOCALAPPDATA%\fivem2open77\studio`. Build it with
 `tools/package/build_windows.py` (see its docstring; the window is `host/`, a .NET Framework 4.8
 WinForms + WebView2 app that needs no runtime install). Its icon and logo, the F2077 emblem and the
 F2077 neon wall, come from `docs/brand` (`tools/brand/make_brand.py` makes the files). What each
