@@ -21,6 +21,7 @@ the same result as the bare command line.  ``normalize`` fills defaults and chec
       },
       "lights": {"head_fl_0": {"color": [255, 250, 220], "type": "Head", "skip": false}},
       "handling": {
+        "tune": "sport",                  stock (GTA's handling mapped onto the donor) | sport | track (cp77/tweak.py TUNES)
         "drive": "auto",                  auto | rwd | fwd | awd
         "gears": null,                    4..7
         "mass": null,                     kg
@@ -65,7 +66,7 @@ DEFAULTS = {
     "parts": {"lids": "auto", "bone_roles": {}, "extras": {}, "mods": {}},
     "lights": {},
     "handling": {
-        "drive": "auto", "gears": None, "mass": None, "steer": None, "wheel_offset": None,
+        "tune": "sport", "drive": "auto", "gears": None, "mass": None, "steer": None, "wheel_offset": None,
         "multipliers": {"torque": 1.0, "top_speed": 1.0, "brake": 1.0, "grip": 1.0, "spring": 1.0, "drag": 1.0},
     },
     "sound": {"engine": "auto"},
@@ -223,6 +224,9 @@ def normalize(p: dict, *, donors=None, sounds=None) -> dict:
         errors.append("handling: unknown settings " + ", ".join(sorted(extra)))
     if h["drive"] not in ("auto", "rwd", "fwd", "awd"):
         errors.append("handling.drive: auto, rwd, fwd or awd")
+    if h.get("tune") not in ("stock", "sport", "track"):
+        errors.append("handling.tune: stock, sport or track")
+        h["tune"] = "sport"
     g = _num(errors, "handling.gears", h["gears"], 4, 7)
     h["gears"] = int(g) if g is not None else None
     h["mass"] = _num(errors, "handling.mass", h["mass"], 500, 4000)

@@ -17,7 +17,7 @@ import re
 
 import numpy as np
 
-QC_VERSION = 2
+QC_VERSION = 3          # 3: the performance tune (cp77/tweak.py TUNES) and engine sounds by engine
 
 CORNER_OF_SLOT = {"front_left": "fl", "front_right": "fr", "back_left": "bl", "back_right": "br"}
 WHEEL_KINDS = ("wheel", "tire", "wheel_static", "tire_static")
@@ -133,6 +133,10 @@ def car_facts(v, donor_id: str, donor: dict, bindings: dict, frames: dict, tweak
         "tweak": _tweak_values(tweak_text),
         "wheel_offset_profile": ((profile or {}).get("handling") or {}).get("wheel_offset"),
         "handling_wheels": _r(hp.get("wheels", {})),
+        "performance": {"tune": hp.get("tune"), "torque_per_kg": round(float(hp["torque"]) / float(hp["mass"]), 3),
+                        "top_speed": round(float(hp["top_speed"]), 2), "brake": round(float(hp["brake"]), 3),
+                        "grip": round(float(hp["grip"]), 3), "mass": round(float(hp["mass"]), 1)}
+        if hp.get("torque") and hp.get("mass") else None,
         "geometry": {"bones_verts": total, "dropped": dropped,
                      "dropped_verts": sum(d["verts"] for d in dropped)},
         "fitted": {"extras": [e["name"] for e in v.report.get("extras_detail", []) if e.get("on")],
@@ -261,6 +265,20 @@ def check_car(report: dict) -> dict:
     if q.get("fitted", {}).get("mods") or q.get("fitted", {}).get("extras"):
         f = q["fitted"]
         c.add("parts.fitted", True, "fitted: " + ", ".join(f["mods"] + f["extras"]), level="warn")
-    ok = all(i["ok"] for i in c.items if i["level"] != "warn" or i["ok"])
+    perf = q.get("performance")
+    if perf:
+        tuned = perf.get("tune") not in (None, "stock")
+        weak = []
+        if tuned:
+            if perf["torque_per_kg"] < 0.39:
+                weak.append(f"torque {perf['torque_per_kg']:.2f} N m/kg")
+            if perf["brake"] < 1.0:
+                weak.append(f"brakes {perf['brake']:.2f}x")
+            if perf["grip"] < 1.0:
+                weak.append(f"grip {perf['grip']:.2f}x")
+        c.add("handling.performance", not weak,
+              f"{perf.get('tune')} tune: {perf['torque_per_kg']:.2f} N m/kg, top gear {perf['top_speed'] * 3.6:.0f} km/h, "
+              f"brakes {perf['brake']:.2f}x, grip {perf['grip']:.2f}x" if not weak else
+              f"{perf.get('tune')} tune, but the profile takes it below the tune's floor: " + ", ".join(weak), level="warn")
     ok = all(i["ok"] or i["level"] == "warn" for i in c.items)
     return {"ok": ok, "stale": any(i["id"] in ("qc.version",) and not i["ok"] for i in c.items), "checks": c.items}

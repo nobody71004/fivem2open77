@@ -51,9 +51,10 @@ def _add_dir(tar, src, arc):
 
 
 def make_bundle(out_path: str, *, build_out: str | None = None, include_hub=False, loaders_dir: str | None = None,
-                build_outs=None) -> dict:
+                build_outs=None, resource_dirs=None) -> dict:
     """build_out: a build's out/ folder (<car>/ and <car>_chime/); build_outs: several (a car
-    pack: one bundle, one restart).  Returns {path, resources}."""
+    pack: one bundle, one restart); resource_dirs: more resources, {name: folder} (car bundles).
+    Returns {path, resources}."""
     resources = []
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     with tarfile.open(out_path, "w:gz", format=tarfile.PAX_FORMAT) as tar:
@@ -69,6 +70,10 @@ def make_bundle(out_path: str, *, build_out: str | None = None, include_hub=Fals
                 if os.path.isfile(os.path.join(d, "open77.lua")) and name not in resources:
                     _add_dir(tar, d, f"resources/assets/vehicles/{name}")
                     resources.append(name)
+        for name, d in sorted((resource_dirs or {}).items()):
+            if name not in resources:
+                _add_dir(tar, d, f"resources/assets/vehicles/{name}")
+                resources.append(name)
         if include_hub:
             _add_dir(tar, hub_dir(), "resources/assets/tools/f2o77_hub")
             resources.append("f2o77_hub")
@@ -420,6 +425,22 @@ def status(server: dict, secrets, names=None, log=None) -> list:
     if not result:
         raise DeployError("no status from the server: " + out[-500:])
     return result
+
+
+def car_inventory(server: dict, secrets, names=None, log=None) -> dict:
+    """The converted car resources each server folder has: bundles (with the records they carry)
+    and cars installed on their own (studio/carbundle.py).  Read only."""
+    from . import carbundle
+    names = _names(server, names)
+    with Remote(server, secrets, log=log or (lambda *_: None)) as r:
+        code, out = r.run("python3 -c " + shlex.quote(carbundle.INVENTORY_PY) + " "
+                          + shlex.quote(server["servers_root"]) + " " + " ".join(shlex.quote(n) for n in names),
+                          timeout=120, check=False)
+    inv = carbundle.parse_inventory(out)
+    missing = [n for n in names if n not in inv]
+    if missing:
+        raise DeployError(f"no car inventory from {', '.join(missing)}: " + (out or "")[-300:])
+    return inv
 
 
 # the release versions staged on the host, read without changing anything (no script upload)

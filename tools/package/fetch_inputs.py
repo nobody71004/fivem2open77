@@ -2,7 +2,7 @@
 
     python tools/package/fetch_inputs.py [--dir out/package-downloads] [--check]
 
-Every input is pinned below by URL and sha256, taken from the verified Studio 1.4.1 release build (unchanged for 1.5.0 to 1.6.0):
+Every input is pinned below by URL and sha256, taken from the verified Studio 1.4.1 release build (unchanged for 1.5.0 to 1.6.1):
 the embeddable CPython, the .NET runtime for WolvenKit.CLI, the 7-Zip installer (7z.exe/7z.dll) and
 LZMA SDK (7zSD.sfx stub), the WolvenKit.Console release, and the win_amd64 / cp312 wheels.  A file
 that is present but hashes wrong is re-downloaded; everything is verified before use.  --check only
@@ -18,7 +18,7 @@ Notes on the pins:
 Then package in one command (7z on PATH):
 
     python tools/package/build_windows.py --downloads out/package-downloads \\
-        --wolvenkit out/package-downloads/wolvenkit --host out/studio-1.6.0-host --out out/studio_1_6_0
+        --wolvenkit out/package-downloads/wolvenkit --host out/studio-1.6.1-host --out out/studio_1_6_1
 
 (--host is the built window: dotnet build host/Fivem2Open77Studio.csproj -c Release -p:OutputPath=...)
 """
@@ -156,7 +156,7 @@ def main(argv=None):
     if not a.check:
         print(f"\ninputs ready.  package with:\n"
               f"  python tools/package/build_windows.py --downloads {a.dir} \\\n"
-              f"      --wolvenkit {os.path.join(a.dir, 'wolvenkit')} --host out/studio-1.6.0-host --out out/studio_1_6_0")
+              f"      --wolvenkit {os.path.join(a.dir, 'wolvenkit')} --host out/studio-1.6.1-host --out out/studio_1_6_1")
     return 0
 
 

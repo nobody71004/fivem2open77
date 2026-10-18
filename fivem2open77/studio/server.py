@@ -432,6 +432,13 @@ def api_pack_deploy(h, q, lid):
                                 include_hub=bool(b.get("include_hub"))).summary())
 
 
+@route("POST", r"/api/servers/([a-z0-9_-]{1,32})/cars")
+def api_server_all_cars(h, q, sid):
+    """Every car with a good build onto this server, in car bundles (studio/carbundle.py)."""
+    b = h.body_json()
+    h.json(h.studio.car_bundles_deploy(sid, names=b.get("names"), mode=b.get("mode")).summary())
+
+
 @route("DELETE", r"/api/packs/([a-f0-9]{12})")
 def api_pack_delete(h, q, lid):
     h.studio.delete_pack(lid, with_projects=q.get("projects") in ("1", "true", "yes"))

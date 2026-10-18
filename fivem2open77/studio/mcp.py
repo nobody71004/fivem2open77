@@ -328,6 +328,14 @@ class McpHub:
                 raise ToolError(job.error or "the quality sweep failed")
             return text(job.result)
 
+        def t_deploy_all(ctx, args):
+            job = self.studio.car_bundles_deploy(str(args.get("server") or ""), names=args.get("names"),
+                                                 mode=args.get("mode") or None)
+            ctx.wait_job(job, 3600)
+            if job.state == "failed":
+                raise ToolError(job.error or "the deploy failed")
+            return text(job.result)
+
         def t_cancel(ctx, args):
             job = self.studio.jobs.get(str(args.get("job") or ""))
             if job is None:
@@ -353,12 +361,20 @@ class McpHub:
                  "again. Long: answers running, then wait_job.",
                  _obj({"rebuild": {"type": "boolean"}, "projects": {"type": "array", "items": {"type": "string"}}}),
                  "change", t_qc_run),
+            Tool("deploy_all_cars", "Install every car whose latest build is good on a server, carried in car bundles "
+                 "(f2o77_cars_N, 12 cars each: an Open77 server may require at most 64 mods). Cars keep their bundle; only "
+                 "bundles whose cars changed are re-packed; cars installed on their own are updated in place. mode as "
+                 "deploy_car (stage: the car hub restarts the server when nobody is online). Long: answers running, "
+                 "then wait_job.",
+                 _obj({"server": {"type": "string"}, "names": {"type": "array", "items": {"type": "string"}},
+                       "mode": {"type": "string", "enum": ["stage", "restart", "files"]}}, ["server"]),
+                 "deploy", t_deploy_all),
         ]
 
     def tool_list(self) -> list:
         from .agent.maptools import LIVE_TOOLS
         server_tools = set(LIVE_TOOLS) | {"list_servers", "server_status", "read_server_log", "restart_server",
-                                          "deploy_car", "deploy_map", "deploy_world_edit", "remove_world_edit",
+                                          "deploy_car", "deploy_all_cars", "deploy_map", "deploy_world_edit", "remove_world_edit",
                                           "enable_agent_api"}
         out = []
         for name in sorted(self.tools):

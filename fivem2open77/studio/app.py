@@ -29,7 +29,7 @@ from .settings import Settings
 from .tools import Toolbox
 from .worldops import WorldOps
 
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.6.1"
 
 
 def _stamp(path) -> list:
@@ -649,6 +649,30 @@ class Studio(MapOps, WorldOps):
         out = os.path.join(p.build_dir(b["n"]), "out")
 
         def run(job):
+            # a car the server carries in a car bundle goes out in its bundle (installing it on its own
+            # as well would define its record twice)
+            from . import carbundle
+            records = {c["record"] for c in carbundle.car_resources(out)}
+            try:
+                inv = deploy_mod.car_inventory(server, self.secrets, names, log=job.log)
+            except deploy_mod.DeployError as e:
+                job.log(f"could not read the server's car bundles ({e}): installing the car on its own")
+                inv = {}
+            inbundle = {f: sorted(b for b, i in (d.get("bundles") or {}).items() if records & set(i.get("records") or []))
+                        for f, d in inv.items()}
+            if any(inbundle.values()):
+                best, _ = self.deployable_cars()
+                for r in records:
+                    c = best.get(r)
+                    if c is None or c["project"].id != p.id or c["build"]["n"] != b["n"]:
+                        raise ProjectError(f"{r} is in a car bundle on {server['label']}: deploy it with its bundle "
+                                           "(Deploy every car), from its latest good build")
+                results = [self._deploy_car_bundles(job, server, f, inv[f], best, mode, only_bundles=inbundle[f])
+                           for f in deploy_mod._names(server, names) if inbundle.get(f)]
+                return {"bundled": True, "folders": [{k: v for k, v in r.items() if k != "result"} for r in results],
+                        "staged": [l for r in results for l in (r["result"] or {}).get("staged", [])],
+                        "live": [l for r in results for l in (r["result"] or {}).get("live", [])],
+                        "names": [r["folder"] for r in results]}
             tmp = tempfile.mkdtemp(prefix="f2o77-bundle-")
             try:
                 bundle = deploy_mod.make_bundle(os.path.join(tmp, "bundle.tgz"), build_out=out, include_hub=include_hub)
@@ -665,6 +689,143 @@ class Studio(MapOps, WorldOps):
             return res
 
         return self.jobs.submit("deploy", f"Deploy {p.data['name']} to {server['label']} ({mode})", run, project=p.id)
+
+    # ------------------------------------------------------------------ car bundles: every car on a server
+    def deployable_cars(self) -> tuple[dict, list]:
+        """The latest build of every car record, when it built and passed its checks:
+        {record: {project, name, build, time, out, car (carbundle entry), addons}}, and what was left
+        out [(project name, why)]."""
+        from . import carbundle
+        best, skipped = {}, []
+        for summary in self.projects.list():
+            try:
+                q = self.projects.get(summary["id"])
+            except Exception:  # noqa: BLE001 - deleted meanwhile
+                continue
+            if q.kind != "car":
+                continue
+            name = q.data.get("name") or q.id
+            builds = q.data.get("builds") or []
+            last = builds[-1] if builds else None
+            if not last:
+                skipped.append((name, "never built"))
+                continue
+            if not last.get("ok"):
+                skipped.append((name, "its last build failed"))
+                continue
+            if not (last.get("qa") or {"ok": True}).get("ok", True):
+                skipped.append((name, "its last build failed the checks"))
+                continue
+            out = os.path.join(q.build_dir(last["n"]), "out")
+            try:
+                cars = carbundle.car_resources(out)
+                addons = carbundle.addons_of(out)
+            except (OSError, ValueError) as e:
+                skipped.append((name, f"its build cannot be read: {e}"))
+                continue
+            for c in cars:
+                rec = c["record"]
+                prev = best.get(rec)
+                entry = {"project": q, "name": name, "build": last, "time": last.get("time") or 0, "out": out, "car": c,
+                         "addons": [a for a in addons if a.startswith(c["resource"] + "_")]}
+                if prev is None or entry["time"] > prev["time"]:
+                    if prev is not None:
+                        skipped.append((prev["name"], f"{rec} is built by {name} too (newer)"))
+                    best[rec] = entry
+                else:
+                    skipped.append((name, f"{rec} is built by {prev['name']} too (newer)"))
+        return best, skipped
+
+    def _deploy_car_bundles(self, job, server, folder, inv, best, mode, only_bundles=None) -> dict:
+        """One server folder: re-pack the bundles whose cars changed, update cars installed on their
+        own in place, one deploy (one restart).  inv: carbundle inventory of the folder."""
+        from . import carbundle
+        standalone = {rec: res for res, rec in (inv.get("standalone") or {}).items()}
+        existing = {b: i.get("records") or [] for b, i in (inv.get("bundles") or {}).items()}
+        bundled = sorted(r for r in best if r not in standalone)
+        assignment = carbundle.plan(bundled, existing, carbundle.BUNDLE_SIZE)
+        if only_bundles:
+            assignment = {k: v for k, v in assignment.items() if k in only_bundles}
+        tmp = tempfile.mkdtemp(prefix="f2o77-cars-")
+        try:
+            dirs, changed, deployed = {}, [], []
+            for bname, recs in sorted(assignment.items(), key=lambda kv: carbundle._bundle_no(kv[0])):
+                old = (inv.get("bundles") or {}).get(bname) or {}
+                have = old.get("cars") or {}
+                if have and set(have) == set(recs) and all(have.get(r) == best[r]["car"]["info"].get("version") for r in recs):
+                    job.log(f"{folder}: {bname} unchanged ({len(recs)} cars)")
+                    continue
+                ver = carbundle.next_version((inv.get("versions") or {}).get(bname))
+                info = carbundle.write_bundle(os.path.join(tmp, bname), bname, ver, [best[r]["car"] for r in recs])
+                dirs[bname] = os.path.join(tmp, bname)
+                changed.append(bname)
+                deployed += recs
+                job.log(f"{folder}: {bname} {ver}: {len(recs)} cars ({info['bytes'] / 1048576:.0f} MiB): "
+                         + ", ".join(r.split(".", 1)[-1] for r in recs))
+            for rec, res in sorted(standalone.items()):
+                c = best.get(rec)
+                if c is None or only_bundles:          # one bundle re-packed: the rest stays as it is
+                    continue
+                if c["car"]["resource"] != res:
+                    job.log(f"{folder}: {rec} is installed as {res}, the Studio builds it as {c['car']['resource']}: "
+                            "left as it is")
+                    continue
+                dirs[res] = c["car"]["dir"]
+                deployed.append(rec)
+                job.log(f"{folder}: {res} (installed on its own) updated in place")
+            for rec in set(deployed):
+                for a in best[rec]["addons"]:
+                    dirs[a] = os.path.join(best[rec]["out"], a)
+            orphans = sorted(b for b in existing if b not in assignment and not only_bundles)
+            if orphans:
+                job.log(f"{folder}: {', '.join(orphans)} carry no car the Studio has now: left installed")
+            if not dirs:
+                job.log(f"{folder}: every car is up to date")
+                return {"folder": folder, "bundles": [], "cars": 0, "result": None}
+            bundle = deploy_mod.make_bundle(os.path.join(tmp, "bundle.tgz"), resource_dirs=dirs)
+            job.log(f"{folder}: uploading {len(dirs)} resources ({bundle['bytes'] / 1048576:.0f} MiB)")
+            res = deploy_mod.deploy(server, self.secrets, bundle["path"], mode=mode, names=[folder], log=job.log)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        for rec in set(deployed):
+            c = best[rec]
+            entry = {"time": time.time(), "server": server["id"], "names": [folder], "mode": mode,
+                     "build": c["build"]["n"], "version": c["build"].get("version"),
+                     "bundle": next((b for b, rs in assignment.items() if rec in rs), None),
+                     "staged": len(res["staged"]), "live": len(res["live"])}
+            q = c["project"]
+            with q.lock:
+                q.data.setdefault("deployments", []).append(entry)
+                q.data["deployments"] = q.data["deployments"][-50:]
+                q.save()
+        return {"folder": folder, "bundles": changed, "cars": len(set(deployed)), "result": res}
+
+    def car_bundles_deploy(self, sid, *, names=None, mode=None):
+        """Every car the Studio built well onto a server, carried in car bundles (studio/carbundle.py)."""
+        server = self._server(sid)
+        mode = mode or self.settings.get()["deploy"]["mode"]
+        if mode not in ("stage", "restart", "files"):
+            raise ValueError("mode: stage, restart or files")
+
+        def run(job):
+            best, skipped = self.deployable_cars()
+            for n, why in skipped:
+                job.log(f"not deployed: {n}: {why}")
+            if not best:
+                raise ProjectError("no car has a good build to deploy")
+            job.log(f"{len(best)} cars with a good build")
+            inv = deploy_mod.car_inventory(server, self.secrets, names, log=job.log)
+            results = []
+            for folder in deploy_mod._names(server, names):
+                job.check()
+                results.append(self._deploy_car_bundles(job, server, folder, inv[folder], best, mode))
+            return {"server": sid, "mode": mode, "cars": len(best), "skipped": [f"{n}: {w}" for n, w in skipped],
+                    "folders": [{k: v for k, v in r.items() if k != "result"} for r in results],
+                    "staged": sum(len((r["result"] or {}).get("staged", [])) for r in results),
+                    "pending": [l for r in results for l in (r["result"] or {}).get("pending", [])]}
+
+        return self.jobs.submit("deploy", f"Deploy every car to {server['label']} ({mode})", run,
+                                meta={"server": sid, "cars": "all"})
 
     def server_job(self, sid, action, **kw):
         server = self._server(sid)

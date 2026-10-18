@@ -44,6 +44,24 @@ BY_CHARACTER = {
     "military": "v_car_militech_hellhound",
     "bike": "v_mbike_yaiba_asmx_kusanagi",
     "chopper": "v_mbike_arch_nazare_chopper",
+    # finer characters: what the engine is (GTA counterpart refined, add-on sound packs, real cars)
+    "w16": "v_car_rayfield_caliburn",          # W16 / hybrid hypercars (Bugatti, P1, LaFerrari)
+    "v12": "v_car_herrera_outlaw",             # naturally aspirated V12 exotics
+    "v10": "v_car_herrera_outlaw",             # naturally aspirated V10 exotics (Huracan, R8, Viper, LFA)
+    "tt_v8": "v_car_quadra_turbo_r",           # twin-turbo V8 supercars (488, 720S, AMG GT)
+    "v8_suv": "v_car_mahir_supron_gt",         # fast luxury SUVs (Urus, Range Rover SVR, X5 M)
+    "gwagon": "v_car_militech_hellhound",      # boxy V8 off-roaders (G-Class, 6x6)
+    "diesel_pickup": "v_car_thorton_mackinaw", # heavy-duty diesel pickups (Duramax, Power Stroke, Cummins)
+    "boxer": "v_car_mizutani_hozuki_sti",      # turbo flat-four (Subaru WRX STI)
+    "i6": "v_car_mizutani_shion",              # straight-six turbo (2JZ, RB26, BMW S58/B58)
+    "v6tt": "v_car_mizutani_shion",            # twin-turbo V6 (GT-R R35, NSX, Ford GT)
+    "rotary": "v_car_mizutani_shion_sport",    # Wankel (RX-7, RX-8)
+    "i4": "v_car_mizutani_hozuki_sport",       # revvy four-cylinders (Civic, S2000, Silvia, MR2)
+    "hot_hatch": "v_car_archer_quartz_gt",     # European hot hatches
+    "limo": "v_car_chevalier_thrax",           # V12 limousines (Phantom, Maybach)
+    "gt_w12": "v_car_villefort_deleon",        # grand tourers (Continental GT, Wraith, DB11)
+    "sport_sedan": "v_car_quadra_sport_r7_gt", # V8 sport saloons and coupes (C63, M5, RS6)
+    "muscle_classic": "v_car_thorton_colby_gt",  # 60s/70s muscle
 }
 
 # GTA V sound names (audioNameHash = a vanilla vehicle) by character
@@ -110,10 +128,61 @@ for _char, _names in _GTA.items():
     for _n in _names.split():
         GTA_SOUND.setdefault(_n, _char)
 
+# The GTA counterpart refined: what engine that GTA car has (its real-world model), so its
+# Cyberpunk sound is the closest engine, not just the closest class.
+_GTA_REFINE = {
+    "w16": "ADDER NERO NERO2 T20 TURISMOR XA21 KRIEGER",
+    "v12": "INFERNUS INFERNUS2 CHEETAH CHEETAH2 TORERO TORERO2 OSIRIS ITALIGTO IGNUS IGNUS2",
+    "v10": "ZENTORNO TEMPESTA VACCA BANSHEE BANSHEE2 REAPER",
+    "tt_v8": "ITALIGTB ITALIGTB2 ENTITYXF ENTITY2 ENTITY3 BULLET CYCLONE2",
+    "v8_suv": "XLS XLS2 BALLER BALLER2 BALLER3 BALLER4 BALLER5 BALLER6 BALLER7 BALLER8 HUNTLEY TOROS REBLA "
+              "NOVAK CAVALCADE CAVALCADE3 ASTRON JUBILEE",
+    "gwagon": "DUBSTA DUBSTA2 DUBSTA3 MESA3 PATRIOT PATRIOT2",
+    "boxer": "SULTAN SULTAN2 SULTAN3 SULTANRS",
+    "i6": "JESTER3 JESTER4 ELEGY CYPHER SENTINEL3 SENTINEL4 ZION3 SCHLAGEN",
+    "v6tt": "ELEGY2 JESTER JESTER2 NINEF NINEF2",
+    "rotary": "ZR350 FUTO2",
+    "i4": "BLISTA2 BLISTA3 FUTO CALICO REMUS PREVION SUGOI KANJO KANJOSJ POSTLUDE PENUMBRA PENUMBRA2 RT3000 "
+          "EUROS VECTRE",
+    "hot_hatch": "ASBO CLUB BRIOSO BRIOSO2 BRIOSO3 RHAPSODY",
+    "limo": "SUPERD STRETCH COG55 COG552 COGNOSCENTI COGNOSCENTI2 SCHAFTER4 SCHAFTER6",
+    "gt_w12": "COGCABRIO WINDSOR WINDSOR2 EXEMPLAR F620 SCHWARZER JACKAL",
+    "sport_sedan": "SCHAFTER SCHAFTER3 SCHAFTER5 TAILGATER2 KURUMA KURUMA2 OMNISEGT "
+                   "CINQUEMILA DEITY",
+    "muscle_classic": "DUKES DUKES2 DUKES3 SABREGT SABREGT2 STALION STALION2 VIGERO VIGERO2 HOTKNIFE "
+                      "BLADE NIGHTSHADE ELLIE PHOENIX TULIP DOMINATOR3 GAUNTLET3 GAUNTLET5 YOSEMITE",
+}
+for _char, _names in _GTA_REFINE.items():
+    for _n in _names.split():
+        GTA_SOUND[_n] = _char
+
 # add-on sound packs: their names usually say what they are ("lambov10", "rb26dett", "s55b30").
 # Brand and model names match anywhere; engine codes at the start of a word (between
 # underscores, digits may follow); "=code" only as a whole word.
 _KW = [
+    # engines and real cars (FiveM add-ons are mostly real cars; their sound packs name the engine)
+        ("diesel_pickup", "duramax dmax powerstroke cummins diesel f250 f350 superduty",
+     "ccf250 =f250 =2500hd =3500hd l5p"),
+    ("w16", "bugatti chiron veyron divo koenig agera jesko regera laferrari mclarenp1", "w16 =p1 918 senna"),
+    ("v12", "aventador revuelto revsv countach murcielago diablo pagani zonda huayra valkyrie vanquish superfast "
+            "v12",
+     "lp700 lp750 lp770 lp780 812 f12 =v12 one77 svj sian dbs enzo"),
+    ("v10", "huracan gallardo viper carrera_gt carreragt v10", "=r8 r8ppi lp610 lp640 =sto =cgt lfa"),
+    ("tt_v8", "ferrari mclaren f8tributo amggt", "488 =f8 sf90 720s 765lt 570s 600lt 650s gtr50 =amg_gt"),
+    ("v8_suv", "urus bentayga cullinan svr rangerover range_rover escalade cayenne levante fpace macan sq7 sq8 rsq8 "
+               "gle63 gls63", "rsvr x5m x6m =x5 =x6 =x7 =q8"),
+    ("gwagon", "gwagon g63 g65 gclass 6x6 defender", "=g500 =g550"),
+    ("boxer", "subaru wrx impreza brz boxer", "=sti ej20 ej25 ej257 fa20 subwrx"),
+    ("rotary", "rotary wankel rx7 rx8 renesis", "13b 20b 26b majfd =fd3s =fd"),
+    ("i6", "supra skyline 2jz 1jz rb26 rb25 s58 s55 b58 n54 n55 barra", "=a80 =a90 m3 m4 z4 =m2 r34 r33 r32"),
+    ("v6tt", "nsx vr38 ecoboost fordgt", "r35 =gtr gt17 =gt"),
+    ("i4", "civic integra s2000 silvia 180sx 240sx crx mr2 ae86 delsol 4age 1zz 2zz",
+     "k20 k24 b16 b18 sr20 =ap2 =ap1 =ek9 =eg6 =dc2 =fk8 =fl5 =s13 =s14 =s15 mr2zzw30 honcrx"),
+    ("hot_hatch", "golf gti golfr focusrs megane yaris fiesta", "=type_r =typer =rs3"),
+    ("limo", "phantom maybach mulsanne", "760li =s600 =s680 rrphantom"),
+    ("gt_w12", "continental bentley wraith rapide", "bnt2018 =w12 =gtc dawn db11"),
+    ("sport_sedan", "c63 e63 rs6 rs7 cts_v ctsv", "=s63 c63se e63s =m5"),
+    ("muscle_classic", "chevelle roadrunner superbee", "=gto nova cuda 1969 1970 =69 =70 =71"),
     ("electric", "tesla electric taycan rimac lucid etron ioniq plaid", "=ev =eqs =leaf"),
     ("hyper", "bugatti chiron veyron koenig agera jesko pagani zonda huayra laferrari valkyrie", "senna =p1 918 w16"),
     ("super", "lambo aventador huracan murci gallardo ferrari mclaren",
@@ -154,17 +223,31 @@ def gta_audio_name(vehicle) -> str:
     return (getattr(vehicle, "audio_name", "") or "").strip()
 
 
-def character_of(audio_name: str, gta_class: str = "") -> tuple[str | None, str]:
-    """-> (character, why)."""
+def _keyword(text: str) -> str | None:
+    low = re.sub(r"[^a-z0-9]+", "_", (text or "").lower())
+    for char, rx in KEYWORDS:
+        if rx.search(low):
+            return char
+    return None
+
+
+def character_of(audio_name: str, gta_class: str = "", names=()) -> tuple[str | None, str]:
+    """-> (character, why).  In order: the GTA counterpart (audioNameHash = a GTA vehicle: the sound
+    the car had in FiveM, refined to that car's engine), an add-on sound pack's name (they name the
+    engine: "lambov12", "chevydmaxeng", "aq70bmws58"), the car's own names (model, display name:
+    most FiveM add-ons are real cars), then the GTA vehicle class."""
     a = (audio_name or "").strip()
     if a:
         up = a.upper()
         if up in GTA_SOUND:
             return GTA_SOUND[up], f"GTA sound {up}"
-        low = re.sub(r"[^a-z0-9]+", "_", a.lower())
-        for char, rx in KEYWORDS:
-            if rx.search(low):
-                return char, f"sound pack '{a}'"
+        char = _keyword(a)
+        if char:
+            return char, f"sound pack '{a}'"
+    for n in names or ():
+        char = _keyword(n)
+        if char:
+            return char, f"the car ({n})" + (f", sound '{a}' unknown" if a else "")
     c = (gta_class or "").upper()
     if c in BY_CLASS:
         return BY_CLASS[c], f"class {c}" + (f" (sound '{a}' unknown)" if a else "")
@@ -186,7 +269,8 @@ def resolve(setting: str, vehicle, donor_sound: str) -> dict:
     if setting == "donor":
         out, source = describe(donor_sound), "donor"
     elif setting == "auto":
-        char, why = character_of(gta_audio_name(vehicle), getattr(vehicle, "gta_class", ""))
+        names = [getattr(vehicle, k, "") or "" for k in ("model", "display_name", "name")]
+        char, why = character_of(gta_audio_name(vehicle), getattr(vehicle, "gta_class", ""), [n for n in names if n])
         if char is None:
             out, source = describe(donor_sound), f"donor ({why})"
         else:

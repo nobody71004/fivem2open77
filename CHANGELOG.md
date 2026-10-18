@@ -1,5 +1,49 @@
 # Changelog
 
+## Studio 1.6.1 · converter 1.6.0 (2026-10-18)
+
+### Faster cars with more grip and stronger brakes
+
+* **Performance tune** (`handling.tune`, the Handling tab): GTA's handling numbers are made for GTA's
+  physics; mapped one to one onto Cyberpunk's drive model, an SUV or a muscle car came out with less
+  grip and weaker brakes than any vanilla car (the Urus: 0.33 N m/kg, brakes 0.8x and grip 0.92x the
+  donor's). `sport`, the default, measures every car against Cyberpunk's own fast cars: at least
+  0.40 N m of torque per kg and 30 % more than the mapping (0.70 at most), a top gear 20 % higher
+  (151-223 km/h), brakes at least the donor's and 40 % more (and a stronger braking friction), tyres
+  at least the donor's and 10 % more, less drag, and less body roll (anti-roll bars 1.5x as stiff,
+  less weight thrown sideways and forwards, centre of mass 3 cm lower) so the extra grip does not
+  tip a tall car over. `track` goes further; `stock` is the old mapping. The per-car multipliers
+  apply after the tune.
+
+### Engine sounds by the GTA counterpart's engine
+
+* A car's Cyberpunk engine is now picked by what its GTA counterpart (the GTA car whose sound it
+  used in FiveM) really has: a V12 or V10 exotic (the Revuelto, the Aventador, a Viper-voiced
+  Cayenne: Herrera Outlaw), a W16 or hybrid hypercar (Rayfield Caliburn), a twin-turbo V8 supercar
+  (Quadra Turbo-R), a fast luxury SUV (the Urus: Mahir Supron GT), a G-Class (Militech Hellhound), a
+  boxer four (the WRX STI: Mizutani Hozuki STI), a revvy four (Hozuki sport), a straight-six or
+  twin-turbo V6 (Mizutani Shion), a rotary, V8 sport saloons (Quadra Sport R-7 GT), limousines
+  (Chevalier Thrax), grand tourers (Villefort Deleon), 60s muscle (Thorton Colby GT)... out of 81
+  Cyberpunk sounds instead of one per vehicle class. Add-on sound packs go by the engine their name
+  gives (`chevydmaxeng`: a Duramax diesel pickup, `aq70bmws58`: BMW's S58 straight-six), and a car
+  with neither by its own model and display name. GTA's own engine audio is not copied (Cyberpunk
+  cannot play it, and it is Rockstar's to ship).
+
+### Every car on a server: car bundles
+
+* **Deploy every car** (Servers page; `deploy_all_cars` for agents): every car whose latest build is
+  good goes onto the server in car bundles, `f2o77_cars_N`, twelve cars each (an Open77 server may
+  require at most 64 mods, and each preloading resource is one). Cars keep their bundle (read back
+  from the server), only bundles whose cars changed are re-packed, cars installed on their own are
+  updated in place, and deploying one car the server carries in a bundle re-packs that bundle
+  instead of installing the car twice.
+* Each car resource also writes what it announces to the car hub as data (`server/car.json`).
+
+### Quality checks v3
+
+* Builds made before the tune and the new engine sounds are stale: the sweep rebuilds them. A new
+  check reports each car's tune, torque per kg, top gear, brakes and grip.
+
 ## Studio 1.6.0 · converter 1.5.0 (2026-10-18)
 
 ### Cars come out whole: four-door donor, every part on a bone, wheels on their bones

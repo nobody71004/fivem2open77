@@ -341,6 +341,8 @@ def write_resource(res_dir: str, *, name: str, version: str, display: str, recor
     note = (f"; neon kit: /neon <colour> ({len(info['neon']['colors'])} colours)" if info.get("neon") else "")
     _write(os.path.join(res_dir, "server", "main.lua"),
            SERVER_MAIN.format(display=display, name=name, record=record, info=_lua(info), neon_note=note))
+    # the same, as data: a car bundle (studio/carbundle.py) announces this car from its own script
+    _write(os.path.join(res_dir, "server", "car.json"), json.dumps(info, indent=1, sort_keys=True) + "\n")
     names = [loader for loader, _ in loaders] + [name]
 
     chime_dir = chime_dir_for(res_dir)

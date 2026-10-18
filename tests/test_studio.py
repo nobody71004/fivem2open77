@@ -67,9 +67,12 @@ class _V:
 
 def test_engine_sound_mapping():
     donor = DONORS["porsche_911"]["sound"]
-    cases = {("ELEGY", "VC_SPORT"): "v_car_mizutani_shion", ("ZENTORNO", "VC_SUPER"): "v_car_quadra_turbo_r",
-             ("ADDER", "VC_SUPER"): "v_car_herrera_outlaw", ("lambov10", "VC_SUPER"): "v_car_quadra_turbo_r",
-             ("rb26dett", "VC_SPORT"): "v_car_mizutani_shion", ("s55b30", "VC_SPORT"): "v_car_chevalier_thrax",
+    cases = {("ELEGY", "VC_SPORT"): "v_car_mizutani_shion", ("ZENTORNO", "VC_SUPER"): "v_car_herrera_outlaw",
+             ("ADDER", "VC_SUPER"): "v_car_rayfield_caliburn", ("lambov10", "VC_SUPER"): "v_car_herrera_outlaw",
+             ("ITALIGTB", "VC_SUPER"): "v_car_quadra_turbo_r", ("XLS2", "VC_SUV"): "v_car_mahir_supron_gt",
+             ("SULTANRS", "VC_SPORT"): "v_car_mizutani_hozuki_sti", ("chevydmaxeng", "VC_OFF_ROAD"): "v_car_thorton_mackinaw",
+             ("DUBSTA", "VC_SUV"): "v_car_militech_hellhound", ("COGCABRIO", "VC_COUPE"): "v_car_villefort_deleon",
+             ("rb26dett", "VC_SPORT"): "v_car_mizutani_shion", ("s55b30", "VC_SPORT"): "v_car_mizutani_shion",
              ("teslapd", "VC_SEDAN"): "v_car_rayfield_aerondight", ("DOMINATOR", "VC_MUSCLE"): "v_car_quadra_type_66",
              ("", "VC_SUV"): "v_car_mahir_supron", ("weirdname", "VC_OFF_ROAD"): "v_car_thorton_mackinaw",
              ("custom_audio", "VC_SEDAN"): "v_car_villefort_cortes"}
@@ -85,6 +88,13 @@ def test_engine_sound_mapping():
     assert r["player"] == "v_car_villefort_alvarado" and r["override"]
     for name in S.BY_CHARACTER.values():
         assert name in S.CATALOGUE, name
+    # no GTA sound to go by: the car's own names (FiveM add-ons are mostly real cars)
+    v = _V("", "VC_SUPER")
+    v.model, v.display_name = "lp700r", "Lamborghini Aventador"
+    r = S.resolve("auto", v, donor)
+    assert r["player"] == "v_car_herrera_outlaw" and "the car" in r["source"], r
+    # RX-7 is a rotary, not an X7
+    assert S.character_of("", "VC_SPORT", ["v_84rx7k"])[0] == "rotary"
 
 
 def test_engine_sound_in_tweak():

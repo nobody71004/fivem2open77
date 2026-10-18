@@ -39,7 +39,12 @@ export function serversPage(root) {
           if (await confirmBox("Install the car hub", "Install f2o77_hub on " + s.label + "? It starts with the next server restart and from then on restarts the server to add new cars when nobody is online.", "Install")) {
             action(s, "hub", statusBox, { mode: "stage" });
           }
-        } }, "Install car hub")),
+        } }, "Install car hub"),
+        h("button.btn.small.primary", { title: "Every car whose latest build is good, carried in car bundles (12 cars a resource)", onclick: async () => {
+          if (await confirmBox("Deploy every car", `Install every car whose latest build passed its checks on ${s.label}? Cars travel in car bundles (f2o77_cars_N); only bundles whose cars changed are uploaded, and the car hub restarts the server when nobody is online.`, "Deploy")) {
+            action(s, "cars", statusBox, { mode: "stage" });
+          }
+        } }, "Deploy every car")),
       statusBox);
   }
 
@@ -55,6 +60,12 @@ export function serversPage(root) {
         clear(box).append(h("div.card", { style: { marginTop: "12px" } }, h("div.kv",
           h("span", "connection"), h("span.ok", "ok"), h("span", "system"), h("span", r.system), h("span", "python3"), h("span", r.python3 ? "yes" : h("b.err", "missing")),
           ...Object.entries(r.servers).flatMap(([n, ok]) => [h("span", n), ok ? h("span.ok", "found") : h("span.err", "no server.jsonc")]))));
+      } else if (what === "cars") {
+        const r = j.result;
+        clear(box).append(h("div.card", { style: { marginTop: "12px" } }, h("div.kv",
+          h("span", "cars with a good build"), h("span", String(r.cars)),
+          ...r.folders.flatMap((f) => [h("span", f.folder), h("span", f.bundles.length ? `${f.cars} cars in ${f.bundles.join(", ")}` : (f.cars ? `${f.cars} cars updated` : "up to date"))]),
+          h("span", "not deployed"), h("span", r.skipped.length ? r.skipped.join("; ") : "none")), log));
       } else if (what === "status") {
         clear(box).append(...j.result.map((x) => h("div", { style: { marginTop: "12px" } },
           serverMapCard(x, s.id, null, { onChange: () => action(s, "status", box), extra: h("div", { style: { marginBottom: "8px" } },

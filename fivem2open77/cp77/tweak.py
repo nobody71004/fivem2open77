@@ -22,6 +22,36 @@ DONOR_REF = {
     "fSteeringLock": 40.0,
 }
 
+# Performance tunes, on top of the GTA handling mapped onto the donor.  GTA's numbers are made for
+# GTA's physics: mapped one to one onto Cyberpunk's drive model, an SUV or a muscle car came out with
+# less grip and weaker brakes than any vanilla car and the top speed of a city hatchback.
+#   stock: the mapping alone
+#   sport: (default) the converted cars against Cyberpunk's own fast cars -- the Caliburn, the
+#          Outlaw, the Turbo-R: more torque (never under 0.40 N m per kg), a higher top speed, brakes
+#          and tyres at least the donor's and then some, less body roll (stiffer anti-roll bars, less
+#          weight thrown sideways) so the extra grip does not tip a tall car over
+#   track: further still
+# The profile's per-car multipliers apply after the tune.
+TUNES = {
+    "stock": {"torque": 1.0, "torque_per_kg": (0.0, 9.0), "top_speed": 1.0, "top_band": (15.0, 120.0),
+              "drag": 1.0, "drag_max": 9.0, "brake": 1.0, "brake_min": 0.0, "grip": 1.0, "grip_min": 0.0,
+              "chassis": {}, "axle": {}, "com_drop": 0.0},
+    "sport": {"torque": 1.3, "torque_per_kg": (0.40, 0.70), "top_speed": 1.2, "top_band": (42.0, 62.0),
+              "drag": 0.92, "drag_max": 1.0, "brake": 1.4, "brake_min": 1.0, "grip": 1.1, "grip_min": 1.0,
+              "chassis": {"brakingFrictionFactor": 1.6, "turningRollFactor": 0.6, "sideWeightTransferFactor": 0.18,
+                          "forwardWeightTransferFactor": 0.16, "wheelTurnMaxAddPerSecond": 110.0},
+              "axle": {"swaybarStiffness": 1.5},
+              "com_drop": 0.03},
+    "track": {"torque": 1.5, "torque_per_kg": (0.50, 0.85), "top_speed": 1.3, "top_band": (46.0, 70.0),
+              "drag": 0.85, "drag_max": 1.0, "brake": 1.7, "brake_min": 1.0, "grip": 1.2, "grip_min": 1.05,
+              "chassis": {"brakingFrictionFactor": 1.8, "turningRollFactor": 0.4, "sideWeightTransferFactor": 0.14,
+                          "forwardWeightTransferFactor": 0.12, "wheelTurnMaxAddPerSecond": 125.0},
+              "axle": {"swaybarStiffness": 2.0},
+              "com_drop": 0.05},
+}
+DEFAULT_TUNE = "sport"
+DONOR_SWAYBAR = 16.0       # the 911's anti-roll bars (front and back)
+
 
 # Third person camera presets by body size (the TweakDB records of a vanilla car of that size)
 CAMERAS = {
@@ -111,16 +141,25 @@ def handling_profile(vehicle, prof, overrides=None) -> dict:
     if o.get("drive") in ("rwd", "fwd", "awd"):
         layout = o["drive"]
 
+    tune_name = o.get("tune") or DEFAULT_TUNE
+    tune = TUNES.get(tune_name, TUNES[DEFAULT_TUNE])
+
     accel = _clamp((g("fInitialDriveForce") / DONOR_REF["fInitialDriveForce"]) ** 0.5, 0.75, 1.35)
-    torque = t["engine_max_torque"] * accel * mass_ratio * mult.get("torque", 1.0)
+    torque = t["engine_max_torque"] * accel * mass_ratio * tune["torque"]
+    lo, hi = tune["torque_per_kg"]
+    torque = _clamp(torque, lo * mass, hi * mass) * mult.get("torque", 1.0)
     speed_f = _clamp(g("fInitialDriveMaxFlatVel") / DONOR_REF["fInitialDriveMaxFlatVel"], 0.75, 1.3)
-    top = _clamp(t["top_gear_speed"] * speed_f * mult.get("top_speed", 1.0), 15.0, 120.0)
+    top = _clamp(t["top_gear_speed"] * speed_f * tune["top_speed"], *tune["top_band"])
+    top = _clamp(top * mult.get("top_speed", 1.0), 15.0, 120.0)
     n_gears = int(_clamp(o["gears"] if o.get("gears") else (h.gears if h and h.gears else 6), 4, 7))
 
-    brake_f = _clamp(g("fBrakeForce") / DONOR_REF["fBrakeForce"], 0.7, 1.4) * mult.get("brake", 1.0)
+    brake_f = _clamp(g("fBrakeForce") / DONOR_REF["fBrakeForce"], 0.7, 1.4)
+    brake_f = max(brake_f, tune["brake_min"]) * tune["brake"] * mult.get("brake", 1.0)
     spring_f = _clamp(g("fSuspensionForce") / DONOR_REF["fSuspensionForce"], 0.75, 1.3) * mult.get("spring", 1.0)
-    grip_f = _clamp(g("fTractionCurveMax") / DONOR_REF["fTractionCurveMax"], 0.9, 1.15) * mult.get("grip", 1.0)
-    drag_f = _clamp(g("fInitialDragCoeff") / DONOR_REF["fInitialDragCoeff"], 0.6, 1.3) * mult.get("drag", 1.0)
+    grip_f = _clamp(g("fTractionCurveMax") / DONOR_REF["fTractionCurveMax"], 0.9, 1.15)
+    grip_f = max(grip_f, tune["grip_min"]) * tune["grip"] * mult.get("grip", 1.0)
+    drag_f = _clamp(g("fInitialDragCoeff") / DONOR_REF["fInitialDragCoeff"], 0.6, 1.3)
+    drag_f = min(drag_f, tune["drag_max"]) * tune["drag"] * mult.get("drag", 1.0)
     steer = float(o["steer"]) if o.get("steer") else _clamp(g("fSteeringLock") * 1.25, 35, 60)
 
     # inertia: scale the donor's by mass and by the body's dimensions, then GTA's multiplier
@@ -134,7 +173,8 @@ def handling_profile(vehicle, prof, overrides=None) -> dict:
         moi.append(base * mass_ratio * (a * a + b * b) / (da * da + db * db) * _clamp(m, 0.8, 1.25))
     com_g = h.com_offset if h and h.com_offset else (0.0, 0.0, 0.0)
     cy = (y0 + y1) / 2
-    com = (0.0, _clamp(cy + com_g[1], -0.5, 0.5), _clamp(t["com_offset"][2] + com_g[2], -0.1, 0.35))
+    com = (0.0, _clamp(cy + com_g[1], -0.5, 0.5),
+           _clamp(t["com_offset"][2] + com_g[2] - tune["com_drop"], -0.1, 0.35))
 
     wheels = {}
     for axle in ("front", "back"):
@@ -157,7 +197,8 @@ def handling_profile(vehicle, prof, overrides=None) -> dict:
             wheels[axle]["offset"] = float(off)
     return {"mass": mass, "layout": layout, "torque": torque, "top_speed": top, "gears": n_gears,
             "brake": brake_f, "spring": spring_f, "grip": grip_f, "drag": drag_f, "steer": steer,
-            "moi": tuple(moi), "com": com, "wheels": wheels}
+            "moi": tuple(moi), "com": com, "wheels": wheels, "tune": tune_name if tune_name in TUNES else DEFAULT_TUNE,
+            "chassis": dict(tune["chassis"]), "axle": dict(tune["axle"])}
 
 
 def _gear_table(prof, n, top):
@@ -281,6 +322,8 @@ def build_tweak(vehicle, prof, *, record: str, ent_path: str, appearance: str, n
             "springStiffness": _f(donor_spring[axle] * hp["spring"] * hp["mass"] / t["chassis_mass"]),
             "frictionMulLateral": _f((0.92 if axle == "front" else 0.95) * hp["grip"]),
             "frictionMulLongitudinal": _f((0.89 if axle == "front" else 0.95) * hp["grip"]),
+            **({"swaybarStiffness": _f(DONOR_SWAYBAR * hp["axle"]["swaybarStiffness"])}
+               if "swaybarStiffness" in hp["axle"] else {}),
         })
 
     y.record(drive, {
@@ -292,6 +335,7 @@ def build_tweak(vehicle, prof, *, record: str, ent_path: str, appearance: str, n
         "maxWheelTurnDeg": _f(hp["steer"]),
         "airResistanceFactor": _f(1.93 * hp["drag"]),
         "wheelSetup": wheel_setup,
+        **{k: _f(v) for k, v in sorted(hp["chassis"].items())},
     })
 
     gears = _gear_table(prof, hp["gears"], hp["top_speed"])

@@ -441,10 +441,13 @@ function lights(root, ctx) {
 // ------------------------------------------------------------------ handling
 function handling(root, ctx) {
   const d = ctx.inspect;
-  const ho = Object.assign({ drive: "auto", gears: null, mass: null, steer: null, multipliers: {} }, ctx.profile.handling || {});
+  const ho = Object.assign({ tune: "sport", drive: "auto", gears: null, mass: null, steer: null, multipliers: {} }, ctx.profile.handling || {});
   const mult = Object.assign({ torque: 1, top_speed: 1, brake: 1, grip: 1, spring: 1, drag: 1 }, ho.multipliers || {});
   const base = d.handling.cyberpunk;
   const out = h("tbody");
+  const TUNES = { sport: "Sport (faster, more grip and brakes)", track: "Track (fastest, most grip)", stock: "Stock (GTA handling only)" };
+  const tune = h("select", Object.entries(TUNES).map(([v, l]) => h("option", { value: v }, l)));
+  tune.value = ho.tune || "sport";
   const drive = h("select", ["auto", "rwd", "fwd", "awd"].map((m) => h("option", { value: m }, m)));
   drive.value = ho.drive || "auto";
   const gears = h("select", ["auto", 4, 5, 6, 7].map((m) => h("option", { value: m }, m)));
@@ -464,7 +467,7 @@ function handling(root, ctx) {
   const current = () => {
     const m = {};
     for (const [k, r] of Object.entries(sliders)) m[k] = Math.round(Math.exp(r.value) * 100) / 100;
-    return { drive: drive.value, gears: gears.value === "auto" ? null : Number(gears.value), mass: mass.value ? Number(mass.value) : null,
+    return { tune: tune.value, drive: drive.value, gears: gears.value === "auto" ? null : Number(gears.value), mass: mass.value ? Number(mass.value) : null,
       steer: steer.value ? Number(steer.value) : null, multipliers: m };
   };
   const rowsSpec = [["mass", "Mass", (v) => `${Math.round(v)} kg`], ["layout", "Drive", (v) => v.toUpperCase()],
@@ -481,17 +484,17 @@ function handling(root, ctx) {
   const preview = debounce(async () => {
     try { show(await api.post(`/projects/${ctx.pid}/handling/preview`, current())); } catch (e) { toast(e.message, "err"); }
   }, 250);
-  for (const el of [drive, gears, mass, steer]) el.addEventListener("change", preview);
+  for (const el of [tune, drive, gears, mass, steer]) el.addEventListener("change", preview);
   const gta = d.handling.gta || {};
   root.append(h("div.split",
     h("div.card", h("h3", "Tuning"),
-      h("p.help", "The FiveM handling.meta is mapped onto the donor's drive model and kept in a sane range. These adjust the result."),
-      h("div.form", h("label.field", "Drive", drive), h("label.field", "Gears", gears), h("label.field", "Mass (kg)", mass),
+      h("p.help", "The FiveM handling.meta is mapped onto the donor's drive model and kept in a sane range. The tune sets how far past GTA's numbers the car goes (Sport: Cyberpunk's fast cars); the sliders adjust the result."),
+      h("div.form", h("label.field", "Tune", tune), h("label.field", "Drive", drive), h("label.field", "Gears", gears), h("label.field", "Mass (kg)", mass),
         h("label.field", "Max steering angle", steer)),
       h("div", { style: { marginTop: "14px" } }, sliderBox),
       h("div.row", { style: { marginTop: "14px" } },
         h("button.btn", { onclick: () => {
-          drive.value = "auto"; gears.value = "auto"; mass.value = ""; steer.value = "";
+          tune.value = "sport"; drive.value = "auto"; gears.value = "auto"; mass.value = ""; steer.value = "";
           for (const r of Object.values(sliders)) { r.value = 0; r.dispatchEvent(new Event("input")); }
           preview();
         } }, "Reset"), h("div.grow"),

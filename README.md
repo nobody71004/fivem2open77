@@ -46,7 +46,7 @@ carried the loader dependencies *and* a client script failed to activate on ever
 | `.ytd` textures (BC1/3/4/5/7 kept bit-exact, others decoded) | `.xbm` |
 | GTA shaders | `metal_base` instances, multilayer paint (CrystalCoat mask), `vehicle_lights` with per-zone emissives, windshield glass |
 | GTA skeleton + joint limits | a Cyberpunk deformation rig and wheel rig cloned from the donor; door/hood/trunk bones are re-oriented so the donor's open animations follow the GTA hinge (butterfly and scissor doors open the GTA way). Bonnet and boot take the donor lid at the same end of the car, so its prompts and animations line up (on the rear-engined Porsche donor the front lid is the "trunk") |
-| `handling.meta` | drive model, engine torque, gears, brakes, springs, grip, inertia, wheel dimensions (mapped relative to the donor and clamped) |
+| `handling.meta` | drive model, engine torque, gears, brakes, springs, grip, inertia, wheel dimensions (mapped relative to the donor and clamped), then the **performance tune** (`sport` by default: Cyberpunk's fast cars as the yardstick) |
 | `carvariations.meta` | paint colour (nearest colour of the donor's paint template) |
 | lights (head, tail, brake, reverse, indicators, extras) | `vehicleLightComponent`s driving the right material zones |
 | `neon_l/r/f/b` bones, or the measured underside | a GTA V style **neon kit**: LED tubes under the sills and bumpers plus the lights that colour the road, one appearance per colour (switched in game with `/neon`) |
@@ -130,11 +130,24 @@ A profile (`--profile`, or the Studio's editors) is JSON; anything left out stay
 * `parts.lids`: `auto` puts each GTA lid on the donor lid at the same end of the car (the 911 donor's
   front lid is its trunk); `semantic` keeps bonnet = hood; `swap` exchanges them.
 * `sound.engine`: Cyberpunk gives a car another car's engine, wheel and bump sounds (TweakDB
-  `player_audio_resource` / `traffic_audio_resource`). `auto` maps GTA's `audioNameHash` — the vanilla
-  car names (ELEGY, ZENTORNO, ...), add-on sound packs by their name (`lambov10`, `rb26dett`,
-  `s55b30`...), then the vehicle class — to the closest Cyberpunk sound; `donor` keeps the Porsche's;
-  or name one from `python -m fivem2open77 sounds`.
-* `handling` multipliers scale the numbers derived from `handling.meta` (0.25-4).
+  `player_audio_resource` / `traffic_audio_resource`). `auto` gives the car the Cyberpunk engine
+  closest to its GTA counterpart: GTA's `audioNameHash` names the GTA car whose sound it had in FiveM
+  (ELEGY, ZENTORNO, XLS2...), which is mapped to that car's engine (a V12 or V10 exotic, a twin-turbo
+  V8, a W16 hypercar, a flat-six, a boxer four, a straight-six, a rotary, a V8 muscle car, a fast
+  luxury SUV, a G-Class, a diesel pickup, a limousine, a grand tourer, an electric car...); an add-on
+  sound pack by the engine its name gives (`lambov10`, `chevydmaxeng`, `aq70bmws58`...); with neither,
+  the car's own model and display name (most FiveM add-ons are real cars), then the GTA vehicle
+  class. Cyberpunk cannot play GTA's own engine audio (another audio engine), and GTA V's sounds are
+  Rockstar's to ship, so none are copied. `donor` keeps the donor's; or name one from
+  `python -m fivem2open77 sounds`.
+* `handling.tune`: GTA's handling numbers are made for GTA's physics; mapped one to one onto
+  Cyberpunk's drive model, SUVs and muscle cars came out with less grip and weaker brakes than any
+  vanilla car. `sport` (the default) puts every car among Cyberpunk's own fast cars (the Caliburn,
+  the Outlaw, the Turbo-R): at least 0.40 N m of torque per kg and 30 % more than the mapping, a top
+  gear 20 % higher (151-223 km/h), brakes and tyres at least the donor's and then 40 % / 10 % more,
+  stiffer anti-roll bars, less weight thrown sideways and a lower centre of mass, so the extra grip
+  does not tip a tall car over. `track` goes further; `stock` is the mapping alone.
+* `handling` multipliers scale the numbers derived from `handling.meta` and the tune (0.25-4).
 
 Escrow-protected (Cfx asset escrow, `.fxap`) resources are refused.
 
@@ -213,6 +226,17 @@ white so every colour reads.
 
 `template`: `auto`, `sport1`, `sport2`, `standard2`, `standard25` or `standard3`; `lower` moves every
 seat further down (0-0.2 m).
+
+## Car bundles: every car on a server
+
+An Open77 server may require at most 64 mods, and every resource that preloads a package is one
+required mod: eighty cars as eighty resources do not fit. **Deploy every car** (the Studio's Servers
+page, or `deploy_all_cars` for agents) installs every car whose latest build is good in car bundles,
+`f2o77_cars_N`, twelve cars each: one preload package with each car's archive and record, and a
+server script announcing each car to the car hub. A car keeps its bundle from one deploy to the next
+(read back from the server's bundles), so only bundles whose cars changed are re-packed and players
+download only those; a car installed on its own stays on its own and is updated in place. Deploying
+one car that the server carries in a bundle re-packs that bundle.
 
 ## Notes for Open77 servers
 

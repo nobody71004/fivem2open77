@@ -35,7 +35,7 @@ from .model.build import SIDE_NAMES, VehicleBuilder
 
 MOD_ROOT = "fivem2open77"
 TEXTURE_PACKAGE_BUDGET = 40 * 1024 * 1024   # raw xbm bytes per texture archive (zip stays < 64 MiB)
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 
 
 def _sanitize(name: str) -> str:
