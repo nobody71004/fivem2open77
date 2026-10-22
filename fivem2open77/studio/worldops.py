@@ -32,6 +32,15 @@ from . import ncweassets
 from .projects import ProjectError
 
 NAME_RX = P.NAME_RX
+ROWS_KEPT = 1500                # sectors' rows kept in memory (about 0.1 MB each; the rest are read back from disk)
+
+
+def _fnv(name: str) -> int:
+    """FNV-1a 64 of a name (how 2.5's sectors name a mesh's appearance)."""
+    h = 0xCBF29CE484222325
+    for b in str(name).encode("utf-8"):
+        h = ((h ^ b) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return h
 KIND_CHOICES = ("mesh", "instanced", "terrain", "collision", "entity", "decal", "light", "foliage", "occluder",
                 "effect", "spawner", "water", "road", "traffic", "other")
 
@@ -51,7 +60,8 @@ class WorldOps:
     def world_index(self) -> WorldIndex:
         with self._wlock():
             if self._world_index is None:
-                self._world_index = WorldIndex(self.workspace, extract=self._world_extract, log=self._world_log)
+                self._world_index = WorldIndex(self.workspace, extract=self._world_extract, log=self._world_log,
+                                               native=self._game_world)
             return self._world_index
 
     def _world_log(self, msg):
@@ -86,8 +96,13 @@ class WorldOps:
         sd = os.path.join(idx.dir, "sectors")
         cached = len([f for f in os.listdir(sd) if f.endswith(".json")]) if os.path.isdir(sd) else 0
         tb = self.toolbox()
+        why = None
+        try:
+            native = self._game_world() is not None
+        except Exception as e:                          # noqa: BLE001 -- said why
+            native, why = False, str(e)
         return {"ready": idx.has_index(), "sectors": len(idx.rows()) if idx.has_index() else 0, "cached": cached,
-                "game": tb.game_dir, "wolvenkit": bool(tb.wolvenkit)}
+                "game": tb.game_dir, "wolvenkit": bool(tb.wolvenkit), "native": native, "nativeWhy": why}
 
     def world_prepare(self, force=False):
         """A job: read the world's sector list from the game (once; a minute or two)."""
@@ -151,9 +166,11 @@ class WorldOps:
 
         return self.jobs.submit("citymap", "Read Night City's 3D map from the game", run, heavy=True)
 
-    # ------------------------------------------------------------------ the real city around a point (Live maps)
+    # ------------------------------------------------------------------ the real city (Live maps)
+    GEO_DIR = "geo2"                # the meshes as read since 1.7.5 (straight from the game; 1.7.4's are in geo)
+
     def _geo_dir(self) -> str:
-        return os.path.join(self.workspace, "world", "geo")
+        return os.path.join(self.workspace, "world", self.GEO_DIR)
 
     @staticmethod
     def geo_id(res: str) -> str:
@@ -173,67 +190,98 @@ class WorldOps:
 
     def _geo_failed(self) -> dict:
         import json as _json
+        st = self._rows_state()
+        fp = os.path.join(self._geo_dir(), "failed.json")
         try:
-            with open(os.path.join(self._geo_dir(), "failed.json"), encoding="utf-8") as f:
-                return _json.load(f)
-        except (OSError, ValueError):
+            mt = os.path.getmtime(fp)
+        except OSError:
             return {}
+        if st.get("failed_at") != mt:
+            try:
+                with open(fp, encoding="utf-8") as f:
+                    st["failed"] = _json.load(f)
+            except (OSError, ValueError):
+                st["failed"] = {}
+            st["failed_at"] = mt
+        return st.get("failed") or {}
 
-    def _foliage_file(self, res: str) -> str:
-        return os.path.join(self.workspace, "world", "foliage", self.geo_id(res) + ".json")
+    def _game_world(self):
+        """The game read straight from its archives (world/gameworld.py), or None: no game folder,
+        no decoder (WolvenKit's or the game's own), or a test's own extractor."""
+        if self.world_extractor is not None:
+            return None
+        tb = self.toolbox(refresh=False)
+        if not tb.game_dir:
+            return None
+        key = (tb.game_dir, tb.wolvenkit)
+        with self._wlock():
+            got = getattr(self, "_gw", None)
+            if got is not None and got[0] == key:
+                if isinstance(got[1], Exception):
+                    raise got[1]
+                return got[1]
+            from ..world.gameworld import GameWorld
+            try:
+                gw = GameWorld(tb.game_dir, tb.wolvenkit, os.path.join(self.workspace, "world"), log=self._world_log)
+            except Exception as e:                      # noqa: BLE001 -- remembered: WolvenKit then
+                self._gw = (key, e)
+                raise
+            self._gw = (key, gw)
+            return gw
 
-    def _foliage_cached(self, res: str):
-        import json as _json
+    def _native_or_none(self):
         try:
-            with open(self._foliage_file(res), encoding="utf-8") as f:
-                return _json.load(f)
-        except (OSError, ValueError):
+            return self._game_world()
+        except Exception:                               # noqa: BLE001
             return None
 
     # the sectors as arrays (world/detail.py rows: what the plan reads, fast), kept in memory and
-    # next to the sector cache; the foliage's populations as arrays; each read mesh's size
+    # next to the sector cache; the foliage's populations as arrays; each read mesh's bounds
     def _rows_state(self) -> dict:
         st = getattr(self, "_rows_st", None)
         if st is None:
             import collections
             import threading
             st = self._rows_st = {"strings": DT.Strings(), "cache": collections.OrderedDict(), "lock": threading.Lock(),
-                                  "foliage": collections.OrderedDict(), "radius": {}}
+                                  "foliage": collections.OrderedDict(), "head": {}, "ready": set()}
         return st
 
     def _sector_rows(self, idx, path: str):
         """One sector's rows (None: the sector is not read from the game yet)."""
         from ..world import index as IX
         st = self._rows_state()
+        stamp = idx.game() if idx.native is not None else None
+        key = (path, stamp)
         with st["lock"]:
-            got = st["cache"].get(path)
+            got = st["cache"].get(key)
             if got is not None:
-                st["cache"].move_to_end(path)
+                st["cache"].move_to_end(key)
                 return got
         src = idx._sector_file(path)
         if not os.path.isfile(src):
             return None
+        tag = f"{IX.SECTOR_VERSION}-{stamp or ''}"
         fp = os.path.join(self.workspace, "world", "rows", os.path.splitext(os.path.basename(src))[0] + ".npz")
         rows = None
         try:
             if os.path.getmtime(fp) >= os.path.getmtime(src):
-                rows = DT.load_rows(fp, IX.SECTOR_VERSION)
+                rows = DT.load_rows(fp, tag)
         except OSError:
             rows = None
         if rows is None:
-            sec = idx._cached(path)
+            sec = idx._cached(path, stamp)
             if sec is None:
                 return None
             rows = DT.rows_of(sec)
             try:
                 os.makedirs(os.path.dirname(fp), exist_ok=True)
-                DT.save_rows(fp, rows, IX.SECTOR_VERSION)
+                DT.save_rows(fp, rows, tag)
             except OSError:
                 pass
         g = DT.globalize(rows, st["strings"])
         with st["lock"]:
-            st["cache"][path] = g
-            while len(st["cache"]) > 4000:
+            st["cache"][key] = g
+            while len(st["cache"]) > ROWS_KEPT:
                 st["cache"].popitem(last=False)
         return g
 
@@ -245,12 +293,9 @@ class WorldOps:
             if got is not None:
                 st["foliage"].move_to_end(key)
                 return got
-        pops = self._foliage_cached(res)
-        if pops is None:
+        arr = self.world_index().foliage(res)
+        if arr is None:
             return None
-        import numpy as np
-        arr = {"pos": np.asarray(pops["pos"], np.float64).reshape(-1, 3), "rot": np.asarray(pops["rot"], np.float64).reshape(-1, 4),
-               "scale": np.asarray(pops["scale"], np.float64).reshape(-1)}
         with st["lock"]:
             st["foliage"][key] = arr
             while len(st["foliage"]) > 600:
@@ -261,51 +306,85 @@ class WorldOps:
         """_geo_ready, remembered once true (a .geo file is never taken back while the Studio runs)."""
         st = self._rows_state()
         gid = self.geo_id(res)
-        if gid in st["radius"] or gid in st.setdefault("ready", set()):
+        if gid in st["ready"]:
             return True
         if os.path.isfile(os.path.join(self._geo_dir(), gid + ".geo")):
             st["ready"].add(gid)
             return True
         return False
 
-    def _geo_radius(self, res: str):
-        """The size (bounding radius, metres) of a mesh read from the game, None while it is not."""
+    def _geo_head(self, res: str):
+        """What the plan needs of a read mesh: {c: its bounds' middle, r: half their diagonal,
+        apps: {FNV-1a 64 of an appearance's name: name}, default}; None while it is not read."""
         import json as _json
         import math
         import struct
         st = self._rows_state()
         gid = self.geo_id(res)
-        r = st["radius"].get(gid)
-        if r is not None:
-            return r
+        got = st["head"].get(gid)
+        if got is not None:
+            return got
         try:
             with open(os.path.join(self._geo_dir(), gid + ".geo"), "rb") as f:
                 head = f.read(12)
                 h = _json.loads(f.read(struct.unpack_from("<I", head, 8)[0]))
             lo, hi = h["bounds"]
-            r = 0.5 * math.sqrt(sum((float(b) - float(a)) ** 2 for a, b in zip(lo, hi)))
         except (OSError, ValueError, KeyError, TypeError, struct.error):
             return None
-        st["radius"][gid] = r
-        return r
+        c = [0.5 * (float(a) + float(b)) for a, b in zip(lo, hi)]
+        r = 0.5 * math.sqrt(sum((float(b) - float(a)) ** 2 for a, b in zip(lo, hi)))
+        apps = {_fnv(n): n for n in (h.get("apps") or {})}
+        got = st["head"][gid] = {"c": c, "r": r, "apps": apps, "default": h.get("default")}
+        st["ready"].add(gid)
+        return got
+
+    def _geo_radius(self, res: str):
+        """The size (bounding radius, metres) of a mesh read from the game, None while it is not."""
+        h = self._geo_head(res)
+        return h["r"] if h else None
+
+    def _geo_info(self, res: str):
+        h = self._geo_head(res)
+        return (h["c"][0], h["c"][1], h["c"][2], h["r"]) if h else None
+
+    def _name_appearances(self, groups):
+        """2.5's sectors name a mesh's appearance by hash (#...): the name, from the mesh's own."""
+        for g in groups:
+            app = g.get("app") or ""
+            if app.startswith("#") and len(app) == 17:
+                h = self._geo_head(g["res"])
+                if h is not None:
+                    try:
+                        g["app"] = h["apps"].get(int(app[1:], 16)) or h.get("default") or ""
+                    except ValueError:
+                        pass
+
+    DETAIL_RANGE = (0.3, 3.0)
 
     def city_detail(self, x: float, y: float, near: float | None = None, far: float | None = None,
-                    cam=None, k: float | None = None, reach: float | None = None) -> dict:
-        """The game's own meshes around a point (world/detail.py), as far as they are read: what the
-        3D city draws.  What is not read yet (sectors, foliage, meshes) is read by a job; ask again.
-        ``cam`` (x, y, z, game metres): where the camera is -- what is too small to be seen from there
-        (farther than ``k`` times its size, plus ``reach`` metres) is left out."""
+                    cam=None, k: float | None = None, reach: float | None = None, detail: float | None = None,
+                    max_meshes: int | None = None) -> dict:
+        """The game's own meshes as the game shows them from ``cam`` (x, y, z, game metres; world/
+        detail.py plan_lod: the sectors streamed in there, each instance within its streaming
+        distance, the far-view stand-ins in place of what they stand for), as far as they are read:
+        what the 3D city draws.  ``detail`` scales the game's distances.  What is not read yet
+        (sectors, foliage, meshes) is read by a job; ask again.  Without ``cam``: the meshes in two
+        rings around (x, y) (plan_rows)."""
         x, y = float(x), float(y)
-        near = max(40.0, min(600.0, float(near or DT.DEFAULT_NEAR)))
-        far = max(near, min(2500.0, float(far or DT.DEFAULT_FAR)))
         idx = self.world_index()
+        if not idx.has_index() and self._native_or_none() is not None:
+            try:
+                with self._wlock():
+                    if not idx.has_index():
+                        idx.build_index()               # straight from the game: a second or two
+            except Exception as e:                      # noqa: BLE001 -- said below
+                self._world_log(f"the world's sector list could not be read: {e}")
         if not idx.has_index():
             tb = self.toolbox()
-            return {"state": "index", "can": bool(tb.game_dir and tb.wolvenkit),
+            return {"state": "index", "can": bool(tb.game_dir and (tb.wolvenkit or self._native_or_none() is not None)),
                     "message": "Night City's sector list is not read from the game yet"}
-        paths = DT.sectors_for(idx, x, y, near, far)
-        have = {p: self._sector_rows(idx, p) for p in paths}
-        missing_sectors = [p for p, rw in have.items() if rw is None]
+        st = self._rows_state()
+        failed = self._geo_failed()
         missing_foliage = set()
 
         def foliage(res):
@@ -313,103 +392,214 @@ class WorldOps:
             if got is None:
                 missing_foliage.add(res)
             return got
-
-        kw = {}
         if cam is not None:
-            kw = {"cam": [float(v) for v in cam][:3], "k": max(10.0, min(400.0, float(k or DT.SIZE_K))),
-                  "reach": max(0.0, min(1000.0, float(reach or 0.0))), "radius": self._geo_radius}
-        p = DT.plan_rows([rw for rw in have.values() if rw is not None], self._rows_state()["strings"], x, y, near, far,
-                         foliage=foliage, drawable=self._geo_ready_cached, **kw)
-        failed = self._geo_failed()
+            cam = [float(v) for v in cam][:3]
+            detail = max(self.DETAIL_RANGE[0], min(self.DETAIL_RANGE[1], float(detail or DT.DETAIL)))
+            reach = max(0.0, min(1000.0, float(reach or 0.0)))
+            paths = DT.sectors_streaming(idx.streaming_rows(), cam, detail, reach)
+            have = {p: self._sector_rows(idx, p) for p in paths}
+            strings = st["strings"]
+            budget = int(max(200, min(4000, max_meshes or DT.MAX_MESHES)))
+            p = DT.plan_lod([rw for rw in have.values() if rw is not None], strings, cam, detail, foliage=foliage,
+                            info=lambda rid: self._geo_info(strings.list[rid]), drawable=self._geo_ready_cached,
+                            failed=failed, max_meshes=budget)
+            near = far = None
+        else:
+            near = max(40.0, min(600.0, float(near or DT.DEFAULT_NEAR)))
+            far = max(near, min(2500.0, float(far or DT.DEFAULT_FAR)))
+            paths = DT.sectors_for(idx, x, y, near, far)
+            have = {p: self._sector_rows(idx, p) for p in paths}
+            p = DT.plan_rows([rw for rw in have.values() if rw is not None], st["strings"], x, y, near, far,
+                             foliage=foliage, drawable=self._geo_ready_cached)
+        missing_sectors = [q for q, rw in have.items() if rw is None]
         missing_meshes = [r for r in p["pending"] if r.lower() not in failed]
-        job = None
+        self._name_appearances(p["groups"])
+        job, error = None, None
         if missing_sectors or missing_foliage or missing_meshes:
-            tb = self.toolbox()
-            if tb.game_dir and tb.wolvenkit:
-                job = self.city_detail_job(x, y, near, far)
+            fail = getattr(self, "_detail_fail", None)
+            if fail and time.time() - fail[0] < 60:
+                error = fail[1]                        # the last read failed: not again for a minute
+            else:
+                tb = self.toolbox()
+                if tb.game_dir and (tb.wolvenkit or self._native_or_none() is not None):
+                    job = self.city_detail_job(x, y, near, far, cam=cam, detail=detail, reach=reach)
         out = DT.to_json(p, self.geo_id, self._geo_ready_cached, failed)
-        out.update(state="reading" if job else "ready", job=job.id if job else None,
+        state = "reading" if job else ("error" if error else "ready")
+        out.update(state=state, job=job.id if job else None, error=error, mode="game" if cam is not None else "rings",
                    sectors={"total": len(paths), "missing": len(missing_sectors)},
                    missing={"meshes": len(missing_meshes), "foliage": len(missing_foliage)})
         return out
 
-    def city_detail_job(self, x, y, near, far):
-        """A job reading what the real city around a point still needs from the game: its sectors,
-        its foliage and its meshes (WolvenKit, in batches; each mesh once, kept in the workspace)."""
+    MESH_BATCH = 1500               # meshes one job reads at most (the next ask starts another)
+    SECTOR_BATCH = 600
+
+    def city_detail_job(self, x, y, near, far, cam=None, detail=None, reach=None):
+        """A job reading what the real city still needs from the game: its sectors, its foliage and
+        its meshes (straight from the game's archives, else WolvenKit in batches; each once, kept
+        in the workspace)."""
         for j in self.jobs.list():
             if j["kind"] == "city-detail" and j["state"] in ("queued", "running"):
                 return self.jobs.get(j["id"])
+        native = self._native_or_none() is not None
 
         def run(job):
-            import json as _json
-            from ..world.extract import GameExtractor, regex_for
             self._wtls().job = job
-            tb = self.toolbox(refresh=True)
-            wk = tb.wolvenkit_obj(log=job.log)
-            job.on_cancel.append(wk.kill)
             try:
-                idx = self.world_index()
-                paths = DT.sectors_for(idx, x, y, near, far)
-                todo = [p for p in paths if idx._cached(p) is None]
-                for i in range(0, len(todo), 40):
-                    job.check()
-                    job.set_progress(0.05 + 0.25 * i / max(1, len(todo)), f"sectors {i}/{len(todo)}")
-                    idx.sectors(todo[i:i + 40])
-                idx.sectors(paths)
-                rows = [rw for rw in (self._sector_rows(idx, p_) for p_ in paths) if rw is not None]
-                strings = self._rows_state()["strings"]
-                # foliage: the populations of each compiled foliage resource the sectors name
-                fol = [r for r in DT.foliage_needed_rows(rows, strings, x, y, near) if self._foliage_cached(r) is None]
-                if fol:
-                    job.set_progress(0.32, f"foliage ({len(fol)})")
-                    got = self._world_extract(fol)
-                    try:
-                        for r in fol:
-                            if got.get(r):
-                                with open(got[r], encoding="utf-8") as f:
-                                    pops = DT.foliage_populations(_json.load(f))
-                                if pops is not None:
-                                    fp = self._foliage_file(r)
-                                    os.makedirs(os.path.dirname(fp), exist_ok=True)
-                                    with open(fp + ".tmp", "w", encoding="utf-8") as f:
-                                        _json.dump(pops, f, separators=(",", ":"))
-                                    os.replace(fp + ".tmp", fp)
-                    finally:
-                        cleanup = getattr(got, "cleanup", None)
-                        if cleanup:
-                            cleanup()
-                # what the area still needs, nearest first (a job reads up to MAX_MESHES; the next
-                # ask starts another for the rest)
-                p = DT.plan_rows(rows, strings, x, y, near, far, foliage=self._foliage_arrays, drawable=self._geo_ready_cached)
-                failed = self._geo_failed()
-                need = [r for r in p["pending"] if r.lower() not in failed]
-                n_ready, n_all = p["area"] or (0, 0)
-                job.log(f"{n_all:,} meshes within {far:.0f} m, {n_ready:,} read before; "
-                        f"{len(need):,} mesh(es) to read from the game now")
-                if need:
-                    ex = GameExtractor(wk, tb.game_dir, os.path.join(self.workspace, "world", "tmp"), log=job.log)
-                    templates = GC.TemplateColors(os.path.join(self._geo_dir(), "templates.json"))
-                    done = 0
-                    for i in range(0, len(need), 120):
-                        job.check()
-                        batch = need[i:i + 120]
-                        job.set_progress(0.35 + 0.65 * i / len(need), f"meshes {i}/{len(need)}")
-                        made, why = self._export_geo(wk, ex, batch, templates, regex_for, tb.game_dir)
-                        done += made
-                        if why:
-                            failed.update(why)
-                            with open(os.path.join(self._geo_dir(), "failed.json") + ".tmp", "w", encoding="utf-8") as f:
-                                _json.dump(failed, f)
-                            os.replace(os.path.join(self._geo_dir(), "failed.json") + ".tmp",
-                                       os.path.join(self._geo_dir(), "failed.json"))
-                    templates.save()
-                    job.log(f"{done:,} mesh(es) read; {len(need) - done:,} could not be")
-                return {"instances": p["instances"], "meshes": n_all, "read": len(need)}
+                return self._city_detail_run(job, x, y, near, far, cam, detail, reach)
+            except Exception as e:                      # noqa: BLE001 -- remembered: no retry storm
+                if not job.cancel_event.is_set():
+                    self._detail_fail = (time.time(), str(e)[:300] or e.__class__.__name__)
+                raise
             finally:
                 self._wtls().job = None
 
-        return self.jobs.submit("city-detail", f"Read the real city around {x:.0f}, {y:.0f}", run, heavy=True,
+        where = f"{cam[0]:.0f}, {cam[1]:.0f}" if cam is not None else f"{x:.0f}, {y:.0f}"
+        return self.jobs.submit("city-detail", f"Read the real city around {where}", run, heavy=not native,
                                 meta={"x": x, "y": y})
+
+    def _city_detail_run(self, job, x, y, near, far, cam, detail, reach):
+        idx = self.world_index()
+        gw = self._native_or_none()
+        if cam is not None:
+            paths = DT.sectors_streaming(idx.streaming_rows(), cam, detail or DT.DETAIL, reach or 0.0)
+        else:
+            paths = DT.sectors_for(idx, x, y, near, far)
+        stamp = idx.game() if idx.native is not None else None
+        todo = [p for p in paths if idx._cached(p, stamp) is None][:self.SECTOR_BATCH]
+        if todo:
+            job.log(f"{len(todo):,} sector(s) to read" + (" straight from the game" if gw is not None else " through WolvenKit"))
+        for i in range(0, len(todo), 40):
+            job.check()
+            job.set_progress(0.05 + 0.2 * i / max(1, len(todo)), f"sectors {i}/{len(todo)}")
+            idx.sectors(todo[i:i + 40])
+        rows = [rw for rw in (self._sector_rows(idx, p_) for p_ in paths) if rw is not None]
+        strings = self._rows_state()["strings"]
+        failed = self._geo_failed()
+        # foliage: the populations of each compiled foliage resource the plan draws from
+        wanted_foliage = set()
+
+        def foliage(res):
+            got = self._foliage_arrays(res)
+            if got is None:
+                wanted_foliage.add(res)
+            return got
+        if cam is not None:
+            plan = lambda: DT.plan_lod(rows, strings, cam, detail or DT.DETAIL, foliage=foliage,   # noqa: E731
+                                       info=lambda rid: self._geo_info(strings.list[rid]), drawable=self._geo_ready_cached,
+                                       failed=failed)
+        else:
+            plan = lambda: DT.plan_rows(rows, strings, x, y, near, far, foliage=foliage, drawable=self._geo_ready_cached)  # noqa: E731
+        p = plan()
+        if wanted_foliage:
+            job.set_progress(0.27, f"foliage ({len(wanted_foliage)})")
+            n = idx.read_foliage(sorted(wanted_foliage))
+            job.log(f"foliage: {n:,} of {len(wanted_foliage):,} population set(s) read")
+            p = plan()
+        need = [r for r in p["pending"] if r.lower() not in failed][:self.MESH_BATCH]
+        n_ready, n_all = p["area"] or (0, 0)
+        job.log(f"{n_all:,} meshes in view, {n_ready:,} read before; {len(need):,} to read from the game now")
+        done = 0
+        if need:
+            t0 = time.time()
+            done = self._read_meshes(job, need, gw, failed)
+            job.log(f"{done:,} mesh(es) read in {time.time() - t0:.1f} s")
+        return {"instances": p["instances"], "meshes": n_all, "read": len(need), "made": done, "sectors": len(todo)}
+
+    def _read_meshes(self, job, need, gw, failed) -> int:
+        """Read meshes into .geo files: straight from the game (several at once), else through
+        WolvenKit's export in batches.  Failures go to failed.json (not asked for again)."""
+        import json as _json
+        os.makedirs(self._geo_dir(), exist_ok=True)
+        templates = GC.TemplateColors(os.path.join(self._geo_dir(), "templates.json"))
+        why = {}
+        done = 0
+        try:
+            if gw is not None:
+                from concurrent.futures import ThreadPoolExecutor
+                bends = [r for r in need if DT.bend_of(r)]
+                plain = [r for r in need if not DT.bend_of(r)]
+                # a bent mesh needs the mesh it bends
+                plain += [b for b in dict.fromkeys(DT.bend_of(r)[2] for r in bends)
+                          if b not in plain and not self._geo_ready_cached(b) and b.lower() not in failed]
+
+                def one(res):
+                    try:
+                        data = gw.mesh_geo(res, templates)
+                    except Exception as e:              # noqa: BLE001 -- that mesh only
+                        return res, None, (str(e)[:200] or e.__class__.__name__)
+                    self._put_geo(res, data)
+                    return res, True, None
+                with ThreadPoolExecutor(max_workers=4, thread_name_prefix="geo") as pool:
+                    for i in range(0, len(plain), 48):
+                        job.check()
+                        job.set_progress(0.3 + 0.6 * i / max(1, len(plain)), f"meshes {i:,}/{len(plain):,}")
+                        for res, ok, err in pool.map(one, plain[i:i + 48]):
+                            if ok:
+                                done += 1
+                            else:
+                                why[res.lower()] = err
+                if bends:
+                    job.set_progress(0.92, f"bent meshes ({len(bends):,})")
+                    made, w = self._bake_bends(bends)
+                    done += made
+                    why.update(w)
+            else:
+                from ..world.extract import GameExtractor, regex_for
+                tb = self.toolbox(refresh=False)
+                wk = tb.wolvenkit_obj(log=job.log)
+                job.on_cancel.append(wk.kill)
+                ex = GameExtractor(wk, tb.game_dir, os.path.join(self.workspace, "world", "tmp"), log=job.log)
+                for i in range(0, len(need), 120):
+                    job.check()
+                    batch = need[i:i + 120]
+                    job.set_progress(0.3 + 0.7 * i / len(need), f"meshes {i}/{len(need)}")
+                    made, w = self._export_geo(wk, ex, batch, templates, regex_for, tb.game_dir)
+                    done += made
+                    why.update(w)
+        finally:
+            templates.save()
+            if why:
+                failed = dict(self._geo_failed())
+                failed.update(why)
+                fp = os.path.join(self._geo_dir(), "failed.json")
+                with open(fp + ".tmp", "w", encoding="utf-8") as f:
+                    _json.dump(failed, f)
+                os.replace(fp + ".tmp", fp)
+                job.log(f"{len(why):,} mesh(es) could not be read, e.g. {next(iter(why))}: {next(iter(why.values()))}")
+        return done
+
+    def _put_geo(self, res: str, data: bytes):
+        fp = os.path.join(self._geo_dir(), self.geo_id(res) + ".geo")
+        with open(fp + ".tmp", "wb") as f:
+            f.write(data)
+        os.replace(fp + ".tmp", fp)
+
+    def _bake_bends(self, bends) -> tuple:
+        """Bent instances of meshes (roads, rails, cables: DT.bend_name) as meshes of their own,
+        bent with their sector's frames: (made, {name: why not})."""
+        import numpy as np
+        idx = self.world_index()
+        by_sector = {}
+        for r in bends:
+            sector, i, base = DT.bend_of(r)
+            by_sector.setdefault(sector, []).append((r, i, base))
+        made, why = 0, {}
+        for sector, items in by_sector.items():
+            sec = idx._cached(sector)
+            entries = {e["i"]: e for e in (sec or {}).get("entries") or [] if e.get("bend")}
+            for r, i, base in items:
+                e = entries.get(i)
+                if e is None:
+                    why[r.lower()] = "no such bent node"
+                    continue
+                try:
+                    with open(os.path.join(self._geo_dir(), self.geo_id(base) + ".geo"), "rb") as f:
+                        data = f.read()
+                    self._put_geo(r, GC.bend_geo(data, np.asarray(e["bend"], np.float64).reshape(-1, 4, 4)))
+                    made += 1
+                except (OSError, GC.GeoError, ValueError, KeyError, IndexError) as ex:
+                    why[r.lower()] = f"{base}: {ex}"[:200]
+        return made, why
 
     def _export_geo(self, wk, ex, batch, templates, regex_for, game_dir) -> tuple:
         """Export a batch of meshes with WolvenKit and keep each as a .geo: (made, {res: reason})."""

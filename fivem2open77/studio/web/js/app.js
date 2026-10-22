@@ -103,7 +103,10 @@ function connectEvents() {
     if (ev.type === "job") {
       const before = store.jobs.get(ev.job.id);
       store.jobs.set(ev.job.id, ev.job);
-      if (before && before.state !== ev.job.state && ["done", "failed"].includes(ev.job.state) && !ev.job.kind.startsWith("server-status")) {
+      // (background jobs the pages show themselves -- the servers' status, reading the real city for
+      //  the 3D city -- pop nothing: moving around the city would bring one toast after another)
+      const quiet = ev.job.kind.startsWith("server-status") || ev.job.kind === "city-detail";
+      if (before && before.state !== ev.job.state && ["done", "failed"].includes(ev.job.state) && !quiet) {
         toast(`${ev.job.title}: ${ev.job.state === "done" ? "done" : "failed" + (ev.job.error ? " — " + ev.job.error : "")}`,
               ev.job.state === "done" ? "ok" : "err");
       }

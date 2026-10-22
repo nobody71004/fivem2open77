@@ -556,7 +556,7 @@ function createViewer(root, data, prefs, opts) {
   const modeBtns = {};
   const modeBar = h("div.c3-modes", Object.entries(MODES).map(([k, label]) => (modeBtns[k] = h("button", { type: "button", onclick: () => setMode(k) },
     h("span.k", String(Object.keys(MODES).indexOf(k) + 1)), label))));
-  const toggles = [["buildings", "Buildings"], ["real", "Real city up close (the game's own meshes)"], ["roads", "Streets"], ["metro", "NCART"],
+  const toggles = [["buildings", "Buildings"], ["real", "Real city (the game's own meshes, all of Night City)"], ["roads", "Streets"], ["metro", "NCART"],
     ["districts", "Districts"], ["labels", "Labels"], ["grid", "Grid"],
     ["tint", "District colours"], ["holo", "Hologram"], ["glow", "Glow"], ["autotilt", "Tilt as you zoom (like the map screen)"]];
   const prefBoxes = {};
@@ -570,8 +570,9 @@ function createViewer(root, data, prefs, opts) {
     return h("label", cb, h("span", label));
   }), h("div.sep"),
   h("label", h("span", "Real city"), (() => {
-    const sel = h("select", h("option", { value: "close" }, "Close (140 m)"), h("option", { value: "normal" }, "Normal (200 m, stand-ins to 900 m)"),
-      h("option", { value: "wide" }, "Wide (300 m, stand-ins to 1.4 km)"));
+    const sel = h("select", { title: "How far the game's own meshes reach: the game's own distances, or less, or more" },
+      h("option", { value: "close" }, "Less detail (faster)"), h("option", { value: "normal" }, "Like the game"),
+      h("option", { value: "wide" }, "More detail (further out)"));
     sel.value = prefs.realRange || "normal";
     sel.addEventListener("change", () => { prefs.realRange = sel.value; savePrefs(prefs); real.setRange(sel.value); poke(); });
     return sel;
@@ -680,7 +681,6 @@ function createViewer(root, data, prefs, opts) {
   const speedEl = h("div.c3-speed");
   const help = h("div.c3-help");
   const realChip = h("div.c3-real.hidden", h("span.c3-real-t"), h("div.c3-bar", h("i")));
-  const mini = h("canvas.c3-mini", { width: 400, height: 400, title: "The whole city: click to go there, drag to move the view" });
   compass.style.cursor = "pointer";
   compass.title = "North up (N)";
   compass.addEventListener("click", () => northUp());
@@ -690,7 +690,6 @@ function createViewer(root, data, prefs, opts) {
     h("div.c3-tl", modeBar, viewBar, h("div.c3-row", layerBtn, searchBox, pickBtn, focusBtn, fullBtn), layerMenu),
     h("div.c3-tr", where, compass, coords, speedEl),
     h("div.c3-bl", help),
-    h("div.c3-br", mini),
     realChip, reticle, lockHint);
   root.append(hud);
   if (opts.upgrade || !CU) {
@@ -1445,7 +1444,7 @@ function createViewer(root, data, prefs, opts) {
     }
   }
 
-  let hudAt = 0, miniAt = 0;
+  let hudAt = 0;
   let lastDistrict = "";
   function updateHud(alt, dt) {
     const now = performance.now();
@@ -1457,7 +1456,6 @@ function createViewer(root, data, prefs, opts) {
       ? (() => { const o = camera.getWorldDirection(fwd); return (Math.atan2(o.x, -o.z) * 180 / Math.PI + 360) % 360; })()
       : ((-fly.yaw * 180 / Math.PI) % 360 + 360) % 360;
     drawCompass(heading);
-    if (now - (miniAt || 0) > 140) { miniAt = now; drawMini(); }
     clear(coords);
     coords.append(
       h("div", h("span", "CAM"), `${x.toFixed(0)}, ${y.toFixed(0)}, ${z.toFixed(0)}`),
@@ -1501,99 +1499,6 @@ function createViewer(root, data, prefs, opts) {
     cg.textAlign = "right";
     cg.fillText(`${Math.round(hd).toString().padStart(3, "0")}°`, w - 2, 22);
   }
-
-  // ---------------------------------------------------------------- the minimap: the whole city, where you are
-  const MW = 200;                                            // css pixels (the canvas is twice that)
-  const mb = { x0: cm.min[0] - 500, y0: cm.min[1] - 500, x1: cm.max[0] + 500, y1: cm.max[1] + 500 };
-  const msc = MW / Math.max(mb.x1 - mb.x0, mb.y1 - mb.y0);
-  const mx = (x) => (x - mb.x0) * msc + (MW - (mb.x1 - mb.x0) * msc) / 2;
-  const my = (y) => (mb.y1 - y) * msc + (MW - (mb.y1 - mb.y0) * msc) / 2;
-  const gx = (px) => (px - (MW - (mb.x1 - mb.x0) * msc) / 2) / msc + mb.x0;
-  const gy = (py) => mb.y1 - (py - (MW - (mb.y1 - mb.y0) * msc) / 2) / msc;
-  const miniBg = document.createElement("canvas");
-  miniBg.width = MW * 2; miniBg.height = MW * 2;
-  (() => {
-    const c = miniBg.getContext("2d");
-    c.setTransform(2, 0, 0, 2, 0, 0);
-    c.fillStyle = "rgba(4, 8, 14, 0.86)";
-    c.fillRect(0, 0, MW, MW);
-    for (const d of districts) {
-      if (!d.poly || d.poly.length < 3) continue;
-      const col = DISTRICT_COLORS[d.id] || BADLANDS;
-      const r = (col >> 16) & 255, g = (col >> 8) & 255, b = col & 255;
-      c.beginPath();
-      d.poly.forEach(([x, y], i) => (i ? c.lineTo(mx(x), my(y)) : c.moveTo(mx(x), my(y))));
-      c.closePath();
-      c.fillStyle = d.top ? `rgba(${r},${g},${b},0.16)` : "rgba(158,243,237,0.03)";
-      c.fill();
-      c.strokeStyle = d.top ? `rgba(${r},${g},${b},0.75)` : "rgba(158,243,237,0.18)";
-      c.lineWidth = d.top ? 1 : 0.5;
-      c.stroke();
-    }
-  })();
-  const mctx = mini.getContext("2d");
-  function drawMini() {
-    mctx.setTransform(1, 0, 0, 1, 0, 0);
-    mctx.clearRect(0, 0, mini.width, mini.height);
-    mctx.drawImage(miniBg, 0, 0);
-    mctx.setTransform(2, 0, 0, 2, 0, 0);
-    for (const mk of markers.values()) {
-      if (mk.item.role === "preset" || !mk.item.anchor) continue;
-      const col = (ROLE[mk.item.role] || ROLE.other).color;
-      mctx.fillStyle = `#${col.toString(16).padStart(6, "0")}`;
-      mctx.beginPath(); mctx.arc(mx(mk.item.anchor.x), my(mk.item.anchor.y), 2.6, 0, Math.PI * 2); mctx.fill();
-    }
-    mctx.fillStyle = "#47d4ff";
-    for (const mk of playerMarks.values()) { if (mk.p) { mctx.beginPath(); mctx.arc(mx(mk.p.x), my(mk.p.y), 2, 0, Math.PI * 2); mctx.fill(); } }
-    const [cx, cy] = t2g(camera.position);
-    const [tx, ty] = mode === "orbit" ? t2g(controls.target) : [cx, cy];
-    const dir = camera.getWorldDirection(fwd);
-    const ang = Math.atan2(dir.x, -dir.z);                  // heading: 0 north, clockwise
-    const reach = mode === "orbit" ? Math.max(60, camera.position.distanceTo(controls.target)) : 400;
-    const half = THREE.MathUtils.degToRad(camera.fov * camera.aspect / 2);
-    mctx.fillStyle = "rgba(255, 210, 63, 0.18)";
-    mctx.strokeStyle = "rgba(255, 210, 63, 0.8)";
-    mctx.beginPath();
-    mctx.moveTo(mx(cx), my(cy));
-    mctx.lineTo(mx(cx + Math.sin(ang - half) * reach * 1.4), my(cy + Math.cos(ang - half) * reach * 1.4));
-    mctx.lineTo(mx(cx + Math.sin(ang + half) * reach * 1.4), my(cy + Math.cos(ang + half) * reach * 1.4));
-    mctx.closePath(); mctx.fill(); mctx.stroke();
-    mctx.strokeStyle = "#ffd23f"; mctx.lineWidth = 1.2;
-    mctx.beginPath(); mctx.moveTo(mx(tx) - 5, my(ty)); mctx.lineTo(mx(tx) + 5, my(ty)); mctx.moveTo(mx(tx), my(ty) - 5); mctx.lineTo(mx(tx), my(ty) + 5); mctx.stroke();
-    const rc = real.cut();
-    if (rc) { mctx.strokeStyle = "rgba(111,231,255,0.7)"; mctx.beginPath(); mctx.arc(mx(rc.x), my(rc.y), Math.max(2, rc.r * msc), 0, Math.PI * 2); mctx.stroke(); }
-  }
-  let miniDrag = null;
-  mini.addEventListener("pointerdown", (e) => {
-    e.stopPropagation();
-    const r = mini.getBoundingClientRect();
-    miniDrag = { x: e.clientX, y: e.clientY, moved: 0, r };
-    mini.setPointerCapture(e.pointerId);
-  });
-  mini.addEventListener("pointermove", (e) => {
-    if (!miniDrag || mode !== "orbit") return;
-    const dx = e.clientX - miniDrag.x, dy = e.clientY - miniDrag.y;
-    miniDrag.moved += Math.abs(dx) + Math.abs(dy);
-    miniDrag.x = e.clientX; miniDrag.y = e.clientY;
-    if (miniDrag.moved < 4) return;
-    tween = null;
-    const k = (miniDrag.r.width / MW);
-    const d = g2t(dx / k / msc, -dy / k / msc, 0).sub(g2t(0, 0, 0));
-    controls.target.add(d);
-    camera.position.add(d);
-    controls.update();
-    poke();
-  });
-  mini.addEventListener("pointerup", (e) => {
-    if (!miniDrag) return;
-    const d = miniDrag;
-    miniDrag = null;
-    if (d.moved >= 4) return;
-    const k = d.r.width / MW;
-    const x = gx((e.clientX - d.r.left) / k), y = gy((e.clientY - d.r.top) / k);
-    const z = surfaceZ(x, y);
-    flyTo([x, y, Number.isFinite(z) ? z : 0], mode === "orbit" ? Math.min(2600, camera.position.distanceTo(controls.target) / lensK(camera.fov)) : 600);
-  });
 
   // ---------------------------------------------------------------- the API
   function update(sceneIn) {

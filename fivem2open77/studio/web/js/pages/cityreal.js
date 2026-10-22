@@ -1,26 +1,28 @@
-// The real city up close, for the 3D city: around the point you look at, the game's own meshes --
-// buildings, walls, props, signs, trees and their foliage -- with their materials' colours, and
-// further out the game's own far-view stand-ins of whole buildings (see world/detail.py and
-// world/geocache.py).  The Studio reads them out of the player's game the first time an area is
-// looked at (a job; the layer fills in as meshes arrive) and keeps them.
+// The real city, for the 3D city: the game's own meshes -- buildings, walls, props, signs, streets,
+// terrain, trees and their foliage -- with their materials' colours (and the detail of the textures
+// the game bakes for its far-view stand-ins and its terrain), the whole of Night City as the game
+// itself shows it from where the camera is: the sectors streamed in there, each thing within its
+// streaming distance, and further out the game's far-view stand-ins in place of what they stand for
+// (see world/detail.py plan_lod and world/geocache.py).  The Studio reads them straight out of the
+// player's game the first time they are in view (a job; the layer fills in as meshes arrive) and
+// keeps them.
 //
-// Like the game, it draws a thing only while it is big enough to see: a mesh shows while the camera
-// is nearer than SIZE_K times its size (a can a few metres, a wall hundreds), within a triangle
-// budget that shrinks when frames get slow.  The Studio leaves out what the camera could not see
-// from where it is anyway (it is told where the camera is), so answers stay small.
+// It also draws a thing only while it is big enough to see: a mesh shows while the camera is
+// nearer than SIZE_K times its size (a can a few metres, a wall hundreds), within a triangle budget
+// that shrinks when frames get slow.
 //
 // realCity(ctx) -> { tick(now, info), setEnabled(on), setRange(name), setQuality(q), adapt(ms),
 //                    cut(), state(), dispose() }
 //   ctx: { THREE, api, city (the group in Night City's frame), scene, poke, onStatus(text|null, frac),
-//          range: "close" | "normal" | "wide" (RANGES: metres of the near ring and the far one),
+//          range: "close" | "normal" | "wide" (DETAIL: the game's distances times that),
 //          quality: "high" | "low" }
 //   info: { x, y (game metres: where the view looks), range (metres from the camera to there),
 //           cam: [x, y, z] (the camera, game metres) }
-const GEO_V = 1;
+const GEO_V = 2;
 export const RANGES = { close: [140, 600], normal: [200, 900], wide: [300, 1400] };
-const QUALITY = { high: { k: 120, tris: 6e6 }, low: { k: 70, tris: 2.5e6 } };
+export const DETAIL = { close: 0.75, normal: 1.0, wide: 1.6 };
+const QUALITY = { high: { k: 120, tris: 6e6, meshes: 2500 }, low: { k: 70, tris: 2.5e6, meshes: 1200 } };
 const MIN_SHOW = 6;                 // metres: anything this near shows
-const ACTIVE_RANGE = 4200;          // the view nearer than this (metres) to what it looks at: the layer is on
 const MOVE = 90;                    // ask again when the point moved this far
 const POLL = 2500;                  // while the Studio reads the area
 const CULL_EVERY = 110;             // ms between culls while the camera moves
@@ -43,7 +45,13 @@ export function parseGeo(buf) {
   off += (4 - ((n * 3) % 4)) % 4;
   const m = header.triangles * 3;
   const idx = header.index === "u32" ? new Uint32Array(buf, off, m) : new Uint16Array(buf, off, m);
-  return { header, pos, nrm, idx };
+  off += m * idx.BYTES_PER_ELEMENT;
+  let mod = null;                   // (version 2) each vertex's colour against its chunk's: 128 the same
+  if (header.mod) {
+    off += (4 - (off % 4)) % 4;
+    mod = new Uint8Array(buf, off, n * 3);
+  }
+  return { header, pos, nrm, idx, mod };
 }
 
 export function realCity(ctx) {
@@ -65,6 +73,7 @@ export function realCity(ctx) {
   };
   let enabled = true, disposed = false;
   let [NEAR, FAR] = RANGES[ctx.range] || RANGES.normal;
+  let D = DETAIL[ctx.range] || DETAIL.normal;
   let Q = QUALITY[ctx.quality] || QUALITY.high;
   let load = 1;                     // the triangle budget's share (adapt: slow frames shrink it)
   let asked = null;                 // { x, y, cam, reach, at } of the last answer asked for
@@ -110,7 +119,7 @@ export function realCity(ctx) {
   function geometryFor(g, app) {
     const h = g.header;
     const cols = h.apps[app] || h.apps[h.default] || Object.values(h.apps)[0] || [];
-    const n = h.vertices;
+    const n = h.vertices, mod = g.mod;
     const color = new Float32Array(n * 3), glow = new Float32Array(n);
     const keep = [];
     for (const c of h.chunks) {
@@ -119,7 +128,13 @@ export function realCity(ctx) {
       keep.push(c);
       const gl = k[3] === KIND_LIGHT ? 2.2 : k[3] === KIND_GLASS ? 0.18 : 0;
       for (let v = c.v[0]; v < c.v[0] + c.v[1]; v++) {
-        color[v * 3] = k[0]; color[v * 3 + 1] = k[1]; color[v * 3 + 2] = k[2];
+        if (mod) {
+          const o = v * 3;
+          color[o] = Math.min(1, k[0] * mod[o] / 128); color[o + 1] = Math.min(1, k[1] * mod[o + 1] / 128);
+          color[o + 2] = Math.min(1, k[2] * mod[o + 2] / 128);
+        } else {
+          color[v * 3] = k[0]; color[v * 3 + 1] = k[1]; color[v * 3 + 2] = k[2];
+        }
         glow[v] = gl;
       }
     }
@@ -294,6 +309,7 @@ export function realCity(ctx) {
       const t = a.meshes ? a.meshes.total : 0, r = a.meshes ? a.meshes.ready + (a.meshes.failed || 0) : 0;
       return ctx.onStatus(`Reading the real city here from the game… ${r.toLocaleString()} / ${t.toLocaleString()} meshes`, t ? r / t : 0);
     }
+    if (a.state === "error") return ctx.onStatus(`Real city: could not read more from the game (${a.error || "see the job's log"}); trying again in a minute`, null);
     return ctx.onStatus(null);
   }
 
@@ -303,7 +319,9 @@ export function realCity(ctx) {
   async function ask(x, y, c, reach) {
     inflight = true;
     asked = { x, y, cam: c ? c.slice() : null, reach, at: performance.now() };
-    const camq = c ? `&cx=${c[0].toFixed(1)}&cy=${c[1].toFixed(1)}&cz=${c[2].toFixed(1)}&k=${Q.k}&reach=${reach.toFixed(0)}` : "";
+    // (how many meshes: fewer while frames are slow)
+    const camq = c ? `&cx=${c[0].toFixed(1)}&cy=${c[1].toFixed(1)}&cz=${c[2].toFixed(1)}&k=${Q.k}&reach=${reach.toFixed(0)}&d=${D}`
+      + `&m=${Math.round(Q.meshes * Math.max(0.35, load))}` : "";
     try {
       const ans = await api.get(`/city/detail?x=${x.toFixed(1)}&y=${y.toFixed(1)}&near=${NEAR}&far=${FAR}${camq}`);
       if (disposed) return;
@@ -320,9 +338,7 @@ export function realCity(ctx) {
 
   function tick(now, info) {
     if (disposed || !enabled || !info) return;
-    const active = info.range < ACTIVE_RANGE;
-    root.visible = active;
-    if (!active) { ctx.onStatus && ctx.onStatus(null); return; }
+    root.visible = true;
     const c = info.cam || null;
     // the camera moved: cull again (now and then)
     if (c && (cullDirty || !cam || Math.hypot(c[0] - cam[0], c[1] - cam[1], c[2] - cam[2]) > Math.max(1.5, info.range * 0.01))) {
@@ -344,8 +360,10 @@ export function realCity(ctx) {
 
   function setRange(r) {
     const v = RANGES[r] || RANGES.normal;
-    if (v[0] === NEAR && v[1] === FAR) return;
+    const d = DETAIL[r] || DETAIL.normal;
+    if (v[0] === NEAR && v[1] === FAR && d === D) return;
     [NEAR, FAR] = v;
+    D = d;
     asked = null;
   }
 
@@ -373,12 +391,14 @@ export function realCity(ctx) {
   }
 
   // where the map screen's own blocks give way to the real city (the city's shaders cut there):
-  // once most of the near ring is read (before that, both show)
+  // once most of what is in view is read (before that, both show) -- the whole city when the
+  // Studio answers the game's own way, else the near ring
   function cut() {
     if (!enabled || !root.visible || !center || !meshes.size || !lastAnswer || !lastAnswer.meshes) return null;
     const m = lastAnswer.meshes;
     const [r, t] = m.near || [m.ready + (m.failed || 0), m.total];
     if (t && r < 0.6 * t) return null;
+    if (lastAnswer.mode === "game") return { x: center.x, y: center.y, r: 1e6, whole: true };
     return { x: center.x, y: center.y, r: center.near };
   }
 
@@ -386,9 +406,9 @@ export function realCity(ctx) {
     let instances = 0;
     for (const m of meshes.values()) instances += m.n || 0;
     return { enabled, visible: root.visible, meshes: meshes.size, instances, shown: shownNow, triangles: trisNow,
-      k: Math.round(kNow), load: +load.toFixed(2), reading, geos: geos.size, near: NEAR, far: FAR,
-      answer: lastAnswer ? { state: lastAnswer.state, groups: (lastAnswer.groups || []).length, meshes: lastAnswer.meshes,
-        culled: lastAnswer.culled, dropped: lastAnswer.dropped } : null };
+      k: Math.round(kNow), load: +load.toFixed(2), reading, geos: geos.size, near: NEAR, far: FAR, detail: D,
+      answer: lastAnswer ? { state: lastAnswer.state, mode: lastAnswer.mode, groups: (lastAnswer.groups || []).length,
+        meshes: lastAnswer.meshes, culled: lastAnswer.culled, dropped: lastAnswer.dropped, error: lastAnswer.error } : null };
   }
 
   function dispose() {
