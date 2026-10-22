@@ -86,11 +86,61 @@ def test_the_rings_and_their_instances():
     # nearest first, within the budget
     small = DT.plan(secs, 10.0, 10.0, foliage=lambda r: pops, max_instances=2)
     assert small["instances"] == 2 and small["dropped"] > 0 and small["groups"][0]["res"] == WALL
-    js = DT.to_json(p, lambda r: "a" * 16, lambda r: r == WALL)
+    js = DT.to_json(p, lambda r: "a" * 16, lambda r: r in (WALL, LAMP))
     g = next(g for g in js["groups"] if g["res"] == LAMP)
     m = np.frombuffer(base64.b64decode(g["m"]), np.float32).reshape(-1, 4, 3)
     assert np.allclose(m[1][3], [15, 30, 0]) and np.allclose(m[1][0], [1, 0, 0])   # columns: x axis ... translation
-    assert js["meshes"] == {"total": 4, "ready": 1}
+    assert "m" not in next(g for g in js["groups"] if g["res"] == PALM)          # not read yet: no matrices
+    assert js["meshes"] == {"total": 4, "ready": 2, "failed": 0}
+
+
+def test_what_is_too_small_to_see_or_buried_is_left_out_and_unread_meshes_wait():
+    secs = _read_all()
+    secs[D + "exterior_0_0_0_0.streamingsector"]["entries"].append(
+        {"type": "worldStaticMeshNode", "res": WALL, "app": "", "pos": [12.0, 10.0, -150.0], "rot": [0, 0, 0, 1],
+         "scale": [1, 1, 1]})                                    # the game's hidden rooms, far under the city
+    strings = DT.Strings()
+    rows = [DT.globalize(DT.rows_of(s), strings) for s in secs.values()]
+    pops = DT.foliage_populations(FOLIAGE)
+    fol = {k: np.asarray(v, np.float64) for k, v in pops.items()}
+    every = DT.plan_rows(rows, strings, 10.0, 10.0, 200.0, 800.0, foliage=lambda r: fol, min_z=-1e9)
+    assert sum(g["count"] for g in every["groups"] if g["res"] == WALL) == 2
+    p = DT.plan_rows(rows, strings, 10.0, 10.0, 200.0, 800.0, foliage=lambda r: fol)
+    assert sum(g["count"] for g in p["groups"] if g["res"] == WALL) == 1
+    # from 150 m up: the lamps (0.5 m: seen to ~55 m) are left out, the wall (20 m) and the palms
+    # (size not known yet) are kept
+    size = {WALL: 20.0, LAMP: 0.5}.get
+    far_cam = DT.plan_rows(rows, strings, 10.0, 10.0, 200.0, 800.0, foliage=lambda r: fol, cam=(10, 10, 150), radius=size)
+    got = {g["res"] for g in far_cam["groups"]}
+    assert LAMP not in got and WALL in got and PALM in got and far_cam["culled"] == 3, (got, far_cam["culled"])
+    near_cam = DT.plan_rows(rows, strings, 10.0, 10.0, 200.0, 800.0, foliage=lambda r: fol, cam=(10, 25, 2), radius=size)
+    assert LAMP in {g["res"] for g in near_cam["groups"]} and near_cam["culled"] == 0
+    # only read meshes get groups; the others wait, nearest first
+    part = DT.plan_rows(rows, strings, 10.0, 10.0, 200.0, 800.0, foliage=lambda r: fol, drawable=lambda r: r == WALL)
+    assert {g["res"] for g in part["groups"]} == {WALL} and part["pending"][:2] == [LAMP, PALM], part["pending"]
+    # a job reads a budget of them, nearest first; the next one reads on from there
+    read = set()
+    for want in ([WALL], [LAMP], [PALM]):
+        step = DT.plan_rows(rows, strings, 10.0, 10.0, 200.0, 800.0, foliage=lambda r: fol, drawable=lambda r: r in read,
+                            max_meshes=1)
+        assert step["pending"] == want, (step["pending"], want)
+        read.update(want)
+    assert step["area"] == (2, 4)
+    # rows keep in a file
+    d = tempfile.mkdtemp(prefix="f2o77-rows-")
+    try:
+        fp = os.path.join(d, "s.npz")
+        raw = DT.rows_of(secs[D + "exterior_0_0_0_0.streamingsector"])
+        DT.save_rows(fp, raw, 3)
+        assert DT.load_rows(fp, 2) is None                       # read from another sector version
+        back = DT.load_rows(fp, 3)
+        assert back["strings"] == raw["strings"] and np.array_equal(back["pos"], raw["pos"]) and back["level"] == 0
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    # the vectorised quaternions agree with sector.py's
+    q1, q2 = [0.1, 0.7, -0.2, 0.68], [0.5, -0.1, 0.3, 0.8]
+    assert np.allclose(DT.quats_mul(np.array([q1]), np.array([q2]))[0], S.quat_mul(q1, q2))
+    assert np.allclose(DT.quats_matrix(np.array([q1]))[0], DT.quat_matrix(q1))
 
 
 # ----------------------------------------------------------------------------- the Studio
@@ -160,9 +210,12 @@ def test_the_studio_reads_the_real_city_in_a_job_and_serves_it():
         st = studio.city_detail(10, 10)
         # everything read; the tower WolvenKit could not export is not asked for again
         assert st["state"] == "ready" and st["job"] is None, st
-        assert st["meshes"] == {"total": 4, "ready": 3} and st["missing"] == {"meshes": 0, "foliage": 0}
+        assert st["meshes"] == {"total": 4, "ready": 3, "failed": 1, "near": [3, 3]} and st["missing"] == {"meshes": 0, "foliage": 0}
         ready = {g["res"]: g for g in st["groups"]}
-        assert ready[WALL]["ready"] and ready[PALM]["count"] == 2 and not ready[TOWER]["ready"]
+        assert ready[WALL]["ready"] and ready[PALM]["count"] == 2 and TOWER not in ready
+        # seen from a camera high above: what is too small to see from there is left out
+        high = studio.city_detail(10, 10, cam=(10, 10, 400), reach=20)
+        assert LAMP not in {g["res"] for g in high["groups"]} and high["culled"] > 0, high["culled"]
         header, pos, _nrm, idx = GC.decode(open(studio.geo_file(ready[WALL]["id"]), "rb").read())
         assert header["res"] == WALL and header["triangles"] == 12
         assert len(wk.calls) == 1 and sorted(wk.calls[0]) == sorted([WALL, LAMP, PALM, TOWER])

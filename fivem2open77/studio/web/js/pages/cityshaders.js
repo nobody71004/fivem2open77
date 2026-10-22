@@ -167,6 +167,7 @@ uniform vec3 uColor; uniform vec3 uColor2; uniform float uIntensity; uniform flo
 varying vec3 vG; varying float vDist; varying vec4 vC;
 void main() {
   #include <logdepthbuf_fragment>
+  if (cutAt(vG.xy) > hash12(floor(vG.xy * 0.5))) discard;          // the game's own streets are there
   float major = smoothstep(0.5, 0.9, vC.r) * (1.0 - smoothstep(0.2, 0.5, vC.g));
   if (uLook > 0.5) {
     // the map screen's streets: pale lines over the ground, the highways a little brighter
@@ -194,6 +195,7 @@ uniform float uIntensity; uniform float uLook;
 varying vec3 vG; varying float vDist; varying vec4 vC;
 void main() {
   #include <logdepthbuf_fragment>
+  if (cutAt(vG.xy) > hash12(floor(vG.xy * 0.5))) discard;          // the game's own tracks are there
   // NCART lines keep the game's colours (red, green, blue in the data)
   vec3 c = vC.r > 0.5 ? vec3(1.0, 0.14, 0.38) : (vC.g > 0.5 ? vec3(0.22, 1.0, 0.5) : vec3(0.2, 0.62, 1.0));
   if (uLook > 0.5) {               // the map screen: the lines in their colours, quietly
@@ -209,10 +211,11 @@ void main() {
 
 // ---------------------------------------------------------------- solid holograms (cliffs, landmarks)
 export const solidFS = FHEAD + LIB + /* glsl */ `
-uniform vec3 uColor; uniform vec3 uRim; uniform float uLook;
+uniform vec3 uColor; uniform vec3 uRim; uniform float uLook; uniform float uCuts;
 varying vec3 vG; varying vec3 vN; varying float vDist;
 void main() {
   #include <logdepthbuf_fragment>
+  if (uCuts > 0.5 && cutAt(vG.xy) > hash12(floor(vG.xy * 0.5))) discard;   // (landmarks, cliffs: not the pins)
   vec3 n = safeNormalize(vN);
   float diff = max(dot(n, normalize(vec3(-0.38, 0.42, 0.82))), 0.0);
   if (uLook > 0.5) {               // landmarks and cliffs in the blocks' slate

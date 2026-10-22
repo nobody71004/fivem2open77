@@ -231,7 +231,11 @@ def test_studio_pages_in_a_browser():
                 page.wait_for_timeout(800)
                 st = _get(base, token, f"/api/projects/{pid}/map")
                 assert st["options"]["door_map"] == {"objects": {obj.lower(): "solid"}, "doorways": {way: "open"}}, st["options"]
-                assert [j for j in st["jobs"] if j["kind"] == "look"], "a door mapping change looks at the map again"
+                looks = [j for j in st["jobs"] if j["kind"] == "look"]
+                assert looks, "a door mapping change looks at the map again"
+                for j in looks:                                   # (the build tab waits for the look)
+                    if j["state"] in ("queued", "running"):
+                        _job(base, token, j["id"], 900)
 
                 # ------------------------------------------------ build / in my game / servers
                 page.goto(f"{base}/#/map/{pid}/build")
@@ -261,8 +265,11 @@ def test_studio_pages_in_a_browser():
                 # (the panel also polls the players: the move is the last call to the map, not the last call)
                 moves = [c for c in fake.calls[before:] if c[1].endswith("/maps/cedar_crest/move")]
                 assert moves and moves[-1][2]["dx"] == 10.0, fake.calls[before:]
-                # drag the map on the canvas: a place call with the dropped spot
-                box = page.locator("#main canvas").first.bounding_box()
+                # drag the map on the plan (the top-down canvas; the page opens on the 3D city):
+                # a place call with the dropped spot
+                page.click(".view-tabs button:has-text('Plan')")
+                page.wait_for_selector("#main .plan canvas", state="visible")
+                box = page.locator("#main .plan canvas").bounding_box()
                 cx, cy = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
                 page.mouse.move(cx, cy)
                 page.mouse.down()
@@ -275,7 +282,7 @@ def test_studio_pages_in_a_browser():
                 moved = fake.maps["cedar_crest"]["pending"]
                 assert moved["x"] > 490.0 and moved["y"] > 1800.0, moved
                 # keyboard: Q turns 5 degrees
-                page.locator("#main canvas").first.focus()
+                page.locator("#main .plan canvas").focus()
                 n0 = len(fake.calls)
                 page.keyboard.press("q")
                 page.wait_for_timeout(500)

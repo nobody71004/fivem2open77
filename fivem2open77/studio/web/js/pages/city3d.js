@@ -56,7 +56,7 @@ const VIEWS = { top: { label: "Top", pitch: 89.4, key: "T" }, map: { label: "Map
 const LENSES = { 75: "Wide lens", 55: "Normal lens", 30: "Long lens", 12: "Flat (no perspective)" };
 
 function loadPrefs() {
-  const d = { buildings: true, real: true, roads: true, metro: true, districts: true, labels: true, grid: false, glow: true, holo: false,
+  const d = { buildings: true, real: true, realRange: "normal", roads: true, metro: true, districts: true, labels: true, grid: false, glow: true, holo: false,
     tint: false, quality: "high", mode: "orbit", speed: 70, look: "game", lens: 55, autotilt: true };
   try { return Object.assign(d, JSON.parse(localStorage.getItem(PREFS_KEY) || "{}")); } catch (_) { return d; }
 }
@@ -264,8 +264,8 @@ function createViewer(root, data, prefs, opts) {
   add("terrain", layerGeo("terrain", true), terrainMat);
   add("water", layerGeo("water", true), mat(S.terrainVS, S.waterFS), 1);
   // (uLook is in U: every material of the city follows the look)
-  add("cliffs", layerGeo("cliffs", true), mat(S.terrainVS, S.solidFS, { uColor: { value: new THREE.Color(0x03070c) }, uRim: { value: new THREE.Color(0x1fa9c9) } }));
-  add("landmarks", layerGeo("landmarks", true), mat(S.terrainVS, S.solidFS, { uColor: { value: new THREE.Color(0x0a0410) }, uRim: { value: new THREE.Color(0xff4fa3) } }));
+  add("cliffs", layerGeo("cliffs", true), mat(S.terrainVS, S.solidFS, { uColor: { value: new THREE.Color(0x03070c) }, uRim: { value: new THREE.Color(0x1fa9c9) }, uCuts: { value: 1 } }));
+  add("landmarks", layerGeo("landmarks", true), mat(S.terrainVS, S.solidFS, { uColor: { value: new THREE.Color(0x0a0410) }, uRim: { value: new THREE.Color(0xff4fa3) }, uCuts: { value: 1 } }));
   add("borders", layerGeo("borders"), mat(S.glowVS, S.roadFS, { uLift: { value: 0.25 }, uColor: { value: new THREE.Color(0x0b6b86) },
     uColor2: { value: new THREE.Color(0x0b6b86) }, uIntensity: { value: 0.12 } }, additive), 5);
   add("roads", layerGeo("roads"), mat(S.glowVS, S.roadFS, { uLift: { value: 0.35 }, uColor: { value: new THREE.Color(0x14c8ff) },
@@ -356,8 +356,12 @@ function createViewer(root, data, prefs, opts) {
     pos: view(buf, L[n].pos, Float32Array), idx: view(buf, L[n].idx, Uint32Array), kind: i,
   })));
   const KIND_NAMES = ["terrain", "roads", "cliffs", "landmarks", "water"].filter((n) => L[n]);
+  // the real city's ring (cityreal.js): the map's blocks are not drawn there, so they neither hold
+  // the camera up, nor stop a walk, nor catch the pointer
+  const inCut = (x, y) => U.uCut.value.w > 0.5 && Math.hypot(x - U.uCut.value.x, y - U.uCut.value.y) < U.uCut.value.z - 25;
   const surfaceZ = (x, y, zMax = Infinity) => {
     let z = ground.heightAt(x, y, zMax);
+    if (inCut(x, y)) return z;
     for (const b of boxes.near(x, y, 0, nearTmp)) {
       const t = boxes.topAt(b, x, y);
       if (t > z && t <= zMax) z = t;
@@ -565,10 +569,17 @@ function createViewer(root, data, prefs, opts) {
     cb.addEventListener("change", () => { prefs[k] = cb.checked; savePrefs(prefs); applyPrefs(); });
     return h("label", cb, h("span", label));
   }), h("div.sep"),
+  h("label", h("span", "Real city"), (() => {
+    const sel = h("select", h("option", { value: "close" }, "Close (140 m)"), h("option", { value: "normal" }, "Normal (200 m, stand-ins to 900 m)"),
+      h("option", { value: "wide" }, "Wide (300 m, stand-ins to 1.4 km)"));
+    sel.value = prefs.realRange || "normal";
+    sel.addEventListener("change", () => { prefs.realRange = sel.value; savePrefs(prefs); real.setRange(sel.value); poke(); });
+    return sel;
+  })()),
   h("label", (() => {
     const sel = h("select", h("option", { value: "high" }, "High quality"), h("option", { value: "low" }, "Fast"));
     sel.value = prefs.quality;
-    sel.addEventListener("change", () => { prefs.quality = sel.value; savePrefs(prefs); applyPrefs(); resize(); });
+    sel.addEventListener("change", () => { prefs.quality = sel.value; savePrefs(prefs); real.setQuality(sel.value); applyPrefs(); resize(); });
     return sel;
   })()),
   h("button.btn.small.ghost", { onclick: () => { layerMenu.classList.add("hidden"); if (opts.onRebuild) opts.onRebuild(); } }, "Rebuild from the game"));
@@ -695,7 +706,7 @@ function createViewer(root, data, prefs, opts) {
   // the game's own meshes around where the view looks (see cityreal.js)
   scene.fog = new THREE.FogExp2(U.uFogColor.value.getHex(), U.uFogDensity.value);
   const real = realCity({
-    THREE, api, city, scene, poke,
+    THREE, api, city, scene, poke, range: prefs.realRange, quality: prefs.quality,
     onStatus: (text, frac) => {
       realChip.classList.toggle("hidden", !text);
       if (!text) return;
@@ -978,6 +989,7 @@ function createViewer(root, data, prefs, opts) {
   // the nearest open street ground around (x, y): no building over it
   function findStreet(x, y) {
     const covered = (px, py, gz) => {
+      if (inCut(px, py)) return false;
       for (const b of boxes.near(px, py, RADIUS, nearTmp)) {
         const t = boxes.topAt(b, px, py);
         if (Number.isFinite(t) && t > gz + 1) return true;
@@ -1007,7 +1019,7 @@ function createViewer(root, data, prefs, opts) {
     if (g) best = { t: g.t, kind: KIND_NAMES[g.kind] || "ground" };
     if (prefs.buildings && boxes.n) {
       const b = boxes.raycast(x, y, z, dx, dy, dz, best ? best.t : maxT);
-      if (b && (!best || b.t < best.t)) best = { t: b.t, kind: "building", box: b.box };
+      if (b && (!best || b.t < best.t) && !inCut(x + dx * b.t, y + dy * b.t)) best = { t: b.t, kind: "building", box: b.box };
     }
     // the sea (z = -3) when nothing else is hit
     if (!best && dz < -1e-4) {
@@ -1218,9 +1230,9 @@ function createViewer(root, data, prefs, opts) {
     if (Math.abs(near - camera.near) > camera.near * 0.2) { camera.near = near; camera.updateProjectionMatrix(); }
     if (mode === "orbit") {
       const tg = t2g(controls.target);
-      real.tick(now, { x: tg[0], y: tg[1], range: camera.position.distanceTo(controls.target) });
+      real.tick(now, { x: tg[0], y: tg[1], range: camera.position.distanceTo(controls.target), cam: [cx, cy, cz] });
     } else {
-      real.tick(now, { x: cx, y: cy, range: Math.max(alt, 1) });
+      real.tick(now, { x: cx, y: cy, range: Math.max(alt, 1), cam: [cx, cy, cz] });
     }
     const cut = real.cut();
     if (cut) U.uCut.value.set(cut.x, cut.y, cut.r, 1); else U.uCut.value.w = 0;
@@ -1251,6 +1263,7 @@ function createViewer(root, data, prefs, opts) {
     adaptAt = performance.now() + 1500;
     if (avg > 24 && dpr > 0.75) { dpr = Math.max(0.75, dpr - 0.25); applySize(); }
     else if (avg < 14 && dpr < dprMax) { dpr = Math.min(dprMax, dpr + 0.25); applySize(); }
+    real.adapt(avg);
   }
 
   function runTween(now) {
@@ -1348,7 +1361,7 @@ function createViewer(root, data, prefs, opts) {
     let [x, y, z] = walk.feet;
     let nx = x + walk.vx * dt, ny = y + walk.vy * dt, nz = z + walk.vz * dt;
     // walls: the buildings around, pushed out of sideways (a step up is climbed)
-    for (const b of boxes.near(nx, ny, RADIUS + 1, nearTmp)) {
+    for (const b of (inCut(nx, ny) ? [] : boxes.near(nx, ny, RADIUS + 1, nearTmp))) {
       const top = boxes.topAt(b, nx, ny);
       const l = boxes.local(b, nx, ny, nz + 0.9);
       const o = b * 10, R = boxes.R, r = b * 9;

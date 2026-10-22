@@ -681,7 +681,11 @@ def api_citymap_file(h, q, name):
 
 @route("GET", r"/api/city/detail")
 def api_city_detail(h, q):
-    h.json(h.studio.city_detail(_num(q, "x", 0.0), _num(q, "y", 0.0), near=_num(q, "near"), far=_num(q, "far")))
+    cam = None
+    if all(k in q for k in ("cx", "cy", "cz")):
+        cam = (_num(q, "cx", 0.0), _num(q, "cy", 0.0), _num(q, "cz", 0.0))
+    h.json(h.studio.city_detail(_num(q, "x", 0.0), _num(q, "y", 0.0), near=_num(q, "near"), far=_num(q, "far"),
+                                cam=cam, k=_num(q, "k"), reach=_num(q, "reach")))
 
 
 @route("GET", r"/api/city/geo/([0-9a-f]{16})")

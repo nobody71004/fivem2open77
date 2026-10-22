@@ -1,5 +1,74 @@
 # Changelog
 
+## Studio 1.7.4 · converter 1.6.0 (2026-10-22)
+
+### Big maps go into the game (Liberty City)
+
+* A map converted from a big area could be built and deployed but never placed: Open77 loads at most
+  8 packages per resource, the map filled all 8, and placing it adds one more (the sector that puts it
+  in Night City), so the server refused the spot and nothing showed in game. A build now keeps one
+  package free for the sector. It packs by the size the files take in the archives (read from the
+  archives' own index, not their unpacked size), so a big map needs fewer packages: Liberty City's
+  8 packages pack into 4, each file unchanged. A map that still cannot fit says so at build time and
+  names what to do (a smaller area, or leave parts out); a build made before 1.7.4 that cannot be placed
+  is named on deploy and in its checks, with the rebuild that fixes it.
+* *Install in my game* installed a map with no spot as files the game never loads (no sector). It now
+  asks for the spot first (Options > Placement, or the 3D city), bakes the sector for that spot when
+  the build was baked for another, and the game tab shows where the map stands. NCWE assets a map
+  imports go in with it and come out with it.
+
+### The agent API switch works again
+
+* *Enable the agent API* (and the server's other new tasks) stopped with "mode must be inspect,
+  deploy, status, logs or restart" and "the agent API switch did not complete": the app carried an
+  old copy of the server deploy script that had none of them. The full script is back, with the
+  `agent-api`, `acl-grant`, `manager-update` and `remove` modes, and runs from Windows' Git Bash
+  (paths, spawning, quoting).
+
+### Night City off
+
+* A world edit can turn off the whole of Night City -- and Dogtown -- wherever it is installed: no
+  terrain, roads, buildings, interiors, props, water or quest content of the city streams in, and the
+  far-away lit windows of its skyline go too. Only what game systems look for and nobody sees stays
+  (map pins, the traffic system's data, the AI's navigation). Your own maps then stand on their own.
+  World > *Turn Night City off…* makes the edit, `nightcity_off` (build it, then install it in your
+  game or deploy it like any other); its page switches it back on, and the agent has a `night_city`
+  tool. A server's status says when its Night City is off.
+
+### Live maps: the real city up close
+
+* Around where you look, the 3D city now draws the game's own meshes -- buildings, walls, roofs, signs
+  and neon, pipes, props, trees and their foliage -- in their materials' colours, and further out the
+  game's own far-view stand-ins of whole buildings. The Studio reads them out of your game the first
+  time an area is looked at (a job, nearest first; the layer fills in as they arrive, a chip shows how
+  far it is) and keeps them, so the next look is instant. Where the area is read, the map's own blocks,
+  streets and tracks give way to it.
+* Like the game, a thing is drawn only while it is big enough to see from the camera (a can a few
+  metres, a wall hundreds), within a triangle budget that shrinks when frames get slow; the Studio
+  sends only what could be seen from where the camera is, so moving around stays quick. The game's
+  hidden rooms far under the city are left out.
+* The layer menu has *Real city* on/off and its reach: Close (140 m), Normal (200 m, stand-ins to
+  900 m) or Wide (300 m, stand-ins to 1.4 km). *Fast* quality draws less of it.
+* Navigation: a search box (G or /) goes to maps, players, districts, landmarks or coordinates
+  (`x, y`), with arrows and Enter; Backspace goes back to where you were; + and - zoom, Home shows
+  the whole city, arrows turn and tilt; a minimap (click to fly there, drag to pan); the compass turns
+  north up. In the real city's ring the camera and a walk are no longer held by the map's (hidden)
+  blocks, so you can go down to the streets.
+
+### World edits
+
+* Deleting or moving a building also deletes or moves its far-view stand-ins (the game drew the old
+  one from a distance).
+
+### Fixes
+
+* A click on the 3D map could throw a canvas error (a negative radius in its shockwave) when the
+  frame's time came a moment before the click's.
+
+### Tests
+
+* The browser, end-to-end and MCP tests from 1.3.x run again on this version.
+
 ## Studio 1.7.3 · converter 1.6.0 (2026-10-18)
 
 ### .NET 8 for Linux, the map baker's runtime, comes with the app
