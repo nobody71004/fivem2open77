@@ -6,7 +6,9 @@
                -> <MOD_ROOT>\\maps\\<name>\\ents\\<part>.ent     (host entity a sector node spawns;
                   for a door part the game's own transform-animated Door device, doors.py)
     textures   -> <MOD_ROOT>\\maps\\<name>\\textures\\<tex>.xbm
-    archives   -> split so every zip stays under Open77's 64 MiB preload cap (8 packages max)
+    archives   -> split so every zip stays under Open77's 64 MiB preload cap (8 packages max per
+                  resource, one of them kept free for the sector package a placed map adds; a map
+                  that needs more by raw size is regrouped by what its files take once packed)
     resources  -> <out>/<name> (packages, layout.json, ghost.txt) and the map manager
                   <out>/f2o77_maps (shared/maps/<name>.lua: what it knows about this map);
                   the sector package comes from bake.py once the map has an anchor
@@ -38,6 +40,7 @@ MOD_ROOT = "fivem2open77"
 STATIC_TEMPLATE = r"base\environment\decoration\containers\cargo\freight\freight_ep1_a_wall_a.mesh"
 WORLD_TEMPLATES = (STATIC_TEMPLATE,)
 ARCHIVE_RAW_BUDGET = 56 * 1024 * 1024      # raw bytes per archive before packing (zip < 64 MiB)
+PACKED_BUDGET = 60 * 1024 * 1024           # packed bytes per archive when a big map is regrouped (zip < 64 MiB)
 HIDDEN = "m_hidden"
 
 
@@ -186,29 +189,13 @@ class MapWriter:
         files = []
         for p in expected:
             files.append((p, os.path.getsize(os.path.join(adir, p.replace("\\", os.sep)))))
-        groups = _bin_pack(files, ARCHIVE_RAW_BUDGET)
-        if len(groups) + len(extra_packages) > package.MAX_PACKAGES:
-            raise RuntimeError(f"{len(groups) + len(extra_packages)} packages needed (Open77 allows {package.MAX_PACKAGES}): "
-                               f"the map itself needs {len(groups)} and {len(extra_packages)} NCWE asset import(s) were "
-                               "dropped in (remove some imports in the Studio, or use --exclude/--cell)")
-        archive_base = f"{MOD_ROOT}_map_{name}"
         res_dir = os.path.join(self.out_dir, name)
         shutil.rmtree(os.path.join(res_dir, "dist"), ignore_errors=True)
+        packed = self.pack_map(name, files, adir, work, pdir, extra=len(extra_packages))
         zips = []
-        for i, group in enumerate(groups, 1):
-            aname = archive_base if len(groups) == 1 else f"{archive_base}_{i}"
-            src_root = os.path.join(work, "pack", aname)
-            for p, _ in group:
-                s = os.path.join(adir, p.replace("\\", os.sep))
-                d = os.path.join(src_root, p.replace("\\", os.sep))
-                os.makedirs(os.path.dirname(d), exist_ok=True)
-                shutil.copyfile(s, d)
-            self.wk.pack(src_root, pdir)
-            out = os.path.join(pdir, aname + ".archive")
-            if not os.path.exists(out):
-                raise RuntimeError(f"WolvenKit did not produce {aname}.archive")
-            package.normalize_archive(out)
-            zname = f"{name}.zip" if len(groups) == 1 else f"{name}_{i}.zip"
+        for i, (out, group) in enumerate(packed, 1):
+            aname = os.path.basename(out)[:-len(".archive")]
+            zname = f"{name}.zip" if len(packed) == 1 else f"{name}_{i}.zip"
             zsize = package.write_zip(os.path.join(res_dir, "dist", zname), {f"archive/pc/mod/{aname}.archive": out})
             if zsize > package.MAX_PACKAGE:
                 raise RuntimeError(f"{zname} is {zsize / 1048576:.1f} MiB, over Open77's 64 MiB preload limit")
@@ -267,6 +254,71 @@ class MapWriter:
         self.log(f"[{name}] done in {report['seconds']}s -> {res_dir} + {manager_dir}")
         return {"name": name, "resource": res_dir, "manager": manager_dir, "report": report, "layout": layout,
                 "baked": baked}
+
+    def pack_map(self, name, files, adir, work, pdir, extra=0) -> list:
+        """The map's files [(depot path, bytes on disk)] in ``adir`` -> its archives, as few as fit:
+        [(archive path, group)].  Placing the map adds its sector package (bake.py) to these and to
+        ``extra`` NCWE imports, so one preload slot stays free for it: without that the map could be
+        converted but never placed."""
+        allowed = package.MAX_PACKAGES - 1 - extra
+        if allowed < 1:
+            raise RuntimeError(f"{extra} NCWE asset import(s) leave no room for the map: Open77 allows "
+                               f"{package.MAX_PACKAGES} packages per resource and the map needs one or more plus its "
+                               "sector package (remove some imports in the Studio)")
+        archive_base = f"{MOD_ROOT}_map_{name}"
+        groups = _bin_pack(files, ARCHIVE_RAW_BUDGET)
+        packed = self._pack(groups, adir, os.path.join(work, "pack"), pdir, archive_base)
+        if len(packed) <= allowed:
+            return packed
+        # raw sizes say little about the packed size (meshes and textures pack 2-5x smaller): measure
+        # what each file takes in the archives just packed and regroup by that
+        cost = {}
+        for out, _group in packed:
+            cost.update(package.archive_costs(out))
+        measured = [(p, cost.get(package.depot_hash(p), s)) for p, s in files]
+        total = sum(s for _, s in measured)
+        groups = _bin_pack(measured, PACKED_BUDGET)
+        self.log(f"[{name}] {total / 1048576:.0f} MiB packed: {len(packed)} archives by raw size, regrouped into "
+                 f"{len(groups)} so the sector package fits ({package.MAX_PACKAGES} per resource)")
+        if len(groups) > allowed:
+            imports = f" and {extra} NCWE import(s)" if extra else ""
+            raise RuntimeError(
+                f"{name} is {total / 1048576:.0f} MiB packed: that is {len(groups)} packages of at most "
+                f"{PACKED_BUDGET // 1048576} MiB, and Open77 allows {package.MAX_PACKAGES} per resource ({allowed} "
+                f"for the map next to its sector package{imports}): convert a smaller area (the map's area or "
+                "district in Options) or leave parts out")
+        shutil.rmtree(pdir, ignore_errors=True)
+        return self._pack(groups, adir, os.path.join(work, "pack2"), pdir, archive_base)
+
+    def _pack(self, groups, adir, pack_root, pdir, archive_base) -> list:
+        """Each group into its own archive (timestamps pinned): [(archive path, group)]."""
+        packed = []
+        for i, group in enumerate(groups, 1):
+            aname = archive_base if len(groups) == 1 else f"{archive_base}_{i}"
+            src_root = os.path.join(pack_root, aname)
+            for p, _ in group:
+                s = os.path.join(adir, p.replace("\\", os.sep))
+                d = os.path.join(src_root, p.replace("\\", os.sep))
+                os.makedirs(os.path.dirname(d), exist_ok=True)
+                _link_or_copy(s, d)
+            self.wk.pack(src_root, pdir)
+            out = os.path.join(pdir, aname + ".archive")
+            if not os.path.exists(out):
+                raise RuntimeError(f"WolvenKit did not produce {aname}.archive")
+            package.normalize_archive(out)
+            if not self.keep_work:
+                shutil.rmtree(src_root, ignore_errors=True)
+            packed.append((out, group))
+        return packed
+
+
+def _link_or_copy(src, dst):
+    """A hard link where the file system has them (the pack folders are throw-away views of the
+    archive folder), else a copy."""
+    try:
+        os.link(src, dst)
+    except OSError:
+        shutil.copyfile(src, dst)
 
 
 def _bin_pack(files, budget):

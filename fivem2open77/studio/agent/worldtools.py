@@ -55,10 +55,34 @@ def t_world_status(ctx, args):
         if p.kind == "world":
             ws = ctx.studio.world_state(p.id)
             out["project"] = {"id": p.id, "name": ws["name"], "display": ws["display"], "center": ws["center"],
+                              "city": ws["city"],
                               "summary": ws["summary"], "problem": ws["problem"], "actions": ws["actions"][-40:],
                               "builds": [{k: b.get(k) for k in ("n", "ok", "version", "error", "summary")} for b in ws["builds"][:3]],
                               "deployments": ws["deployments"][-3:], "local_game": ws["game"]}
     return text(out)
+
+
+def t_night_city(ctx, args):
+    """Night City on/off for the open world edit (or, with none open and off, a new edit that only
+    turns it off, which the session then works on)."""
+    state = args.get("state")
+    if state is None:
+        return text(ctx.studio.night_city())
+    pid = ctx.session.project
+    p = ctx.studio.projects.get(pid) if pid else None
+    if p is None or p.kind != "world":
+        if str(state).lower() != "off":
+            return text(dict(ctx.studio.night_city(), note="no world edit open: nothing to turn on"))
+        p = ctx.studio.create_world_project(name=args.get("name") or "nightcity_off", display="Night City off", city="off")
+        ctx.session.switch_project(p.id)
+    else:
+        ctx.studio.world_set(p.id, city=state)
+    ws = ctx.studio.world_state(p.id)
+    return text({"project": p.id, "name": ws["name"], "city": ws["city"],
+                 "note": ("build_world_edit, then install_world_edit_in_game / deploy_world_edit: Night City is off "
+                          "wherever this edit is installed (remove it to bring the city back). Put the players on a "
+                          "map: nothing of the city is left to stand on") if ws["city"] == "off" else
+                         "build and install again to bring the city back where this edit is installed"})
 
 
 def t_new_world_edit(ctx, args):
@@ -111,7 +135,8 @@ def t_world_object(ctx, args):
                                     for k, it in enumerate(el["items"][:60])]}
     return text({"object": o2, "collision": [{k: c.get(k) for k in ("sector", "index", "type", "element", "pos")}
                                              for c in r["collision"]],
-                 "shares_its_place_with": [{k: c.get(k) for k in ("sector", "index", "element", "label")} for c in r["sharers"]]})
+                 "shares_its_place_with": [{k: c.get(k) for k in ("sector", "index", "element", "label")} for c in r["sharers"]],
+                 "far_view": [{k: c.get(k) for k in ("sector", "index", "type", "pos")} for c in r.get("proxies") or []]})
 
 
 def _apply(ctx, action):
@@ -264,6 +289,13 @@ def registry() -> dict:
              "display name). The session switches to it.",
              _obj({"name": {"type": "string"}, "display_name": {"type": "string"},
                    "center": {"type": "array", "items": NUM, "minItems": 2, "maxItems": 3}}), "change", t_new_world_edit),
+        Tool("night_city", "Turn Night City off (or back on): state 'off' makes the open world edit (or a new one, "
+             "nightcity_off) replace the game's two streaming blocks with ones that list none of the city's sectors -- "
+             "no terrain, roads, buildings, interiors or quest content stream in; converted maps still do -- and dims the "
+             "skyline's distant lights. Build and install it like any world edit; removing it brings the city back. "
+             "Without state: where Night City is off.",
+             _obj({"state": {"type": "string", "enum": ["on", "off"]}, "name": {"type": "string"}}),
+             "change", t_night_city),
         Tool("world_prepare", "Read Night City's sector list from the game (once, a minute or two; world_find does it "
              "when needed). again=true reads it again (after a game update).",
              _obj({"again": {"type": "boolean"}}), "read", t_world_prepare),
@@ -284,14 +316,15 @@ def registry() -> dict:
              "place.", _obj({"sector": {"type": "string"}, "index": INT, "element": INT}, ["sector", "index"]),
              "read", t_world_object),
         Tool("world_delete", "Delete objects (one action; undo takes it back). Their collision goes with them (actors at "
-             "the object's place in the collision nodes around, terrain collision under terrain); collision several "
-             "objects share goes only when all of them go. dry_run shows what would be deleted.",
+             "the object's place in the collision nodes around, terrain collision under terrain), and an entity's "
+             "far-view stand-in (its proxy mesh in a coarser sector) too; collision several objects share goes only "
+             "when all of them go. dry_run shows what would be deleted.",
              _obj({"objects": {"type": "array", "items": TARGET, "minItems": 1, "maxItems": 2000},
                    "with_collision": {"type": "boolean"}, "dry_run": {"type": "boolean"}}, ["objects"]),
              "change", t_world_delete),
         Tool("world_move", "Move / turn / scale one object (or one element of an instanced mesh): pos (absolute) or delta "
-             "[dx,dy,dz]; yaw (heading, degrees) or dyaw (turn by). Its collision moves and turns with it (collision "
-             "does not scale).",
+             "[dx,dy,dz]; yaw (heading, degrees) or dyaw (turn by). Its collision (and an entity's far-view stand-in) "
+             "moves and turns with it (collision does not scale).",
              _obj({"sector": {"type": "string"}, "index": INT, "element": INT, "pos": VEC3, "delta": VEC3, "yaw": NUM,
                    "dyaw": NUM, "scale": VEC3, "with_collision": {"type": "boolean"}}, ["sector", "index"]),
              "change", t_world_move),
@@ -342,7 +375,7 @@ def registry() -> dict:
     return {t.name: t for t in tools}
 
 
-WORLD_TOOLS = ("world_status", "new_world_edit", "world_prepare", "world_find", "world_object", "world_delete",
+WORLD_TOOLS = ("world_status", "new_world_edit", "night_city", "world_prepare", "world_find", "world_object", "world_delete",
                "world_move", "world_replace", "world_add", "world_clear_area", "world_undo", "world_drop_action",
                "build_world_edit", "install_world_edit_in_game", "deploy_world_edit", "remove_world_edit",
                "world_ncwe_list", "world_ncwe_add", "world_ncwe_remove")

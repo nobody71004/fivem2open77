@@ -393,13 +393,30 @@ def test_moved_map_keeps_ncwe_imports_and_quiet_areas(tmp_path, monkeypatch):
     assert _preload(res) == ["dist/" + p for p in built["packages"] + ["cookiemap_sector.zip"]], _preload(res)
 
 
+def test_a_map_always_keeps_room_for_its_sector_package(tmp_path, monkeypatch):
+    # 1 + 6 imports: 7 packages, and the move makes it the 8 Open77 loads at most
+    six = [_import_zip(tmp_path, f"m{i}.zip", f"a{i}.archive") for i in range(6)]
+    res = _built_map(tmp_path, monkeypatch, six)
+    assert len(_preload(res)) == 7
+    bake_mod.bake(res, {"x": 1.0, "y": 2.0, "z": 0.0, "yaw": 0.0}, _BakeWk(), log=_quiet)
+    assert len(_preload(res)) == 8 and _preload(res)[-1] == "dist/cookiemap_sector.zip"
+    # 1 + 7 imports could be converted but never placed: the build refuses it
+    seven = [_import_zip(tmp_path, f"n{i}.zip", f"b{i}.archive") for i in range(7)]
+    with pytest.raises(RuntimeError, match="leave no room for the map"):
+        _built_map(tmp_path / "seven", monkeypatch, seven)
+
+
 def test_move_refused_when_the_sector_package_would_pass_the_limit(tmp_path, monkeypatch):
-    seven = [_import_zip(tmp_path, f"m{i}.zip", f"a{i}.archive") for i in range(7)]
-    res = _built_map(tmp_path, monkeypatch, seven)
-    before = _preload(res)
-    assert len(before) == 8                                  # the most Open77 loads
-    with pytest.raises(RuntimeError, match="Open77 allows 8"):
+    """A build from before 1.7.4 can have 8 packages already: moving it would need a 9th."""
+    six = [_import_zip(tmp_path, f"m{i}.zip", f"a{i}.archive") for i in range(6)]
+    res = _built_map(tmp_path, monkeypatch, six)
+    lay_path = os.path.join(res, "layout.json")
+    lay = json.loads(open(lay_path, encoding="utf-8").read())
+    lay["packages"].append("cookiemap_2.zip")               # what an older Studio could ship
+    with open(lay_path, "w", encoding="utf-8") as f:
+        json.dump(lay, f)
+    with pytest.raises(RuntimeError, match="Open77 allows 8") as e:
         bake_mod.bake(res, {"x": 1.0, "y": 2.0, "z": 0.0, "yaw": 0.0}, _BakeWk(), log=_quiet)
-    assert _preload(res) == before                           # nothing was written
-    assert not os.path.exists(os.path.join(res, "dist", "cookiemap_sector.zip"))
+    assert "rebuild the map" in str(e.value)
+    assert not os.path.exists(os.path.join(res, "dist", "cookiemap_sector.zip"))   # nothing was written
     assert not os.path.exists(os.path.join(res, "baked.json"))

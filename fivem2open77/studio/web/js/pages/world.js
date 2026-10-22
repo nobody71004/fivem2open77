@@ -57,6 +57,45 @@ function worldList(root) {
     indexBox.append(card);
   }
 
+  const cityBox = h("div", { style: { marginTop: "12px" } });
+  async function loadCity() {
+    let st;
+    try { st = await api.get("/world/city"); } catch (e) { clear(cityBox); return; }
+    const off = st.off || [];
+    const card = h("div.card");
+    card.append(h("h3", icon("layers"), "Night City"));
+    if (!off.length) {
+      card.append(h("div.row", h("span.pill.ok", "on"),
+        h("span.muted", "Turn the whole city off — its terrain, roads, buildings, interiors and quest content — and keep only the maps you convert and the objects edits add."),
+        h("div.grow"),
+        h("button.btn", { onclick: turnOff }, "Turn Night City off…")));
+    } else {
+      for (const o of off) {
+        const where = [o.game ? "your game" : null, ...(o.servers || [])].filter(Boolean);
+        card.append(h("div.row", { style: { marginBottom: "6px" } }, h("span.pill.warn", "off"),
+          h("span", h("b", o.display || o.name), " ", h("code", o.name)),
+          h("span.muted", o.build ? (o.build.ok ? `build ${o.build.n}` : `build ${o.build.n} failed`) : "not built yet"),
+          h("span.muted", where.length ? `· off in ${where.join(", ")}` : "· not installed anywhere yet"),
+          h("div.grow"), h("a.btn.small", { href: `#/world/${o.project}` }, "Open")));
+      }
+      card.append(h("p.help", "Night City is off wherever one of these is installed. Remove it there (Remove from my game, or the server's World edits) to bring the city back."));
+    }
+    clear(cityBox).append(card);
+  }
+
+  async function turnOff() {
+    const body = h("div.col",
+      h("p", "This makes a world edit, ", h("code", "nightcity_off"), ", that replaces the game's two streaming blocks (Night City and Dogtown) with ones that list none of the city's sectors, and switches off the distant lights of its skyline."),
+      h("p", "Wherever it is installed nothing of the city streams in: no ground, roads, buildings, interiors, props or quest content. The maps you convert and objects edits add still appear, so put the players on a map (a spot with a map under it), or they fall."),
+      h("p.muted", "Build it, then Test in my game or Install on a server. Removing it brings the city back (players: after the server restarts and they launch again)."));
+    const r = await modal("Turn Night City off", body, [{ label: "Cancel", value: null }, { label: "Make the edit", value: "ok", kind: "primary" }]);
+    if (r !== "ok") return;
+    try {
+      const res = await api.post("/projects", { kind: "world", name: "nightcity_off", display: "Night City off", city: "off" });
+      location.hash = `#/world/${res.project.id}`;
+    } catch (e) { toast(e.message, "err"); }
+  }
+
   async function load() {
     const st = await refreshState();
     clear(list);
@@ -76,7 +115,8 @@ function worldList(root) {
       const on = [...byServer.values()].filter((d) => !d.removed);
       const last = deps.length ? deps[deps.length - 1] : null;
       body.append(h("tr.link", { onclick: () => { location.hash = `#/world/${p.id}`; } },
-        h("td", h("div.title", p.name || "(unnamed)"), h("div.sub", h("code", w.name || ""))),
+        h("td", h("div.title", p.name || "(unnamed)", w.city === "off" ? h("span.pill.warn", { style: { marginLeft: "8px" } }, "Night City off") : null),
+          h("div.sub", h("code", w.name || ""))),
         h("td.num", `${w.edits || 0}`),
         h("td", lb ? (lb.ok ? h("span.pill.ok", `build ${lb.n}`) : h("span.pill.err", `build ${lb.n} failed`)) : h("span.pill", "not built")),
         h("td.muted", on.length ? `${on.map((d) => d.server).join(", ")} · ${fmtAgo(Math.max(...on.map((d) => d.time)))}`
@@ -113,8 +153,9 @@ function worldList(root) {
     h("p.muted", { style: { maxWidth: "860px" } },
       "Change Night City itself: delete, move or re-mesh its own objects and ground pieces, add objects of the game. ",
       "The collision of each object goes with it. An edit installs on a server like a car: players get it at their next launch."),
-    indexBox, h("div", { style: { height: "12px" } }), list);
+    indexBox, cityBox, h("div", { style: { height: "12px" } }), list);
   loadIndex();
+  loadCity();
   load().catch((e) => toast(e.message, "err"));
   return {};
 }
@@ -174,15 +215,21 @@ function worldEditor(root, pid) {
     const sm = st.summary || {};
     const lb = st.builds[0];
     const game = st.game || {};
+    const city = st.city || "on";
+    const citySeg = h("div.seg", { title: "Night City itself: off replaces the game's streaming blocks with ones without the city's sectors (wherever this edit is installed)" },
+      ["on", "off"].map((v) => h("button", { class: city === v ? "on" : "", onclick: () => setCity(v) }, v === "on" ? "City on" : "City off")));
     clear(head).append(
       h("div.title", h("b", p.name || "(unnamed)"), h("code", st.name),
-        h("span.muted", `${sm.deleted || 0} deleted · ${sm.elementsDeleted || 0} parts · ${(sm.changed || 0) + (sm.elementsMoved || 0)} moved/changed · ${sm.added || 0} added`)),
+        h("span.muted", `${sm.deleted || 0} deleted · ${sm.elementsDeleted || 0} parts · ${(sm.changed || 0) + (sm.elementsMoved || 0)} moved/changed · ${sm.added || 0} added`),
+        city === "off" ? h("span.pill.warn", { title: "None of Night City's own sectors stream in where this edit is installed" }, "Night City off") : null),
       h("div.grow"),
       h("div.toolbar",
         h("button.btn.ghost.small", { disabled: !st.can_undo, title: "Undo (Ctrl+Z)", onclick: () => undo(false) }, "Undo"),
         h("button.btn.ghost.small", { disabled: !st.can_redo, title: "Redo (Ctrl+Y)", onclick: () => undo(true) }, "Redo"),
         h("span.sep"),
         h("button.btn.ghost.small", { title: "Props made in NCWE that ship with this edit", onclick: assetsPanel }, "NCWE assets"),
+        citySeg,
+        h("span.sep"),
         h("button.btn.ghost.small", { onclick: rename }, "Rename"),
         h("button.btn.ghost.small", { onclick: remove }, icon("trash")),
         h("span.sep"),
@@ -191,7 +238,19 @@ function worldEditor(root, pid) {
         h("button.btn.small", { disabled: !lb || !lb.ok || !game.game, title: game.files && game.files.length ? "Remove it from your game" : "Write it in your game's archive/pc/mod for a test boot",
           onclick: () => gameInstall(!!(game.files && game.files.length)) }, icon("game"), game.files && game.files.length ? "In my game ✓" : "Test in my game"),
         h("button.btn.small", { disabled: !lb || !lb.ok, onclick: deploy }, icon("deploy"), "Install on a server…"),
-        h("button.btn.primary.small", { disabled: !(st.edits || []).length, onclick: build }, icon("build"), "Build")));
+        h("button.btn.primary.small", { disabled: !(st.edits || []).length && city !== "off", onclick: build }, icon("build"), "Build")));
+  }
+
+  async function setCity(v) {
+    if ((S.state.city || "on") === v) return;
+    if (v === "off" && !(await confirmBox("Turn Night City off",
+      "Where this edit is installed, none of Night City's own sectors stream in: no ground, roads, buildings, interiors or quest content (maps and added objects stay). Build and install it to take effect; remove it to bring the city back.",
+      "Turn it off", "danger"))) return;
+    try {
+      await api.patch(`/projects/${pid}/world`, { city: v });
+      toast(v === "off" ? "Night City off: build and install the edit" : "Night City on: build and install again", "ok");
+      reload();
+    } catch (e) { toast(e.message, "err"); }
   }
 
   // the NCWE imports this edit ships with (the same tab as a map's)
@@ -413,6 +472,8 @@ function worldEditor(root, pid) {
             h("span.sw", { style: { background: COLORS.collision } }),
             h("code", `${c.sector.split("\\").pop().replace(".streamingsector", "")} · node ${c.index}${c.element == null ? "" : " · actor " + c.element}`))),
           h("p.help", "Deleted and moved with the object.")) : h("div.faint", "none found at its place"),
+        info && info.proxies && info.proxies.length ? h("p.help", { style: { marginTop: "8px" } },
+          `Its far view (${info.proxies.length} stand-in mesh${info.proxies.length > 1 ? "es" : ""} in ${info.proxies[0].sector.split("\\").pop().replace(".streamingsector", "")}) goes and moves with it.`) : null,
         info && info.sharers.length ? h("div.banner", { style: { marginTop: "8px" } }, h("span",
           `${info.sharers.length} other object(s) stand exactly here (${info.sharers.slice(0, 3).map((x) => x.label).join(", ")}): the collision is theirs too and stays unless they go as well.`)) : null),
       h("div.group", h("h4", "Change it"),
@@ -659,16 +720,17 @@ function worldEditor(root, pid) {
     // the edits
     for (const e of (S.state && S.state.edits) || []) {
       if (e.role === "collision" && !S.shown.has("collision")) continue;
+      const companion = e.role === "collision" || e.role === "proxy";
       if (e.op === "delete" && e.was && e.was.pos) {
         const [sx, sy] = toScreen(e.was.pos[0], e.was.pos[1]);
-        g.strokeStyle = e.role === "collision" ? "rgba(226,87,77,.45)" : "#e2574d";
+        g.strokeStyle = companion ? "rgba(226,87,77,.45)" : "#e2574d";
         g.lineWidth = 1.5;
         g.beginPath(); g.moveTo(sx - 4, sy - 4); g.lineTo(sx + 4, sy + 4); g.moveTo(sx + 4, sy - 4); g.lineTo(sx - 4, sy + 4); g.stroke();
         g.lineWidth = 1;
       } else if (e.op === "move" && e.was && e.was.pos && e.pos) {
         const [ax, ay] = toScreen(e.was.pos[0], e.was.pos[1]);
         const [bx, by] = toScreen(e.pos[0], e.pos[1]);
-        g.strokeStyle = e.role === "collision" ? "rgba(79,176,114,.4)" : "#4fb072";
+        g.strokeStyle = companion ? "rgba(79,176,114,.4)" : "#4fb072";
         g.setLineDash([3, 3]);
         g.beginPath(); g.moveTo(ax, ay); g.lineTo(bx, by); g.stroke();
         g.setLineDash([]);

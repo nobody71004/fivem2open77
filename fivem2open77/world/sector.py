@@ -239,6 +239,12 @@ def read_sector(doc: dict, path: str, element_cap: int | None = None) -> dict:
             ent["elements"] = {"kind": "actors", "count": len(acts), "items": its[:element_cap] if element_cap else its}
             if acts:
                 center = [sum(p[k] for p, _q, _s, _c in acts) / len(acts) for k in range(3)]
+        elif t == "worldFoliageNode":
+            # the instances are in the sector's compiled foliage (.cfoliage): its Populations slice
+            # [stancesBegin, stancesBegin + stancesCount), positions relative to this node
+            span = node.get("populationSpanInfo") or {}
+            ent["foliage"] = {"res": str(_v(node.get("foliageResource")) or ""),
+                              "begin": int(span.get("stancesBegin") or 0), "count": int(span.get("stancesCount") or 0)}
         ent["center"] = [round(v, 3) for v in center]
         entries.append(ent)
     return {"path": path, "level": root.get("level"), "category": root.get("category"), "nodes": len(items),

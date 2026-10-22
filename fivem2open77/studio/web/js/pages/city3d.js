@@ -20,6 +20,7 @@ import { OutputPass } from "../../vendor/three/OutputPass.js";
 import { api, waitJob } from "../api.js";
 import { h, clear, toast } from "../ui.js";
 import { loadCity, view, TriGrid, BoxSet, insidePoly, polyCentroid } from "./citydata.js";
+import { realCity } from "./cityreal.js";
 import * as S from "./cityshaders.js";
 import { diag, diagGpu } from "../diag.js";
 
@@ -40,8 +41,8 @@ const DISTRICT_COLORS = {
 const BADLANDS = 0x3fb6c9;
 const MODES = { orbit: "Orbit", fly: "Fly", walk: "Walk" };
 const HELP = {
-  orbit: [["drag", "turn"], ["right drag", "pan"], ["wheel", "zoom"], ["WASD", "move"], ["T M I L", "top / map / iso / low"], [", .", "turn"], ["N", "north up"],
-    ["double-click", "go there"], ["2 / 3", "fly / walk"]],
+  orbit: [["drag", "turn"], ["right drag", "pan"], ["wheel / + -", "zoom"], ["WASD", "move"], ["T M I L", "top / map / iso / low"], [", .", "turn"], ["N", "north up"],
+    ["double-click", "go there"], ["G", "go to…"], ["Backspace", "back"], ["Home", "whole city"], ["2 / 3", "fly / walk"]],
   fly: [["click", "mouse look"], ["WASD", "fly"], ["Space / E", "up"], ["C / Q", "down"], ["Shift", "fast"], ["Alt", "slow"], ["wheel", "speed"], ["Esc", "free the mouse"]],
   walk: [["click", "mouse look"], ["WASD", "walk"], ["Shift", "run"], ["Space", "jump (twice: double)"], ["2", "fly from here"], ["Esc", "free the mouse"]],
 };
@@ -55,7 +56,7 @@ const VIEWS = { top: { label: "Top", pitch: 89.4, key: "T" }, map: { label: "Map
 const LENSES = { 75: "Wide lens", 55: "Normal lens", 30: "Long lens", 12: "Flat (no perspective)" };
 
 function loadPrefs() {
-  const d = { buildings: true, roads: true, metro: true, districts: true, labels: true, grid: false, glow: true, holo: false,
+  const d = { buildings: true, real: true, roads: true, metro: true, districts: true, labels: true, grid: false, glow: true, holo: false,
     tint: false, quality: "high", mode: "orbit", speed: 70, look: "game", lens: 55, autotilt: true };
   try { return Object.assign(d, JSON.parse(localStorage.getItem(PREFS_KEY) || "{}")); } catch (_) { return d; }
 }
@@ -220,6 +221,7 @@ function createViewer(root, data, prefs, opts) {
     uTime: { value: 0 }, uFogColor: { value: new THREE.Color(0x04060d) }, uFogDensity: { value: 0.000085 },
     uPulse: { value: new THREE.Vector4(0, 0, -100, 0) }, uCursor: { value: new THREE.Vector3(0, 0, 0) },
     uPxScale: { value: 0.001 }, uLook: { value: prefs.look === "game" ? 1 : 0 },
+    uCut: { value: new THREE.Vector4(0, 0, 0, 0) },
   };
   const mat = (vs, fs, extra = {}, more = {}) => new THREE.ShaderMaterial(Object.assign({
     vertexShader: vs, fragmentShader: fs, uniforms: Object.assign({}, U, extra),
@@ -550,7 +552,8 @@ function createViewer(root, data, prefs, opts) {
   const modeBtns = {};
   const modeBar = h("div.c3-modes", Object.entries(MODES).map(([k, label]) => (modeBtns[k] = h("button", { type: "button", onclick: () => setMode(k) },
     h("span.k", String(Object.keys(MODES).indexOf(k) + 1)), label))));
-  const toggles = [["buildings", "Buildings"], ["roads", "Streets"], ["metro", "NCART"], ["districts", "Districts"], ["labels", "Labels"], ["grid", "Grid"],
+  const toggles = [["buildings", "Buildings"], ["real", "Real city up close (the game's own meshes)"], ["roads", "Streets"], ["metro", "NCART"],
+    ["districts", "Districts"], ["labels", "Labels"], ["grid", "Grid"],
     ["tint", "District colours"], ["holo", "Hologram"], ["glow", "Glow"], ["autotilt", "Tilt as you zoom (like the map screen)"]];
   const prefBoxes = {};
   const lookSel = h("select", Object.entries(LOOKS).map(([v, label]) => h("option", { value: v }, label)));
@@ -570,17 +573,79 @@ function createViewer(root, data, prefs, opts) {
   })()),
   h("button.btn.small.ghost", { onclick: () => { layerMenu.classList.add("hidden"); if (opts.onRebuild) opts.onRebuild(); } }, "Rebuild from the game"));
   const layerBtn = h("button.c3-icon", { type: "button", title: "Layers and look", onclick: (e) => { e.stopPropagation(); layerMenu.classList.toggle("hidden"); } }, "☰");
-  const jumpSel = h("select.c3-jump", h("option", { value: "" }, "Go to…"),
-    h("optgroup", { label: "Districts" }, districts.filter((d) => d.top).map((d) => h("option", { value: "d:" + d.id }, d.label))),
-    h("optgroup", { label: "Sub-districts" }, districts.filter((d) => !d.top).map((d) => h("option", { value: "d:" + d.id }, d.label))));
-  const mapsGroup = h("optgroup", { label: "Maps" });
-  jumpSel.insertBefore(mapsGroup, jumpSel.children[1]);
-  jumpSel.addEventListener("change", () => {
-    const v = jumpSel.value;
-    jumpSel.value = "";
-    if (v.startsWith("d:")) { const d = districts.find((x) => x.id === v.slice(2)); if (d) flyTo(d.center, d.top ? 2400 : 1000); }
-    else if (v.startsWith("m:")) focusItem(v.slice(2), true);
+  // "Go to": districts, landmarks, the maps, the players, or coordinates (x y [z]), as you type
+  const searchIn = h("input.c3-search", { type: "search", placeholder: "Go to…  district, map, player or x y", spellcheck: false,
+    title: "Go to a place (G or /): a district, a landmark, a map, a player, or coordinates like -530 300" });
+  const searchList = h("div.c3-results.hidden");
+  const searchBox = h("div.c3-searchbox", searchIn, searchList);
+  const pretty = (id) => String(id).replace(/_[a-z]$/, "").replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  function places() {
+    const out = [];
+    for (const m of markers.values()) {
+      if (m.item.role === "preset") continue;
+      out.push({ label: m.item.name, sub: (ROLE[m.item.role] || ROLE.other).tag.toLowerCase(), go: () => focusItem(m.item.key, true) });
+    }
+    for (const m of playerMarks.values()) {
+      const p = m.p || {};
+      if (Number.isFinite(p.x)) out.push({ label: p.name || "player", sub: "player", go: () => flyTo([p.x, p.y, p.z || 0], 260, 45) });
+    }
+    for (const d of districts) out.push({ label: d.label, sub: d.top ? "district" : "sub-district", go: () => flyTo(d.center, d.top ? 2400 : 1000) });
+    for (const l of meta.landmarks || []) out.push({ label: pretty(l.id), sub: "landmark", go: () => flyTo(l.center, 420, 40) });
+    return out;
+  }
+  let results = [], sel = 0;
+  function coordsOf(q) {
+    const m = q.match(/^\s*(-?\d+(?:\.\d+)?)\s*[,\s]\s*(-?\d+(?:\.\d+)?)(?:\s*[,\s]\s*(-?\d+(?:\.\d+)?))?\s*$/);
+    if (!m) return null;
+    const x = Number(m[1]), y = Number(m[2]);
+    const z = m[3] != null ? Number(m[3]) : surfaceZ(x, y);
+    return { label: `${x.toFixed(1)}, ${y.toFixed(1)}${m[3] != null ? ", " + z.toFixed(1) : ""}`, sub: "coordinates",
+      go: () => flyTo([x, y, Number.isFinite(z) ? z : 0], 300, 45) };
+  }
+  function search() {
+    const q = searchIn.value.trim().toLowerCase();
+    results = [];
+    if (q) {
+      const c = coordsOf(q);
+      if (c) results.push(c);
+      const all = places();
+      const starts = all.filter((p) => p.label.toLowerCase().startsWith(q));
+      const has = all.filter((p) => !p.label.toLowerCase().startsWith(q) && (p.label.toLowerCase().includes(q) || p.sub.includes(q)));
+      results.push(...starts, ...has);
+    } else if (document.activeElement === searchIn) {
+      results = places().filter((p) => p.sub !== "landmark" && p.sub !== "sub-district");
+    }
+    results = results.slice(0, 12);
+    sel = 0;
+    clear(searchList).append(...results.map((r, i) => h("button", { type: "button", class: i === sel ? "on" : "",
+      onmousedown: (e) => { e.preventDefault(); goTo(r); } }, h("b", r.label), h("span", r.sub))));
+    searchList.classList.toggle("hidden", !results.length);
+  }
+  function goTo(r) {
+    r.go();
+    searchIn.value = "";
+    searchIn.blur();
+    searchList.classList.add("hidden");
     canvas.focus();
+  }
+  searchIn.addEventListener("input", search);
+  searchIn.addEventListener("focus", search);
+  searchIn.addEventListener("blur", () => setTimeout(() => searchList.classList.add("hidden"), 120));
+  searchIn.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (!results.length) return;
+      sel = (sel + (e.key === "ArrowDown" ? 1 : results.length - 1)) % results.length;
+      [...searchList.children].forEach((b, i) => b.classList.toggle("on", i === sel));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      if (results[sel]) goTo(results[sel]);
+    } else if (e.key === "Escape") {
+      searchIn.value = "";
+      searchIn.blur();
+      canvas.focus();
+    }
+    e.stopPropagation();
   });
   // the map screen's angles, turning the view, and the lens
   const viewBtns = {};
@@ -603,13 +668,19 @@ function createViewer(root, data, prefs, opts) {
   const compass = h("canvas.c3-compass", { width: 600, height: 50 });
   const speedEl = h("div.c3-speed");
   const help = h("div.c3-help");
+  const realChip = h("div.c3-real.hidden", h("span.c3-real-t"), h("div.c3-bar", h("i")));
+  const mini = h("canvas.c3-mini", { width: 400, height: 400, title: "The whole city: click to go there, drag to move the view" });
+  compass.style.cursor = "pointer";
+  compass.title = "North up (N)";
+  compass.addEventListener("click", () => northUp());
   const reticle = h("div.c3-reticle", h("i"), h("i"), h("i"), h("i"));
   const lockHint = h("div.c3-lockhint.hidden", "click to look around");
   hud.append(
-    h("div.c3-tl", modeBar, viewBar, h("div.c3-row", layerBtn, jumpSel, pickBtn, focusBtn, fullBtn), layerMenu),
+    h("div.c3-tl", modeBar, viewBar, h("div.c3-row", layerBtn, searchBox, pickBtn, focusBtn, fullBtn), layerMenu),
     h("div.c3-tr", where, compass, coords, speedEl),
     h("div.c3-bl", help),
-    reticle, lockHint);
+    h("div.c3-br", mini),
+    realChip, reticle, lockHint);
   root.append(hud);
   if (opts.upgrade || !CU) {
     hud.append(h("div.c3-upgrade", h("b", "More detail: "), "this 3D city was built by an older Studio, with one box per building. ",
@@ -621,8 +692,22 @@ function createViewer(root, data, prefs, opts) {
   document.addEventListener("click", closeMenu);
   function closeMenu(e) { if (!layerMenu.contains(e.target) && e.target !== layerBtn) layerMenu.classList.add("hidden"); }
 
+  // the game's own meshes around where the view looks (see cityreal.js)
+  scene.fog = new THREE.FogExp2(U.uFogColor.value.getHex(), U.uFogDensity.value);
+  const real = realCity({
+    THREE, api, city, scene, poke,
+    onStatus: (text, frac) => {
+      realChip.classList.toggle("hidden", !text);
+      if (!text) return;
+      realChip.firstChild.textContent = text;
+      realChip.lastChild.style.visibility = frac == null ? "hidden" : "visible";
+      realChip.lastChild.firstChild.style.width = `${Math.round((frac || 0) * 100)}%`;
+    },
+  });
+
   function applyPrefs() {
     const game = prefs.look === "game";
+    real.setEnabled(prefs.real);
     U.uLook.value = game ? 1 : 0;
     tintUniform.value = prefs.tint ? 1 : 0;
     for (const b of blockSets) {
@@ -818,8 +903,36 @@ function createViewer(root, data, prefs, opts) {
     lastOrbitD = sphOf().d;
   }
 
+  // where you were before a jump: Backspace goes back
+  const history = [];
+  function remember() {
+    history.push({ cam: camera.position.clone(), tgt: controls.target.clone() });
+    if (history.length > 40) history.shift();
+  }
+  function back() {
+    const v = history.pop();
+    if (!v) return;
+    if (mode !== "orbit") setMode("orbit");
+    tween = { t0: performance.now(), dur: 1100, fromCam: camera.position.clone(), fromTgt: controls.target.clone(), toCam: v.cam, toTgt: v.tgt, arc: 0 };
+    poke();
+  }
+  // + / - : nearer, farther (in fly mode: faster, slower)
+  function zoomBy(k) {
+    if (mode !== "orbit") { fly.speed = THREE.MathUtils.clamp(fly.speed * (k < 1 ? 1.25 : 0.8), 3, 900); prefs.speed = fly.speed; savePrefs(prefs); poke(); return; }
+    const off = camera.position.clone().sub(controls.target);
+    const d = THREE.MathUtils.clamp(off.length() * k, controls.minDistance, controls.maxDistance);
+    tween = { t0: performance.now(), dur: 380, fromCam: camera.position.clone(), fromTgt: controls.target.clone(),
+      toCam: controls.target.clone().add(off.setLength(d)), toTgt: controls.target.clone(), arc: 0 };
+    poke();
+  }
+  function tilt(deg) {
+    const cur = sphOf();
+    orbitTo(cur.az, THREE.MathUtils.clamp(cur.el + THREE.MathUtils.degToRad(deg), 0.06, 1.5), cur.d, 420);
+  }
+
   // a smooth camera move: to a point (game) at a distance, or the camera itself to a spot
   function flyTo(p, dist = 900, pitchDeg = 52) {
+    remember();
     if (mode !== "orbit") setMode("orbit");
     dist *= lensK(camera.fov);
     const tgt = g2t(p[0], p[1], Number.isFinite(p[2]) ? p[2] : 0);
@@ -958,6 +1071,11 @@ function createViewer(root, data, prefs, opts) {
       if (k === "Digit2") { setMode("fly"); e.preventDefault(); return; }
       if (k === "Digit3") { setMode("walk"); e.preventDefault(); return; }
       if (k === "KeyF" && mode === "orbit") { focusItem(null, true); return; }
+      if ((k === "KeyG" || k === "Slash") && !e.ctrlKey && !e.metaKey) { e.preventDefault(); searchIn.focus(); return; }
+      if (k === "Backspace") { e.preventDefault(); back(); return; }
+      if (k === "Home") { e.preventDefault(); flyTo([cityCenter[0], cityCenter[1], 0], 7000, 55); return; }
+      if (k === "Equal" || k === "NumpadAdd") { e.preventDefault(); zoomBy(0.66); return; }
+      if (k === "Minus" || k === "NumpadSubtract") { e.preventDefault(); zoomBy(1.5); return; }
       if (mode === "orbit" && !e.ctrlKey && !e.metaKey) {
         const vk = { KeyT: "top", KeyM: "map", KeyI: "iso", KeyL: "low" }[k];
         if (vk) { setView(vk); e.preventDefault(); return; }
@@ -976,6 +1094,10 @@ function createViewer(root, data, prefs, opts) {
         const body = k === "ArrowLeft" ? { dx: -step } : k === "ArrowRight" ? { dx: step } : k === "ArrowUp" ? { dy: step } : k === "ArrowDown" ? { dy: -step }
           : k === "PageUp" ? { dz: step } : k === "PageDown" ? { dz: -step } : k === "KeyQ" ? { dyaw: e.shiftKey ? 45 : 5 } : k === "KeyE" ? { dyaw: e.shiftKey ? -45 : -5 } : null;
         if (body) { e.preventDefault(); opts.onNudge(body); return; }
+      }
+      if (mode === "orbit" && !opts.onNudge) {                 // nothing to nudge: the arrows turn and tilt the view
+        const t = { ArrowLeft: () => turn(-15), ArrowRight: () => turn(15), ArrowUp: () => tilt(8), ArrowDown: () => tilt(-8) }[k];
+        if (t) { e.preventDefault(); t(); return; }
       }
       if (k === "Space" && mode === "walk" && !e.repeat) {
         if (walk.onGround) { walk.vz = 6.2; walk.onGround = false; walk.jumps = 1; } else if (walk.jumps > 0) { walk.vz = 6.8; walk.jumps--; }
@@ -1094,6 +1216,16 @@ function createViewer(root, data, prefs, opts) {
     const alt = cz - (Number.isFinite(gz) ? gz : -3);
     const near = mode === "walk" ? 0.1 : THREE.MathUtils.clamp(alt * 0.01, 0.2, 40);
     if (Math.abs(near - camera.near) > camera.near * 0.2) { camera.near = near; camera.updateProjectionMatrix(); }
+    if (mode === "orbit") {
+      const tg = t2g(controls.target);
+      real.tick(now, { x: tg[0], y: tg[1], range: camera.position.distanceTo(controls.target) });
+    } else {
+      real.tick(now, { x: cx, y: cy, range: Math.max(alt, 1) });
+    }
+    const cut = real.cut();
+    if (cut) U.uCut.value.set(cut.x, cut.y, cut.r, 1); else U.uCut.value.w = 0;
+    scene.fog.density = U.uFogDensity.value;
+    scene.fog.color.copy(U.uFogColor.value);
     if (hoverDirty || mode !== "orbit") updateHover();
     updateLabels();
     updateHud(alt, dt);
@@ -1300,7 +1432,7 @@ function createViewer(root, data, prefs, opts) {
     }
   }
 
-  let hudAt = 0;
+  let hudAt = 0, miniAt = 0;
   let lastDistrict = "";
   function updateHud(alt, dt) {
     const now = performance.now();
@@ -1312,6 +1444,7 @@ function createViewer(root, data, prefs, opts) {
       ? (() => { const o = camera.getWorldDirection(fwd); return (Math.atan2(o.x, -o.z) * 180 / Math.PI + 360) % 360; })()
       : ((-fly.yaw * 180 / Math.PI) % 360 + 360) % 360;
     drawCompass(heading);
+    if (now - (miniAt || 0) > 140) { miniAt = now; drawMini(); }
     clear(coords);
     coords.append(
       h("div", h("span", "CAM"), `${x.toFixed(0)}, ${y.toFixed(0)}, ${z.toFixed(0)}`),
@@ -1356,6 +1489,99 @@ function createViewer(root, data, prefs, opts) {
     cg.fillText(`${Math.round(hd).toString().padStart(3, "0")}°`, w - 2, 22);
   }
 
+  // ---------------------------------------------------------------- the minimap: the whole city, where you are
+  const MW = 200;                                            // css pixels (the canvas is twice that)
+  const mb = { x0: cm.min[0] - 500, y0: cm.min[1] - 500, x1: cm.max[0] + 500, y1: cm.max[1] + 500 };
+  const msc = MW / Math.max(mb.x1 - mb.x0, mb.y1 - mb.y0);
+  const mx = (x) => (x - mb.x0) * msc + (MW - (mb.x1 - mb.x0) * msc) / 2;
+  const my = (y) => (mb.y1 - y) * msc + (MW - (mb.y1 - mb.y0) * msc) / 2;
+  const gx = (px) => (px - (MW - (mb.x1 - mb.x0) * msc) / 2) / msc + mb.x0;
+  const gy = (py) => mb.y1 - (py - (MW - (mb.y1 - mb.y0) * msc) / 2) / msc;
+  const miniBg = document.createElement("canvas");
+  miniBg.width = MW * 2; miniBg.height = MW * 2;
+  (() => {
+    const c = miniBg.getContext("2d");
+    c.setTransform(2, 0, 0, 2, 0, 0);
+    c.fillStyle = "rgba(4, 8, 14, 0.86)";
+    c.fillRect(0, 0, MW, MW);
+    for (const d of districts) {
+      if (!d.poly || d.poly.length < 3) continue;
+      const col = DISTRICT_COLORS[d.id] || BADLANDS;
+      const r = (col >> 16) & 255, g = (col >> 8) & 255, b = col & 255;
+      c.beginPath();
+      d.poly.forEach(([x, y], i) => (i ? c.lineTo(mx(x), my(y)) : c.moveTo(mx(x), my(y))));
+      c.closePath();
+      c.fillStyle = d.top ? `rgba(${r},${g},${b},0.16)` : "rgba(158,243,237,0.03)";
+      c.fill();
+      c.strokeStyle = d.top ? `rgba(${r},${g},${b},0.75)` : "rgba(158,243,237,0.18)";
+      c.lineWidth = d.top ? 1 : 0.5;
+      c.stroke();
+    }
+  })();
+  const mctx = mini.getContext("2d");
+  function drawMini() {
+    mctx.setTransform(1, 0, 0, 1, 0, 0);
+    mctx.clearRect(0, 0, mini.width, mini.height);
+    mctx.drawImage(miniBg, 0, 0);
+    mctx.setTransform(2, 0, 0, 2, 0, 0);
+    for (const mk of markers.values()) {
+      if (mk.item.role === "preset" || !mk.item.anchor) continue;
+      const col = (ROLE[mk.item.role] || ROLE.other).color;
+      mctx.fillStyle = `#${col.toString(16).padStart(6, "0")}`;
+      mctx.beginPath(); mctx.arc(mx(mk.item.anchor.x), my(mk.item.anchor.y), 2.6, 0, Math.PI * 2); mctx.fill();
+    }
+    mctx.fillStyle = "#47d4ff";
+    for (const mk of playerMarks.values()) { if (mk.p) { mctx.beginPath(); mctx.arc(mx(mk.p.x), my(mk.p.y), 2, 0, Math.PI * 2); mctx.fill(); } }
+    const [cx, cy] = t2g(camera.position);
+    const [tx, ty] = mode === "orbit" ? t2g(controls.target) : [cx, cy];
+    const dir = camera.getWorldDirection(fwd);
+    const ang = Math.atan2(dir.x, -dir.z);                  // heading: 0 north, clockwise
+    const reach = mode === "orbit" ? Math.max(60, camera.position.distanceTo(controls.target)) : 400;
+    const half = THREE.MathUtils.degToRad(camera.fov * camera.aspect / 2);
+    mctx.fillStyle = "rgba(255, 210, 63, 0.18)";
+    mctx.strokeStyle = "rgba(255, 210, 63, 0.8)";
+    mctx.beginPath();
+    mctx.moveTo(mx(cx), my(cy));
+    mctx.lineTo(mx(cx + Math.sin(ang - half) * reach * 1.4), my(cy + Math.cos(ang - half) * reach * 1.4));
+    mctx.lineTo(mx(cx + Math.sin(ang + half) * reach * 1.4), my(cy + Math.cos(ang + half) * reach * 1.4));
+    mctx.closePath(); mctx.fill(); mctx.stroke();
+    mctx.strokeStyle = "#ffd23f"; mctx.lineWidth = 1.2;
+    mctx.beginPath(); mctx.moveTo(mx(tx) - 5, my(ty)); mctx.lineTo(mx(tx) + 5, my(ty)); mctx.moveTo(mx(tx), my(ty) - 5); mctx.lineTo(mx(tx), my(ty) + 5); mctx.stroke();
+    const rc = real.cut();
+    if (rc) { mctx.strokeStyle = "rgba(111,231,255,0.7)"; mctx.beginPath(); mctx.arc(mx(rc.x), my(rc.y), Math.max(2, rc.r * msc), 0, Math.PI * 2); mctx.stroke(); }
+  }
+  let miniDrag = null;
+  mini.addEventListener("pointerdown", (e) => {
+    e.stopPropagation();
+    const r = mini.getBoundingClientRect();
+    miniDrag = { x: e.clientX, y: e.clientY, moved: 0, r };
+    mini.setPointerCapture(e.pointerId);
+  });
+  mini.addEventListener("pointermove", (e) => {
+    if (!miniDrag || mode !== "orbit") return;
+    const dx = e.clientX - miniDrag.x, dy = e.clientY - miniDrag.y;
+    miniDrag.moved += Math.abs(dx) + Math.abs(dy);
+    miniDrag.x = e.clientX; miniDrag.y = e.clientY;
+    if (miniDrag.moved < 4) return;
+    tween = null;
+    const k = (miniDrag.r.width / MW);
+    const d = g2t(dx / k / msc, -dy / k / msc, 0).sub(g2t(0, 0, 0));
+    controls.target.add(d);
+    camera.position.add(d);
+    controls.update();
+    poke();
+  });
+  mini.addEventListener("pointerup", (e) => {
+    if (!miniDrag) return;
+    const d = miniDrag;
+    miniDrag = null;
+    if (d.moved >= 4) return;
+    const k = d.r.width / MW;
+    const x = gx((e.clientX - d.r.left) / k), y = gy((e.clientY - d.r.top) / k);
+    const z = surfaceZ(x, y);
+    flyTo([x, y, Number.isFinite(z) ? z : 0], mode === "orbit" ? Math.min(2600, camera.position.distanceTo(controls.target) / lensK(camera.fov)) : 600);
+  });
+
   // ---------------------------------------------------------------- the API
   function update(sceneIn) {
     for (const mk of markers.values()) mk.seen = false;
@@ -1368,10 +1594,6 @@ function createViewer(root, data, prefs, opts) {
     for (const [k, mk] of playerMarks) {
       if (!mk.seen) { markerGroup.remove(mk.group); disposeObj(mk.group); mk.label.remove(); playerMarks.delete(k); }
     }
-    // the jump list gets the maps
-    const spots = [...markers.values()].filter((m) => m.item.role !== "preset");
-    clear(mapsGroup).append(...spots.map((m) => h("option", { value: "m:" + m.item.key }, `${m.item.name} (${(ROLE[m.item.role] || ROLE.other).tag.toLowerCase()})`)));
-    mapsGroup.hidden = !spots.length;
     focusKey = sceneIn.focus || null;
     if (focusKey && focusDone !== focusKey && findFocus(focusKey)) {
       focusItem(focusKey, focusDone !== null);
@@ -1398,7 +1620,7 @@ function createViewer(root, data, prefs, opts) {
   };
   root.c3state = () => ({ mode, keys: [...keys], locked, tween: !!tween, cam: t2g(camera.position), vel: fly.vel.toArray(), yaw: fly.yaw, pitch: fly.pitch,
     orbit: (() => { const o = sphOf(); return { az: o.az * 180 / Math.PI, el: o.el * 180 / Math.PI, d: o.d }; })(), fov: camera.fov, look: prefs.look,
-    blocks: blockSets.reduce((a, b) => a + b.mesh.count, 0), blockSets: blockSets.length,
+    blocks: blockSets.reduce((a, b) => a + b.mesh.count, 0), blockSets: blockSets.length, real: real.state(),
     feet: walk.feet.slice(), wv: [walk.vx, walk.vy, walk.vz], onGround: walk.onGround, frames, hover: hover ? { kind: hover.kind, p: hover.p } : null });
 
   function dispose() {
@@ -1415,6 +1637,7 @@ function createViewer(root, data, prefs, opts) {
     document.removeEventListener("click", closeMenu);
     if (locked) document.exitPointerLock();
     controls.dispose();
+    real.dispose();
     scene.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
     for (const b of blockSets) { for (const m of [b.game, b.neon, b.holo]) m.dispose(); if (b.tex) b.tex.dispose(); }
     composer.dispose && composer.dispose();

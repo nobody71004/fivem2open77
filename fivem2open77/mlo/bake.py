@@ -128,11 +128,13 @@ def bake(res_dir: str, anchor: dict, wk, log=print, keep_work=False, out_dir: st
     layout = load_layout(res_dir)
     name = layout["name"]
     # the sector package is one more preload package on top of the map's own (and its NCWE imports):
-    # a map already at Open77's limit cannot take it, so refuse before anything is written
+    # a map already at Open77's limit cannot take it, so refuse before anything is written.  Builds
+    # of fivem2open77 1.7.4 and later always leave that slot free; an older build of a big map may not
     if len(layout.get("packages", [])) + 1 > package.MAX_PACKAGES:
         raise RuntimeError(
-            f"{name} has {len(layout.get('packages', []))} preload packages; moving it adds a sector package "
-            f"and Open77 allows {package.MAX_PACKAGES}: remove an NCWE import and rebuild the map before moving it")
+            f"{name} has {len(layout.get('packages', []))} preload packages and placing it adds a sector package, "
+            f"but Open77 allows {package.MAX_PACKAGES} per resource: rebuild the map with Studio 1.7.4 or later "
+            "(it packs big maps tighter and keeps a package free for the sector) and deploy it again, then place it")
     anchor = normalize_anchor(anchor)
     bake_id = bake_id or new_bake_id(name)
     target = os.path.abspath(out_dir) if out_dir else res_dir

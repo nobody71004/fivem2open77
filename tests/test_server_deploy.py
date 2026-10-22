@@ -39,7 +39,7 @@ case "$cmd" in
     {
       echo "[INF] Server configuration: server.jsonc"
       echo "[INF] Required mods: 4 declared"
-      for r in $(python3 -c "import json,re,sys; t=open(sys.argv[1]).read(); t=re.sub(r'//.*','',t); print(' '.join(json.loads(re.sub(r',(\s*[}\]])', r'\1', t))['resources']['load']))" "$srv/server.jsonc"); do
+      for r in $(python3 -c "import json,re,sys; t=open(sys.argv[1]).read(); t=re.sub(r'(?<!:)//.*','',t); print(' '.join(json.loads(re.sub(r',(\s*[}\]])', r'\1', t))['resources']['load']))" "$srv/server.jsonc"); do
         echo "[INF] [resource:$r] started"
       done
       echo "[INF] listening on UDP 0.0.0.0:7777"
@@ -243,9 +243,138 @@ def test_stage_live_and_restart():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-if __name__ == "__main__":
-    test_stage_live_and_restart()
-    print("ok")
+ACL_JSONC = """{
+  // who may do what on this server
+  "version": 1,
+  "roles": [
+    { "name": "operator", "permissions": ["command.kick", "command.gate.*"] }
+  ],
+  "principals": [
+    {
+      "name": "XEROX710 (owner)",
+      "userId": "11111111-2222-3333-4444-555555555555",
+      "publicKey": "BASE64KEYOWNER==",
+      "permissions": [
+        // admin families
+        "command.admin.*",
+        "command.gate.*"
+      ]
+    },
+    { "name": "friend", "userId": "99999999-0000-0000-0000-000000000000", "roles": ["operator"] },
+    { "name": "helper", "userId": "88888888-0000-0000-0000-000000000000", "publicKey": "K2", "permissions": [] }
+  ]
+}
+"""
+
+
+def _strip(t):
+    import re
+    t = re.sub(r"(?m)^\s*//.*$", "", t)
+    return json.loads(re.sub(r",(\s*[}\]])", r"\1", t))
+
+
+def test_acl_grant():
+    """acl-grant: the right lands in the named principal only (comments, keys, other principals and roles
+    untouched), the server restarts to read it when nobody is online, a second run changes nothing, and
+    the cases it must not guess at change nothing."""
+    tmp = tempfile.mkdtemp(prefix="f2o77-acl-")
+    try:
+        fake = Fake(tmp, with_hub=False)
+        acl = os.path.join(fake.dir, "acl.jsonc")
+        with open(acl, "w") as f:
+            f.write(ACL_JSONC)
+
+        # no accessControl in server.jsonc: no ACL file, nothing to do
+        r = subprocess.run(["bash", SCRIPT, "acl-grant", "command.maps", "open77-test", "--restart"],
+                           env=dict(fake.env, F2O77_ACL_PRINCIPAL="XEROX710"), capture_output=True, text=True)
+        assert r.returncode == 3 and "no accessControl.file" in r.stdout, r.stdout + r.stderr
+        assert open(acl).read() == ACL_JSONC
+
+        cfg = os.path.join(fake.dir, "server.jsonc")
+        with open(cfg) as f:
+            text = f.read()
+        with open(cfg, "w") as f:
+            f.write(text.replace('  "network"', '  "accessControl": { "file": "acl.jsonc" },\n  "network"', 1))
+
+        # several principals and no name: refused, nothing changed
+        r = subprocess.run(["bash", SCRIPT, "acl-grant", "command.maps", "open77-test", "--restart"],
+                           env=fake.env, capture_output=True, text=True)
+        assert r.returncode == 3 and "several principals" in r.stdout, r.stdout + r.stderr
+        assert open(acl).read() == ACL_JSONC
+        # a bad permission never reaches the file
+        r = subprocess.run(["bash", SCRIPT, "acl-grant", "Command Maps", "open77-test"], env=fake.env,
+                           capture_output=True, text=True)
+        assert r.returncode == 2 and "bad permission" in r.stderr
+
+        # the owner, someone online: written, checked, the restart owed
+        with open(os.path.join(fake.dir, "server.log"), "a") as f:
+            f.write("[INF] Connection 7 opened\n")
+        env = dict(fake.env, F2O77_ACL_PRINCIPAL="xerox710")
+        out = subprocess.run(["bash", SCRIPT, "acl-grant", "command.maps", "open77-test", "--restart"], env=env,
+                             capture_output=True, text=True).stdout
+        assert "command.maps added for XEROX710 (owner)" in out and "PENDING restart: connection(s) 7 online" in out, out
+        assert "BASE64KEYOWNER" not in out and "principal friend" in out, out
+        new = open(acl).read()
+        assert "// who may do what on this server" in new and "// admin families" in new
+        a, b = _strip(ACL_JSONC), _strip(new)
+        assert b["principals"][0]["permissions"] == ["command.maps", "command.admin.*", "command.gate.*"], b
+        assert b["principals"][1:] == a["principals"][1:] and b["roles"] == a["roles"]
+        assert {k: v for k, v in b["principals"][0].items() if k != "permissions"} == \
+            {k: v for k, v in a["principals"][0].items() if k != "permissions"}
+        bks = [d for d in os.listdir(os.path.join(tmp, "backups")) if "-f2o77-acl-" in d]
+        assert bks and open(os.path.join(tmp, "backups", bks[0], "acl.jsonc")).read() == ACL_JSONC
+        assert open(os.path.join(fake.fake, "pid")).read().strip() == "100"      # not restarted
+
+        # they left: a second run has nothing to add but makes the restart it owed
+        with open(os.path.join(fake.dir, "server.log"), "a") as f:
+            f.write("[INF] Connection 7 closed\n")
+        out = subprocess.run(["bash", SCRIPT, "acl-grant", "command.maps", "open77-test", "--restart"], env=env,
+                             capture_output=True, text=True).stdout
+        assert "already there" in out and "open77-test: done" in out, out
+        assert open(os.path.join(fake.fake, "pid")).read().strip() == "101"
+        assert open(acl).read() == new
+        # and a third one has nothing to do at all
+        out = subprocess.run(["bash", SCRIPT, "acl-grant", "command.maps", "open77-test", "--restart"], env=env,
+                             capture_output=True, text=True).stdout
+        assert "already there" in out and "restarting" not in out, out
+
+        # a principal without permissions gets the key; one with an empty list gets the right in it;
+        # one whose role already covers it is left alone
+        out = subprocess.run(["bash", SCRIPT, "acl-grant", "command.gate.open", "open77-test"],
+                             env=dict(fake.env, F2O77_ACL_PRINCIPAL="friend"), capture_output=True, text=True).stdout
+        assert "already there" in out and "role operator (command.gate.*)" in out, out
+        out = subprocess.run(["bash", SCRIPT, "acl-grant", "command.maps", "open77-test"],
+                             env=dict(fake.env, F2O77_ACL_PRINCIPAL="friend"), capture_output=True, text=True).stdout
+        assert "command.maps added for friend" in out and "PENDING restart" in out, out
+        out = subprocess.run(["bash", SCRIPT, "acl-grant", "command.maps", "open77-test"],
+                             env=dict(fake.env, F2O77_ACL_PRINCIPAL="HELPER"), capture_output=True, text=True).stdout
+        assert "command.maps added for helper" in out, out
+        c = _strip(open(acl).read())
+        assert c["principals"][1]["permissions"] == ["command.maps"] and c["principals"][1]["roles"] == ["operator"]
+        assert c["principals"][2]["permissions"] == ["command.maps"] and c["principals"][2]["publicKey"] == "K2"
+
+        # the only principal is chosen without a name
+        with open(acl, "w") as f:
+            f.write('{ "version": 1, "principals": [ { "name": "solo", "userId": "u", "permissions": ["command.x"] } ] }\n')
+        out = subprocess.run(["bash", SCRIPT, "acl-grant", "command.maps", "open77-test"], env=fake.env,
+                             capture_output=True, text=True).stdout
+        assert "command.maps added for solo" in out, out
+        assert _strip(open(acl).read())["principals"][0]["permissions"] == ["command.maps", "command.x"]
+
+        # the remote runner (what the Windows .bat sends) passes the name and restarts when nobody is online
+        with open(acl, "w") as f:
+            f.write(ACL_JSONC)
+        os.remove(os.path.join(fake.dir, ".f2o77-acl-restart"))
+        pay = os.path.join(tmp, "pay")
+        os.makedirs(pay)
+        shutil.copy(SCRIPT, os.path.join(pay, "server_deploy.sh"))
+        shutil.copy(os.path.join(HERE, "..", "tools", "deploy", "remote", "acl_grant.sh"), os.path.join(pay, "run.sh"))
+        r = subprocess.run(["bash", os.path.join(pay, "run.sh"), "open77-test"], env=env, capture_output=True, text=True)
+        assert r.returncode == 0 and "command.maps added for XEROX710 (owner)" in r.stdout, r.stdout + r.stderr
+        assert "open77-test: done" in r.stdout and r.stdout.rstrip().endswith('ACL-GRANT-RESULT {"rc": 0}'), r.stdout
+        assert not os.path.exists(os.path.join(fake.dir, ".f2o77-acl-restart"))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def test_a_car_pack_installs_in_one_bundle():
@@ -268,5 +397,45 @@ def test_a_car_pack_installs_in_one_bundle():
         fake.run("deploy", b["path"], "open77-test", "--stage")
         load = fake.load()
         assert all(n in load for n in b["resources"]), load
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    test_stage_live_and_restart()
+    test_acl_grant()
+    print("ok")
+
+
+def test_a_world_edit_installs_reports_and_comes_off_again():
+    if not shutil.which("bash") or not shutil.which("python3"):
+        print("   (skipped: needs bash, python3)")
+        return
+    from fivem2open77.world import package as P
+    tmp = tempfile.mkdtemp(prefix="f2o77-world-deploy-")
+    try:
+        fake = Fake(tmp, with_hub=False)
+        sec = "base\\worlds\\03_night_city\\_compiled\\default\\exterior_-9_4_0_0.streamingsector"
+        r = P.build("world_test_edit", "Test edit", [{"op": "delete", "sector": sec, "index": 261, "type": "worldStaticMeshNode",
+                                                     "expectedNodes": 380}], os.path.join(tmp, "out"), log=lambda *a: None)
+        b = P.bundle([r["path"]], os.path.join(tmp, "world.tgz"))
+        out = fake.run("deploy", b["path"], "open77-test", "--restart")
+        assert "installed world_test_edit 1.0.0 at resources/assets/world/world_test_edit" in out, out
+        assert "resources.load += world_test_edit" in out and "WARNING" not in out, out
+        assert fake.load()[-1] == "world_test_edit"
+        st = json.loads(fake.run("status", "-", "open77-test", "--json"))
+        w = st["worlds"][0]
+        assert w["name"] == "world_test_edit" and w["in_load"] and w["summary"]["deleted"] == 1, st["worlds"]
+        assert "world edit world_test_edit 1.0.0  1 removed" in fake.run("status", "-", "open77-test")
+        # off again: the folder and the load entry go (backed up), the rest of server.jsonc stays as it was
+        before = open(os.path.join(fake.dir, "server.jsonc")).read()
+        out = fake.run("remove", "world_test_edit", "open77-test", "--restart")
+        assert "resources.load -= world_test_edit" in out and "removed world_test_edit" in out, out
+        after = open(os.path.join(fake.dir, "server.jsonc")).read()
+        assert fake.load() == ["freeroam", "archivexl", "tweakxl"] and "// the game mode" in after
+        assert after == before.replace(',\n      "world_test_edit"', ""), (before, after)
+        assert not os.path.exists(os.path.join(fake.dir, "resources", "assets", "world", "world_test_edit"))
+        assert "no world edit nope" in fake.run("remove", "nope", "open77-test", check=False)
+        assert "is not a resource name" in fake.run("remove", "../x", "open77-test", check=False)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

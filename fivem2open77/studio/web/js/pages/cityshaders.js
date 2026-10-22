@@ -21,6 +21,8 @@ uniform vec3 uFogColor;
 uniform float uFogDensity;
 uniform vec4 uPulse;      // x, y (game), start time, strength
 uniform vec3 uCursor;     // x, y (game), on
+uniform vec4 uCut;        // x, y (game), radius, on: where the real city stands in for the map's blocks
+float cutAt(vec2 g) { return uCut.w > 0.5 ? 1.0 - smoothstep(uCut.z - 25.0, uCut.z, distance(g, uCut.xy)) : 0.0; }
 float hash12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
 float hash13(vec3 p3) { p3 = fract(p3 * .1031); p3 += dot(p3, p3.zyx + 31.32); return fract((p3.x + p3.y) * p3.z); }
 // lines every 'step' metres, 'halfw' metres wide (at least a pixel), fading out before they alias
@@ -66,10 +68,14 @@ const FHEAD = /* glsl */ `
 
 // ---------------------------------------------------------------- terrain and water
 export const terrainVS = VHEAD + /* glsl */ `
+uniform vec4 uCut;
 varying vec3 vG; varying vec3 vN; varying float vDist;
 void main() {
   vG = position; vN = normal;
-  vec4 wp = modelMatrix * vec4(position, 1.0);
+  vec3 p = position;
+  // under the real city the map's own ground steps down: the game's ground meshes are the floor there
+  if (uCut.w > 0.5) p.z -= 2.5 * (1.0 - smoothstep(uCut.z, uCut.z + 60.0, distance(p.xy, uCut.xy)));
+  vec4 wp = modelMatrix * vec4(p, 1.0);
   vDist = distance(wp.xyz, cameraPosition);
   gl_Position = projectionMatrix * viewMatrix * wp;
   #include <logdepthbuf_vertex>
@@ -247,6 +253,7 @@ varying vec3 vL; varying vec3 vS; varying vec3 vNl; varying vec3 vG; varying vec
 varying float vDist; varying float vSeed; varying float vId; varying vec3 vTint;
 void main() {
   #include <logdepthbuf_fragment>
+  if (cutAt(vG.xy) > hash12(floor(vG.xy * 0.5))) discard;
   vec3 m = (vL + 0.5) * vS;                  // metres from the box's own corner
   vec3 an = abs(vNl);
   vec2 uv; vec2 sz;
@@ -331,6 +338,7 @@ varying vec3 vL; varying vec3 vS; varying vec3 vNl; varying vec3 vG; varying vec
 varying float vDist; varying float vSeed; varying float vId; varying vec3 vTint; varying float vShade;
 void main() {
   #include <logdepthbuf_fragment>
+  if (cutAt(vG.xy) > hash12(floor(vG.xy * 0.5))) discard;
   vec3 m = (vL + 0.5) * vS;
   vec3 an = abs(vNl);
   vec2 uv; vec2 sz;

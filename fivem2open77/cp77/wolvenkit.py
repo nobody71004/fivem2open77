@@ -159,6 +159,16 @@ class WolvenKit:
         os.makedirs(out_dir, exist_ok=True)
         return self.run(["pack", archive_dir, "-o", out_dir])
 
+    def export_meshes(self, archives, out_dir, regex, game_dir=None):
+        """The game's meshes matching ``regex`` as glTF (geometry only: ``<mesh>.glb``, its
+        ``<mesh>.Material.json`` and the material repository: multilayer setups and templates)."""
+        os.makedirs(out_dir, exist_ok=True)
+        args = ["uncook"] + list(archives) + ["-o", out_dir, "-r", regex, "--mesh-export-type", "MeshOnly"]
+        if game_dir:
+            args += ["-gp", game_dir]
+        # a mesh WolvenKit cannot export (an unusual material) must not stop the rest
+        return self.run(args, timeout=3600, check=False)
+
     def unbundle(self, archives, out_dir, regex):
         os.makedirs(out_dir, exist_ok=True)
         args = ["unbundle"] + list(archives) + ["-o", out_dir, "-r", regex]

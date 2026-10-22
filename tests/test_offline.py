@@ -432,22 +432,188 @@ def test_map_writer_ships_ncwe_imports_within_the_package_budget(tmp_path):
     assert by["archive:fivem2open77_map_cookiemap.archive:name"]["ok"], by
     assert q["ok"], [c for c in q["checks"] if not c["ok"]]
 
-    # ---- the budget: 1 + 7 fits (8 is Open77's limit), 1 + 8 is refused with the overflow named
+    # ---- the budget: Open77 allows 8 packages per resource and placing the map adds its sector
+    # package, so 1 + 6 imports fit (8 once placed) and 1 + 7 is refused with the reason named
     def extras(n):
         return [{"zip": prepared[i % len(prepared)]["zip"], "source": f"import{i}", "archives": [f"import{i}.archive"]}
                 for i in range(n)]
 
-    r8 = writer_mod.MapWriter(_Wk(), _Cache(), str(tmp_path / "out8"), log=quiet).write(model,
-                                                                                        extra_packages=extras(7))
-    assert len(r8["layout"]["packages"]) == package.MAX_PACKAGES
+    r7 = writer_mod.MapWriter(_Wk(), _Cache(), str(tmp_path / "out7"), log=quiet).write(model,
+                                                                                        extra_packages=extras(6))
+    assert len(r7["layout"]["packages"]) == package.MAX_PACKAGES - 1
     try:
-        writer_mod.MapWriter(_Wk(), _Cache(), str(tmp_path / "out9"), log=quiet).write(model,
-                                                                                       extra_packages=extras(8))
-        raise AssertionError("the writer shipped one package over Open77's budget")
+        writer_mod.MapWriter(_Wk(), _Cache(), str(tmp_path / "out8"), log=quiet).write(model,
+                                                                                       extra_packages=extras(7))
+        raise AssertionError("the writer shipped a map that could never be placed")
     except RuntimeError as e:
         msg = str(e)
-        assert "9 packages needed" in msg and f"Open77 allows {package.MAX_PACKAGES}" in msg \
-            and "NCWE asset import" in msg, msg
+        assert "7 NCWE asset import(s) leave no room" in msg and f"Open77 allows {package.MAX_PACKAGES}" in msg \
+            and "sector package" in msg, msg
+
+
+def test_install_game_writes_ncwe_imports_and_takes_them_out_again(tmp_path):
+    import json
+    import zipfile
+    from fivem2open77.mlo import deploy as mlo_deploy
+    game = tmp_path / "game"
+    (game / "archive" / "pc" / "content").mkdir(parents=True)
+    mod = game / "archive" / "pc" / "mod"
+    mod.mkdir()
+    (mod / "unrelated.archive").write_bytes(b"x")
+    res = tmp_path / "cookiemap"
+    (res / "dist").mkdir(parents=True)
+
+    def zipped(name, members):
+        with zipfile.ZipFile(res / "dist" / name, "w") as z:
+            for arc, data in members.items():
+                z.writestr(arc, data)
+
+    zipped("cookiemap.zip", {"archive/pc/mod/fivem2open77_map_cookiemap.archive": b"map"})
+    zipped("cookiemap_ncwe_props_zip.zip", {"archive/pc/mod/props.archive": b"props",
+                                            "archive/pc/mod/props.archive.xl": b"xl"})
+    layout = {"name": "cookiemap", "packages": ["cookiemap.zip", "cookiemap_ncwe_props_zip.zip"],
+              "archives": ["fivem2open77_map_cookiemap.archive", "props.archive"]}
+    (res / "layout.json").write_text(json.dumps(layout))
+    r = mlo_deploy.install_game(str(res), str(game))
+    assert sorted(r["written"]) == ["fivem2open77_map_cookiemap.archive", "props.archive", "props.archive.xl"], r
+    assert r["extra"] == ["props.archive", "props.archive.xl"], r
+    # an import that is not in the layout is not this map's to write
+    zipped("cookiemap_ncwe_props_zip.zip", {"archive/pc/mod/other.archive": b"?"})
+    try:
+        mlo_deploy.install_game(str(res), str(game), previous=r["extra"])
+        raise AssertionError("wrote an archive the map does not declare")
+    except RuntimeError as e:
+        assert "not one of this map's files" in str(e), e
+    # the import dropped from the map: its files leave the game with the next install
+    layout["packages"], layout["archives"] = ["cookiemap.zip"], ["fivem2open77_map_cookiemap.archive"]
+    (res / "layout.json").write_text(json.dumps(layout))
+    r2 = mlo_deploy.install_game(str(res), str(game), previous=r["extra"])
+    assert sorted(r2["removed"]) == ["props.archive", "props.archive.xl"] and r2["unchanged"] == [
+        "fivem2open77_map_cookiemap.archive"], r2
+    r3 = mlo_deploy.install_game(str(res), str(game), uninstall=True)
+    assert r3["removed"] == ["fivem2open77_map_cookiemap.archive"]
+    assert sorted(os.listdir(mod)) == ["unrelated.archive"]
+
+
+# ----------------------------------------------------------------------------- big maps
+def test_depot_hash_is_wolvenkits_archive_hash():
+    assert package.depot_hash("") == 0xCBF29CE484222325 and package.depot_hash("a") == 0xAF63DC4C8601EC8C
+    # a file of a map archive WolvenKit 8.17 packed (Liberty build 2, libertyv_manhat02_3.archive)
+    p = "fivem2open77\\maps\\libertyv_manhat02\\meshes\\chunk_490_501.mesh"
+    assert package.depot_hash(p) == 0xB20BFC1DF070EB7C
+    assert package.depot_hash(p.upper()) == package.depot_hash(p.replace("\\", "/")) == 0xB20BFC1DF070EB7C
+
+
+def _packed_archive(src_root) -> bytes:
+    """What WolvenKit's pack makes of a folder, in miniature: every file one zlib segment, indexed by
+    its depot hash (u32 table offset, u32 table size, u64 crc, then files, segments)."""
+    import zlib
+    blobs = []
+    for dp, _, fns in os.walk(src_root):
+        for fn in sorted(fns):
+            full = os.path.join(dp, fn)
+            depot = os.path.relpath(full, src_root).replace(os.sep, "\\")
+            with open(full, "rb") as f:
+                raw = f.read()
+            blobs.append((package.depot_hash(depot), raw, zlib.compress(raw, 9)))
+    blobs.sort()
+    data, segs, entries = bytearray(), bytearray(), bytearray()
+    for i, (h, raw, z) in enumerate(blobs):
+        segs += struct.pack("<QII", 40 + len(data), len(z), len(raw))
+        entries += struct.pack("<Qq5I20s", h, 0, 0, i, i + 1, 0, 0, b"\0" * 20)
+        data += z
+    table = struct.pack("<III", len(blobs), len(blobs), 0) + bytes(entries) + bytes(segs)
+    index_pos = 40 + len(data)
+    head = struct.pack("<4sIQIQIQ", b"RDAR", 12, index_pos, len(table) + 16, 0, 0, 0)
+    return head + bytes(data) + struct.pack("<IIQ", 8, len(table) + 8, package._crc64_xz(table)) + table
+
+
+def _archive_hashes(data: bytes) -> list:
+    import io
+    files, _segs = package._read_index(io.BytesIO(data))
+    return [h for h, _, _ in files]
+
+
+def _big_map_writer(tmp_path, nparts, raw_bytes):
+    from fivem2open77.mlo import build as build_mod
+    from fivem2open77.mlo import writer as writer_mod
+
+    class _Wk:
+        packs = 0
+
+        def deserialize_tree(self, jdir, adir, work):
+            for dp, _, fns in os.walk(jdir):
+                for fn in fns:
+                    rel = os.path.relpath(os.path.join(dp, fn), jdir)
+                    dst = os.path.join(adir, rel[:-5] if rel.endswith(".json") else rel)
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    with open(dst, "wb") as f:   # big on disk, tiny once packed (like the real CR2W files)
+                        f.write(b"CR2W" + rel.encode("utf-8") + b"\0" * raw_bytes)
+
+        def import_glb(self, rdir, adir):
+            pass
+
+        def pack(self, src_root, pdir):
+            _Wk.packs += 1
+            os.makedirs(pdir, exist_ok=True)
+            with open(os.path.join(pdir, os.path.basename(src_root) + ".archive"), "wb") as f:
+                f.write(_packed_archive(src_root))
+
+    class _Cache:
+        def ensure_paths(self, paths):
+            pass
+
+        def load(self, path):
+            return {"Data": {"RootChunk": {"materialEntries": [], "localMaterialBuffer": {"materials": []},
+                                           "appearances": [{"Data": {"chunkMaterials": [], "name": ""}}]}}}
+
+    parts = {f"chunk_{i:03d}": build_mod.MapPart(name=f"chunk_{i:03d}", kind="object") for i in range(nparts)}
+    model = build_mod.MapModel(name="bigcity", display_name="Big City", anchor=(0, 0, 0), spawn=None, parts=parts,
+                               placements=[build_mod.Placement(part=p, position=(0, 0, 0), yaw=0) for p in parts])
+    logs = []
+    return writer_mod.MapWriter(_Wk(), _Cache(), str(tmp_path / "out"), log=logs.append), model, logs, _Wk
+
+
+def test_a_big_map_is_regrouped_by_packed_size_and_keeps_the_sector_slot(tmp_path, monkeypatch):
+    """A map that needs more than 7 archives by raw size (Liberty City: 8 by raw size, 208 MiB once
+    packed) is measured and regrouped, so it ships in fewer packages and can still be placed."""
+    import zipfile
+    from fivem2open77.mlo import writer as writer_mod
+    monkeypatch.setattr(writer_mod, "ARCHIVE_RAW_BUDGET", 6000)     # ~1 part (mesh + ent) per archive by raw size
+    monkeypatch.setattr(writer_mod, "PACKED_BUDGET", 2000)          # ~12 files per archive once measured
+    w, model, logs, wk = _big_map_writer(tmp_path, nparts=40, raw_bytes=2500)
+    r = w.write(model)
+    pkgs = r["layout"]["packages"]
+    assert 1 < len(pkgs) <= package.MAX_PACKAGES - 1, pkgs
+    assert wk.packs > 2 * len(pkgs), wk.packs                       # packed twice: by raw size, then measured
+    assert any("regrouped into" in m for m in logs), logs
+    res = tmp_path / "out" / "bigcity"
+    seen = []
+    for z in pkgs:
+        assert (res / "dist" / z).stat().st_size <= package.MAX_PACKAGE
+        with zipfile.ZipFile(res / "dist" / z) as zf:
+            (arc,) = zf.namelist()
+            seen += _archive_hashes(zf.read(arc))
+    want = sorted(package.depot_hash(m) for p in r["layout"]["parts"].values() for m in (p["mesh"], p["ent"]))
+    assert sorted(seen) == want                                     # every file shipped, exactly once
+    assert len(pkgs) + 1 <= package.MAX_PACKAGES                    # what bake.py checks before placing it
+    # the map's files are still found by the QA every Studio build runs
+    from fivem2open77.studio import qa
+    q = qa.check_map_build(str(tmp_path / "out"))
+    assert not [c for c in q["checks"] if not c["ok"] and c["level"] == "error"], q["checks"]
+
+
+def test_a_map_too_big_even_packed_is_refused_with_the_way_out(tmp_path, monkeypatch):
+    from fivem2open77.mlo import writer as writer_mod
+    monkeypatch.setattr(writer_mod, "ARCHIVE_RAW_BUDGET", 6000)
+    monkeypatch.setattr(writer_mod, "PACKED_BUDGET", 300)           # ~2 files per archive: 40 parts need 40
+    w, model, _logs, _wk = _big_map_writer(tmp_path, nparts=40, raw_bytes=2500)
+    try:
+        w.write(model)
+        raise AssertionError("the writer shipped more packages than Open77 allows")
+    except RuntimeError as e:
+        msg = str(e)
+        assert "packed" in msg and f"Open77 allows {package.MAX_PACKAGES}" in msg and "smaller area" in msg, msg
 
 
 if __name__ == "__main__":

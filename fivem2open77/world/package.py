@@ -10,7 +10,9 @@
 
 Deletions and changes need no WolvenKit (the ``.xl`` is text).  Added objects do: their sector,
 its streaming block and a host entity per mesh (the map baker's shapes, mlo/world.py) are written
-as JSON and turned into an archive by WolvenKit.
+as JSON and turned into an archive by WolvenKit.  So does Night City off (world/nightcity.py): the
+city's two streaming blocks without its sectors, and its distant lights without lights, in the
+same archive, replacing the game's own.
 """
 from __future__ import annotations
 
@@ -91,27 +93,34 @@ def additions_docs(name: str, adds) -> tuple:
 
 
 def _main_lua(name: str, display: str, summ: dict) -> str:
+    off = summ.get("city") == "off"
+    note = ('print("[{name}] Night City is OFF: none of the city\'s own sectors stream in (only the maps and '
+            'objects of resources)")\n').format(name=name) if off else ""
     return f'''-- {display}: a world edit made with fivem2open77 (Studio > World).  The edit itself is the
 -- ArchiveXL package this resource preloads; players get it with the server's required mods.
-local SUMMARY = {{ sectors = {summ["sectors"]}, deleted = {summ["deleted"]}, elements = {summ["elementsDeleted"]}, changed = {summ["changed"]}, added = {summ["added"]} }}
+local SUMMARY = {{ sectors = {summ["sectors"]}, deleted = {summ["deleted"]}, elements = {summ["elementsDeleted"]}, changed = {summ["changed"]}, added = {summ["added"]}, city = "{summ.get("city", "on")}" }}
 print(("[{name}] world edit: %d object(s) removed, %d part(s) of objects removed, %d changed, %d added, in %d sector(s)")
     :format(SUMMARY.deleted, SUMMARY.elements, SUMMARY.changed, SUMMARY.added, SUMMARY.sectors))
-exports("edits", function() return SUMMARY end)
+{note}exports("edits", function() return SUMMARY end)
 '''
 
 
 def build(name: str, display: str, edits, out_dir: str, wk=None, log=print, version: str = VERSION,
-          extra_packages=()) -> dict:
+          extra_packages=(), city_docs=None) -> dict:
     """Write the resource <out_dir>/<name>; returns {path, zip, xl, summary, sha256, bytes, ncwe}.
 
     extra_packages: NCWE asset imports ([{zip, source, archives}], studio/ncweassets.prepare).  Each
-    is copied into dist/ and preloaded by its own preload_mod line, so the editor's props ship with the edit."""
+    is copied into dist/ and preloaded by its own preload_mod line, so the editor's props ship with the edit.
+    city_docs: Night City off -- [(WolvenKit JSON document, depot path)] of the game files that
+    replace the city's (world/nightcity.documents); packed into the edit's archive."""
     if not NAME_RX.match(name or ""):
         raise E.EditError(f"resource name {name!r}: lower case letters, digits and _ (3-48), starting with a letter")
     edits = E.normalize_all(edits)
     p = E.plan(edits)
     summ = E.summary(edits)
-    if not p["sectors"] and not p["adds"]:
+    city_docs = list(city_docs or ())
+    summ["city"] = "off" if city_docs else "on"
+    if not p["sectors"] and not p["adds"] and not city_docs:
         raise E.EditError("nothing to build: no edits yet")
     extra = list(extra_packages or ())
     if 1 + len(extra) > cpkg.MAX_PACKAGES:
@@ -123,14 +132,21 @@ def build(name: str, display: str, edits, out_dir: str, wk=None, log=print, vers
     try:
         files = {}
         blocks = []
-        if p["adds"]:
+        if p["adds"] or city_docs:
             if wk is None:
-                raise RuntimeError("adding objects needs WolvenKit (Settings > Tools)")
-            docs, block_path = additions_docs(name, p["adds"])
+                raise RuntimeError(("adding objects" if p["adds"] else "turning Night City off") +
+                                   " needs WolvenKit (Settings > Tools)")
+            docs = []
+            if p["adds"]:
+                docs, block_path = additions_docs(name, p["adds"])
+                blocks.append(block_path)
+            docs += city_docs
             jdir, adir = os.path.join(work, "json"), os.path.join(work, "archive")
             for doc, depot_path in docs:
                 save(doc, os.path.join(jdir, depot_path.replace("\\", os.sep) + ".json"))
-            log(f"[{name}] writing {len(p['adds'])} added object(s) with WolvenKit")
+            what = ([f"{len(p['adds'])} added object(s)"] if p["adds"] else []) + (
+                ["Night City's streaming blocks without the city"] if city_docs else [])
+            log(f"[{name}] writing {' and '.join(what)} with WolvenKit")
             wk.deserialize_tree(jdir, adir, work)
             src_root = os.path.join(work, "pack", aname)
             for _, depot_path in docs:
@@ -147,12 +163,12 @@ def build(name: str, display: str, edits, out_dir: str, wk=None, log=print, vers
                 raise RuntimeError(f"WolvenKit did not produce {aname}.archive")
             cpkg.normalize_archive(arch)
             files[f"archive/pc/mod/{aname}.archive"] = arch
-            blocks.append(block_path)
-        xl = os.path.join(work, aname + ".xl")
         text = E.to_xl(edits, display, blocks)
-        with open(xl, "w", encoding="utf-8", newline="\n") as f:
-            f.write(text)
-        files[f"archive/pc/mod/{aname}.xl"] = xl
+        if p["sectors"] or blocks:            # Night City off alone patches nothing: no .xl then
+            xl = os.path.join(work, aname + ".xl")
+            with open(xl, "w", encoding="utf-8", newline="\n") as f:
+                f.write(text)
+            files[f"archive/pc/mod/{aname}.xl"] = xl
         if os.path.isdir(res):
             shutil.rmtree(res)
         os.makedirs(os.path.join(res, "dist"))
@@ -177,7 +193,7 @@ def build(name: str, display: str, edits, out_dir: str, wk=None, log=print, vers
     preloads = "".join(f'preload_mod "{n["file"]}"\n' for n in ncwe)
     with open(os.path.join(res, "open77.lua"), "w", encoding="utf-8", newline="\n") as f:
         f.write(f'''-- {display}: world edit made with fivem2open77.  The edit is the ArchiveXL package below
--- (inert data: an .xl that patches Night City's own sectors{', and the sector of the objects added' if p["adds"] else ''}).
+-- (inert data: an .xl that patches Night City's own sectors{', and the sector of the objects added' if p["adds"] else ''}{'; Night City OFF: the city streaming blocks without its sectors' if city_docs else ''}).
 resource "{name}"
 version "{version}"
 auto_start true
@@ -198,11 +214,16 @@ server_script "server/main.lua"
     with open(os.path.join(res, "README.md"), "w", encoding="utf-8") as f:
         f.write(f"# {display}\n\nA world edit made with fivem2open77: {summ['deleted']} object(s) removed, "
                 f"{summ['elementsDeleted']} part(s) of objects removed, {summ['changed']} changed, {summ['added']} added "
-                f"in {summ['sectors']} sector(s).\n\nInstall it like any resource (resources/assets/world/{name}) and add "
+                f"in {summ['sectors']} sector(s)." + (
+                    "\n\n**Night City is off** while this is installed: none of the city's own sectors (terrain, "
+                    "roads, buildings, interiors, quest content) stream in, only maps and objects other resources "
+                    "add. Remove the resource and restart the server to bring the city back." if city_docs else "") +
+                f"\n\nInstall it like any resource (resources/assets/world/{name}) and add "
                 f"`{name}` to resources.load; it needs the `archivexl` loader resource and requiredMods enabled. Players "
                 "get the change at their next launch after a server restart.\n")
     log(f"[{name}] world edit built: {summ['deleted']} removed, {summ['elementsDeleted']} parts removed, "
-        f"{summ['changed']} changed, {summ['added']} added ({zsize} bytes)")
+        f"{summ['changed']} changed, {summ['added']} added" + ("; Night City off" if city_docs else "") +
+        f" ({zsize} bytes)")
     return {"path": res, "zip": zpath, "xl": text, "summary": summ, "sha256": sha, "bytes": zsize, "ncwe": ncwe}
 
 

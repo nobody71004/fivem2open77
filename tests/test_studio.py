@@ -555,6 +555,103 @@ def test_map_stale_and_rebuild_deploy():
         shutil.rmtree(ws, ignore_errors=True)
 
 
+def _zip_with(path, members):
+    import zipfile
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with zipfile.ZipFile(path, "w") as z:
+        for arc, data in members.items():
+            z.writestr(arc, data)
+
+
+def test_map_game_puts_the_map_at_its_spot_or_says_why_not():
+    """In my game: a build that was never baked gets a sector baked for the spot in Options (the build
+    unchanged); with no spot at all it is refused with the way out instead of installing a map that
+    shows nothing; a build baked at that spot installs its own sector."""
+    from types import SimpleNamespace
+    from fivem2open77.mlo import bake as bake_mod
+    from fivem2open77.studio.projects import ProjectError
+    studio, ws, _ = _agent_studio()
+    real_bake = bake_mod.bake
+    try:
+        pid = "b1b2c3d4e5f6"
+        d = os.path.join(ws, "projects", pid)
+        os.makedirs(d)
+        build = {"n": 1, "ok": True, "kind": "map", "version": "1.0.1", "name": "cookiemap", "baked": None,
+                 "packages": [{"file": "cookiemap.zip"}]}
+        with open(os.path.join(d, "project.json"), "w", encoding="utf-8") as f:
+            json.dump({"id": pid, "kind": "map", "name": "Cookie map", "created": 1.0, "updated": 1.0,
+                       "source": {"file": "m", "original": "m", "hash": "x"}, "map": {"name": "cookiemap"},
+                       "builds": [build], "build_counter": 1}, f)
+        res = os.path.join(d, "builds", "1", "out", "cookiemap")
+        os.makedirs(res)
+        with open(os.path.join(res, "layout.json"), "w", encoding="utf-8") as f:
+            json.dump({"name": "cookiemap", "packages": ["cookiemap.zip"],
+                       "archives": ["fivem2open77_map_cookiemap.archive"]}, f)
+        _zip_with(os.path.join(res, "dist", "cookiemap.zip"),
+                  {"archive/pc/mod/fivem2open77_map_cookiemap.archive": b"RDAR-map"})
+        game = os.path.join(ws, "game")
+        os.makedirs(os.path.join(game, "archive", "pc", "content"))
+        mod = os.path.join(game, "archive", "pc", "mod")
+        os.makedirs(mod)
+        with open(os.path.join(mod, "someone_elses.archive"), "wb") as f:
+            f.write(b"x")
+        studio.toolbox = lambda refresh=False: SimpleNamespace(
+            game_dir=game, wolvenkit="WolvenKit.CLI.dll", wolvenkit_obj=lambda log=None: SimpleNamespace(kill=lambda: None))
+        bakes = []
+
+        def fake_bake(res_dir, anchor, wk, log=print, keep_work=False, out_dir=None, bake_id=None, manager_dir=None):
+            assert out_dir and os.path.abspath(out_dir) != os.path.abspath(res_dir)   # never the build itself
+            bakes.append(bake_mod.normalize_anchor(anchor))
+            _zip_with(os.path.join(out_dir, "dist", "cookiemap_sector.zip"),
+                      {"archive/pc/mod/fivem2open77_map_cookiemap_sector.archive": json.dumps(anchor).encode(),
+                       "archive/pc/mod/fivem2open77_map_cookiemap_sector.archive.xl": b"streaming: {}"})
+            return {"baked": {"anchor": anchor}}
+
+        bake_mod.bake = fake_bake
+        # ---- never baked, no spot: refused, nothing written
+        try:
+            studio.map_game(pid, build=1)
+            raise AssertionError("installed a map that has no spot")
+        except ProjectError as e:
+            assert "no spot yet" in str(e) and "Options" in str(e), e
+        assert sorted(os.listdir(mod)) == ["someone_elses.archive"]
+        # ---- a spot in Options: its sector is baked for the game, the build stays unbaked
+        with open(os.path.join(d, "map.json"), "w", encoding="utf-8") as f:
+            json.dump({"place": {"x": 100.0, "y": -50.0, "z": 12.5, "yaw": 30}}, f)
+        job = studio.map_game(pid, build=1)
+        studio.jobs.wait(job, timeout=30)
+        assert job.state == "done", (job.error, job.lines if hasattr(job, "lines") else None)
+        assert bakes == [{"x": 100.0, "y": -50.0, "z": 12.5, "yaw": 30.0}], bakes
+        assert sorted(os.listdir(mod)) == ["fivem2open77_map_cookiemap.archive", "fivem2open77_map_cookiemap_sector.archive",
+                                           "fivem2open77_map_cookiemap_sector.archive.xl", "someone_elses.archive"]
+        assert job.result["spot"] == bakes[0]
+        p = studio.projects.get(pid)
+        assert p.data["game"]["spot"] == bakes[0] and p.data["game"]["build"] == 1
+        assert studio.map_game_status(pid)["spot"] == bakes[0]
+        assert not os.path.exists(os.path.join(res, "dist", "cookiemap_sector.zip"))     # the build is untouched
+        # ---- a build baked at that very spot installs its own sector, no bake
+        _zip_with(os.path.join(res, "dist", "cookiemap_sector.zip"),
+                  {"archive/pc/mod/fivem2open77_map_cookiemap_sector.archive": b"own sector"})
+        with p.lock:
+            p.data["builds"][0]["baked"] = {"anchor": {"x": 100, "y": -50, "z": 12.5, "yaw": 30}}
+            p.save()
+        job = studio.map_game(pid, build=1)
+        studio.jobs.wait(job, timeout=30)
+        assert job.state == "done", job.error
+        assert len(bakes) == 1, bakes
+        with open(os.path.join(mod, "fivem2open77_map_cookiemap_sector.archive"), "rb") as f:
+            assert f.read() == b"own sector"
+        assert "fivem2open77_map_cookiemap_sector.archive.xl" not in os.listdir(mod)   # the old build's file went
+        # ---- and out again: only this map's files
+        job = studio.map_game(pid, uninstall=True)
+        studio.jobs.wait(job, timeout=30)
+        assert job.state == "done", job.error
+        assert sorted(os.listdir(mod)) == ["someone_elses.archive"]
+    finally:
+        bake_mod.bake = real_bake
+        shutil.rmtree(ws, ignore_errors=True)
+
+
 def test_api_stale_and_rebuild_deploy():
     """What the tabs read: the last build is marked stale, and the one-click endpoint chains the flow."""
     from fivem2open77.studio.mapops import MapOps

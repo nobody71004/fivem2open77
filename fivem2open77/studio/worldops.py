@@ -20,7 +20,10 @@ import time
 import zipfile
 
 from ..world import citymap as citymap_mod
+from ..world import detail as DT
 from ..world import edits as E
+from ..world import geocache as GC
+from ..world import nightcity as NC
 from ..world import ops as O
 from ..world import package as P
 from ..world.index import WorldIndex
@@ -148,6 +151,188 @@ class WorldOps:
 
         return self.jobs.submit("citymap", "Read Night City's 3D map from the game", run, heavy=True)
 
+    # ------------------------------------------------------------------ the real city around a point (Live maps)
+    def _geo_dir(self) -> str:
+        return os.path.join(self.workspace, "world", "geo")
+
+    @staticmethod
+    def geo_id(res: str) -> str:
+        import hashlib
+        return hashlib.sha1(str(res).lower().replace("/", "\\").encode("utf-8")).hexdigest()[:16]
+
+    def geo_file(self, gid: str) -> str:
+        if not re.match(r"^[0-9a-f]{16}$", gid or ""):
+            raise ProjectError("no such mesh")
+        fp = os.path.join(self._geo_dir(), gid + ".geo")
+        if not os.path.isfile(fp):
+            raise ProjectError("this mesh is not read from the game yet")
+        return fp
+
+    def _geo_ready(self, res: str) -> bool:
+        return os.path.isfile(os.path.join(self._geo_dir(), self.geo_id(res) + ".geo"))
+
+    def _geo_failed(self) -> dict:
+        import json as _json
+        try:
+            with open(os.path.join(self._geo_dir(), "failed.json"), encoding="utf-8") as f:
+                return _json.load(f)
+        except (OSError, ValueError):
+            return {}
+
+    def _foliage_file(self, res: str) -> str:
+        return os.path.join(self.workspace, "world", "foliage", self.geo_id(res) + ".json")
+
+    def _foliage_cached(self, res: str):
+        import json as _json
+        try:
+            with open(self._foliage_file(res), encoding="utf-8") as f:
+                return _json.load(f)
+        except (OSError, ValueError):
+            return None
+
+    def city_detail(self, x: float, y: float, near: float | None = None, far: float | None = None) -> dict:
+        """The game's own meshes around a point (world/detail.py), as far as they are read: what the
+        3D city draws.  What is not read yet (sectors, foliage, meshes) is read by a job; ask again."""
+        x, y = float(x), float(y)
+        near = max(40.0, min(600.0, float(near or DT.DEFAULT_NEAR)))
+        far = max(near, min(2500.0, float(far or DT.DEFAULT_FAR)))
+        idx = self.world_index()
+        if not idx.has_index():
+            tb = self.toolbox()
+            return {"state": "index", "can": bool(tb.game_dir and tb.wolvenkit),
+                    "message": "Night City's sector list is not read from the game yet"}
+        paths = DT.sectors_for(idx, x, y, near, far)
+        have = {p: idx._cached(p) for p in paths}
+        missing_sectors = [p for p, sec in have.items() if sec is None]
+        missing_foliage = set()
+
+        def foliage(res):
+            got = self._foliage_cached(res)
+            if got is None:
+                missing_foliage.add(res)
+            return got
+
+        p = DT.plan({k: v for k, v in have.items() if v}, x, y, near, far, foliage=foliage)
+        failed = self._geo_failed()
+        missing_meshes = [r for r in p["meshes"] if not self._geo_ready(r) and r.lower() not in failed]
+        job = None
+        if missing_sectors or missing_foliage or missing_meshes:
+            tb = self.toolbox()
+            if tb.game_dir and tb.wolvenkit:
+                job = self.city_detail_job(x, y, near, far)
+        out = DT.to_json(p, self.geo_id, self._geo_ready)
+        out.update(state="reading" if job else "ready", job=job.id if job else None,
+                   sectors={"total": len(paths), "missing": len(missing_sectors)},
+                   missing={"meshes": len(missing_meshes), "foliage": len(missing_foliage)})
+        return out
+
+    def city_detail_job(self, x, y, near, far):
+        """A job reading what the real city around a point still needs from the game: its sectors,
+        its foliage and its meshes (WolvenKit, in batches; each mesh once, kept in the workspace)."""
+        for j in self.jobs.list():
+            if j["kind"] == "city-detail" and j["state"] in ("queued", "running"):
+                return self.jobs.get(j["id"])
+
+        def run(job):
+            import json as _json
+            from ..world.extract import GameExtractor, regex_for
+            self._wtls().job = job
+            tb = self.toolbox(refresh=True)
+            wk = tb.wolvenkit_obj(log=job.log)
+            job.on_cancel.append(wk.kill)
+            try:
+                idx = self.world_index()
+                paths = DT.sectors_for(idx, x, y, near, far)
+                todo = [p for p in paths if idx._cached(p) is None]
+                for i in range(0, len(todo), 40):
+                    job.check()
+                    job.set_progress(0.05 + 0.25 * i / max(1, len(todo)), f"sectors {i}/{len(todo)}")
+                    idx.sectors(todo[i:i + 40])
+                secs = idx.sectors(paths)
+                # foliage: the populations of each compiled foliage resource the sectors name
+                fol = [r for r in DT.foliage_needed(secs, x, y, near) if self._foliage_cached(r) is None]
+                if fol:
+                    job.set_progress(0.32, f"foliage ({len(fol)})")
+                    got = self._world_extract(fol)
+                    try:
+                        for r in fol:
+                            if got.get(r):
+                                with open(got[r], encoding="utf-8") as f:
+                                    pops = DT.foliage_populations(_json.load(f))
+                                if pops is not None:
+                                    fp = self._foliage_file(r)
+                                    os.makedirs(os.path.dirname(fp), exist_ok=True)
+                                    with open(fp + ".tmp", "w", encoding="utf-8") as f:
+                                        _json.dump(pops, f, separators=(",", ":"))
+                                    os.replace(fp + ".tmp", fp)
+                    finally:
+                        cleanup = getattr(got, "cleanup", None)
+                        if cleanup:
+                            cleanup()
+                p = DT.plan(secs, x, y, near, far, foliage=self._foliage_cached)
+                failed = self._geo_failed()
+                need = [r for r in p["meshes"] if not self._geo_ready(r) and r.lower() not in failed]
+                job.log(f"{p['instances']:,} objects of {len(p['meshes']):,} meshes within {far:.0f} m; "
+                        f"{len(need):,} mesh(es) to read from the game")
+                if need:
+                    ex = GameExtractor(wk, tb.game_dir, os.path.join(self.workspace, "world", "tmp"), log=job.log)
+                    templates = GC.TemplateColors(os.path.join(self._geo_dir(), "templates.json"))
+                    done = 0
+                    for i in range(0, len(need), 120):
+                        job.check()
+                        batch = need[i:i + 120]
+                        job.set_progress(0.35 + 0.65 * i / len(need), f"meshes {i}/{len(need)}")
+                        made, why = self._export_geo(wk, ex, batch, templates, regex_for, tb.game_dir)
+                        done += made
+                        if why:
+                            failed.update(why)
+                            with open(os.path.join(self._geo_dir(), "failed.json") + ".tmp", "w", encoding="utf-8") as f:
+                                _json.dump(failed, f)
+                            os.replace(os.path.join(self._geo_dir(), "failed.json") + ".tmp",
+                                       os.path.join(self._geo_dir(), "failed.json"))
+                    templates.save()
+                    job.log(f"{done:,} mesh(es) read; {len(need) - done:,} could not be")
+                return {"instances": p["instances"], "meshes": len(p["meshes"]), "read": len(need)}
+            finally:
+                self._wtls().job = None
+
+        return self.jobs.submit("city-detail", f"Read the real city around {x:.0f}, {y:.0f}", run, heavy=True,
+                                meta={"x": x, "y": y})
+
+    def _export_geo(self, wk, ex, batch, templates, regex_for, game_dir) -> tuple:
+        """Export a batch of meshes with WolvenKit and keep each as a .geo: (made, {res: reason})."""
+        import uuid
+        work = os.path.join(self.workspace, "world", "tmp", "geo-" + uuid.uuid4().hex[:10])
+        os.makedirs(work, exist_ok=True)
+        made, why = 0, {}
+        try:
+            wk.export_meshes(ex.archives(), work, regex_for(batch), game_dir=game_dir)
+            os.makedirs(self._geo_dir(), exist_ok=True)
+            for res in batch:
+                rel = res.replace("\\", os.sep)
+                stem = os.path.join(work, rel[:-5] if rel.lower().endswith(".mesh") else rel)
+                glb = stem + ".glb"
+                if not os.path.isfile(glb):
+                    flat = os.path.join(work, res[:-5] + ".glb")            # WolvenKit on Linux: one flat name
+                    glb = flat if os.path.isfile(flat) else glb
+                if not os.path.isfile(glb):
+                    why[res.lower()] = "not exported"
+                    continue
+                mj = glb[:-4] + ".Material.json"
+                try:
+                    data = GC.build(res, glb, mj if os.path.isfile(mj) else None, [work], templates)
+                except (GC.GeoError, ValueError, KeyError, IndexError, OSError) as e:
+                    why[res.lower()] = str(e)[:200] or e.__class__.__name__
+                    continue
+                fp = os.path.join(self._geo_dir(), self.geo_id(res) + ".geo")
+                with open(fp + ".tmp", "wb") as f:
+                    f.write(data)
+                os.replace(fp + ".tmp", fp)
+                made += 1
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        return made, why
+
     def citymap_file(self, name: str) -> str:
         if name not in ("citymap.json", "citymap.bin"):
             raise ValueError("no such file")
@@ -168,8 +353,9 @@ class WorldOps:
     def _world(self, pid):
         return self.projects.get(pid).need("world")
 
-    def create_world_project(self, name: str | None = None, display: str | None = None, center=None):
-        display = (display or "").strip()[:80] or "World edit"
+    def create_world_project(self, name: str | None = None, display: str | None = None, center=None, city=None):
+        city = NC.normalize_state(city)
+        display = (display or "").strip()[:80] or ("Night City off" if city == "off" else "World edit")
         if not name:
             base = re.sub(r"[^a-z0-9_]+", "_", display.lower()).strip("_") or "edit"
             name = ("world_" + base)[:40]
@@ -182,7 +368,31 @@ class WorldOps:
         if name in taken:
             raise ValueError(f"a world edit named {name} exists already")
         c = _center(center) if center is not None else None
-        return self.projects.create_world(name, display, c)
+        p = self.projects.create_world(name, display, c)
+        if city == "off":
+            self.world_set(p.id, city="off")
+        return p
+
+    def night_city(self) -> dict:
+        """Whether Night City is off anywhere: the world edits that turn it off, their last build and
+        where they are installed (the World page's switch)."""
+        out = []
+        for s in self.projects.list():
+            if s.get("kind") != "world":
+                continue
+            p = self.projects.get(s["id"])
+            if NC.normalize_state(p.world().get("city")) != "off":
+                continue
+            deps = p.data.get("deployments") or []
+            latest = {}
+            for d in deps:
+                latest[d.get("server")] = d
+            lb = p.latest_build(ok_only=False)
+            out.append({"project": p.id, "name": p.world().get("name"), "display": p.world().get("display"),
+                        "build": {k: lb.get(k) for k in ("n", "ok", "time", "city", "error")} if lb else None,
+                        "game": bool(self.world_game_status(p.id).get("files")),
+                        "servers": sorted(k for k, d in latest.items() if k and not d.get("removed"))})
+        return {"off": out}
 
     def world_state(self, pid) -> dict:
         p = self._world(pid)
@@ -194,6 +404,7 @@ class WorldOps:
             summ, problem = None, str(e)
         running = [j for j in self.jobs.list(project=p.id) if j["state"] in ("queued", "running")]
         return {"project": p.summary(), "name": w.get("name"), "display": w.get("display"), "center": w.get("center"),
+                "city": NC.normalize_state(w.get("city")),
                 "edits": edits, "actions": O.describe(edits), "summary": summ, "problem": problem,
                 "can_undo": bool(w.get("undo")), "can_redo": bool(w.get("redo")), "jobs": running,
                 "builds": list(reversed(p.data.get("builds", []))), "deployments": p.data.get("deployments", [])[-20:],
@@ -205,10 +416,12 @@ class WorldOps:
         reason = ncweassets.build_stale(p, p.latest_build(ok_only=False))
         return {"reason": reason} if reason else None
 
-    def world_set(self, pid, name=None, display=None, center=None) -> dict:
+    def world_set(self, pid, name=None, display=None, center=None, city=None) -> dict:
         p = self._world(pid)
         with p.lock:
             w = p.world()
+            if city is not None:
+                w["city"] = NC.normalize_state(city)
             if name is not None:
                 name = str(name).lower()
                 if not NAME_RX.match(name):
@@ -221,7 +434,8 @@ class WorldOps:
                 p.data["name"] = w["display"]
             if center is not None:
                 w["center"] = _center(center)
-            p.data["world"] = {"name": w.get("name"), "display": w.get("display"), "edits": len(w.get("edits") or [])}
+            p.data["world"] = {"name": w.get("name"), "display": w.get("display"), "edits": len(w.get("edits") or []),
+                               "city": NC.normalize_state(w.get("city"))}
             p.save_world(w)
         return self.world_state(pid)
 
@@ -243,7 +457,7 @@ class WorldOps:
             el = out.get("elements")
             if el and element is None and len(el.get("items") or []) > 200:
                 out["elements"] = dict(el, items=[dict(it, k=k) for k, it in enumerate(el["items"][:200])], truncated=True)
-            return {"object": out, "collision": comp["collision"], "sharers": comp["sharers"]}
+            return {"object": out, "collision": comp["collision"], "sharers": comp["sharers"], "proxies": comp["proxies"]}
         return self._with_index(fn)
 
     # ------------------------------------------------------------------ edits
@@ -381,9 +595,10 @@ class WorldOps:
         p = self._world(pid)
         w = p.world()
         edits = E.normalize_all(w.get("edits") or [])           # checked before queuing
-        if not edits:
-            raise ValueError("nothing to build: no edits yet")
-        needs_wk = any(e["op"] == "add" for e in edits)
+        city = NC.normalize_state(w.get("city"))
+        if not edits and city == "on":
+            raise ValueError("nothing to build: no edits yet (or turn Night City off)")
+        needs_wk = any(e["op"] == "add" for e in edits) or city == "off"
 
         def run(job):
             n = p.next_build()
@@ -400,21 +615,28 @@ class WorldOps:
                 if needs_wk:
                     tb = self.toolbox(refresh=True)
                     if not tb.wolvenkit:
-                        raise RuntimeError("adding objects needs WolvenKit CLI: set it up in Settings > Tools")
+                        raise RuntimeError(("turning Night City off" if city == "off" else "adding objects") +
+                                           " needs WolvenKit CLI: set it up in Settings > Tools")
                     wk = tb.wolvenkit_obj(log=job.log)
                     job.on_cancel.append(wk.kill)
                 job.set_progress(0.1, "checking the sectors against this game")
                 checks = self._world_check(edits, job.log)
                 checks.update(self._pairing_check(edits, job.log))
+                city_docs = None
+                if city == "off":
+                    job.set_progress(0.2, "reading Night City's streaming blocks from the game")
+                    city_docs, report = self._city_off_docs(job)
+                    checks["city"] = {"state": "off", "removed": NC.removed_sectors(report),
+                                      "kept": NC.kept_sectors(report), "blocks": report}
                 prepared, asset_warnings = ncweassets.prepare(p.path("assets", "ncwe"), os.path.join(bdir, "_ncwe"),
                                                               log=job.log)
                 for msg in asset_warnings:
                     job.log("NCWE assets: " + msg)
                 job.set_progress(0.3, "writing the package")
                 r = P.build(w["name"], w.get("display") or w["name"], edits, out, wk=wk, log=job.log, version=version,
-                            extra_packages=prepared)
+                            extra_packages=prepared, city_docs=city_docs)
                 info.update(ok=True, summary=r["summary"], bytes=r["bytes"], sha256=r["sha256"], checks=checks,
-                            resource=w["name"], ncwe=r["ncwe"])
+                            resource=w["name"], ncwe=r["ncwe"], city=city)
                 with open(os.path.join(bdir, "edits.xl"), "w", encoding="utf-8") as f:
                     f.write(r["xl"])
                 return info
@@ -427,6 +649,33 @@ class WorldOps:
                 p.add_build(info)
 
         return self.jobs.submit("build", f"Build {p.data['name']}", run, project=p.id, heavy=needs_wk)
+
+    def _city_off_docs(self, job) -> tuple:
+        """Night City's two streaming blocks (without the city's sectors) and its distant lights
+        (without lights), read from this game: ([(document, depot path)], report)."""
+        import json as _json
+        got = self._world_extract(list(NC.FILES))
+        try:
+            missing = [f for f in NC.FILES if f not in got]
+            if missing:
+                raise RuntimeError("not in this game's archives: " + ", ".join(missing))
+
+            def read(path):
+                with open(got[path], "r", encoding="utf-8") as f:
+                    return _json.load(f)
+            docs, report = NC.documents(read)
+        finally:
+            cleanup = getattr(got, "cleanup", None)
+            if cleanup:
+                cleanup()
+        for path, counts in report.items():
+            gone = sum(c[1] for c in counts.values())
+            kept = ", ".join(f"{c[0]:,} {cat}" for cat, c in sorted(counts.items()) if c[0]) or "nothing"
+            label = "Dogtown (Phantom Liberty)" if "\\ep1\\" in path else "Night City"
+            job.log(f"Night City off: {label}: {gone:,} of {sum(sum(c) for c in counts.values()):,} sectors left out "
+                    f"(kept: {kept})")
+        job.log("Night City off: the distant lights of the skyline are switched off too")
+        return docs, report
 
     def _world_check(self, edits, log) -> dict:
         """Every sector an edit patches still has the node count the edit was made against (a game
@@ -647,9 +896,14 @@ class WorldOps:
             for f in removed:
                 if f not in written:
                     job.log(f"removed {f}")
+            if not uninstall and b.get("city") == "off":
+                job.log("Night City is OFF in this game now -- single player and every server you join -- until you "
+                        "remove this edit (Remove from my game). Start at a map: there is no city to stand on")
+            elif uninstall and (p.data.get("game") or {}).get("city") == "off":
+                job.log("Night City is back in this game")
             with p.lock:
                 p.data["game"] = None if uninstall else {"build": b["n"], "time": time.time(), "dir": tb.game_dir,
-                                                         "archives": written}
+                                                         "archives": written, "city": b.get("city") or "on"}
                 p.save()
             return {"written": written, "removed": [f for f in removed if f not in written], "modDir": mod}
 

@@ -180,12 +180,12 @@ class Studio(MapOps, WorldOps):
             shutil.rmtree(os.path.dirname(src), ignore_errors=True)
 
     def create_project(self, *, path: str | None = None, upload_id: str | None = None, name=None, kind="car",
-                       display=None, center=None):
+                       display=None, center=None, city=None):
         """A car or map project from a FiveM resource.  The project is there at once; its files come
         in a job (copied, a big archive extracted once, a big folder read where it is), which then
         starts the first look (map) or inspection (car): the job's result names that next job."""
         if kind == "world":
-            return self.create_world_project(name=name, display=display, center=center), None
+            return self.create_world_project(name=name, display=display, center=center, city=city), None
         if kind not in ("car", "map"):
             raise ValueError("kind: car, map or world")
         src, uploaded, original = self._source_of(path, upload_id)

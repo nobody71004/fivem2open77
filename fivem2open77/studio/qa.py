@@ -255,6 +255,12 @@ def check_map_build(out_dir: str) -> dict:
     else:
         c.add("baked", False, "not baked yet: players see nothing until it is placed (set a spot in Options, or place "
               "it in game with F9 and Apply)", level="warn")
+        n = len(man["preload_mod"])
+        c.add("placeable", n + 1 <= package.MAX_PACKAGES,
+              f"room for the sector package placing it adds ({n} + 1 of {package.MAX_PACKAGES} packages)" if n + 1 <=
+              package.MAX_PACKAGES else f"it can never be placed: {n} packages and placing adds the sector package, but "
+              f"Open77 allows {package.MAX_PACKAGES} per resource (rebuild it with Studio 1.7.4 or later, or drop an "
+              "NCWE import)")
     for f in ("ghost.txt", "layout.json"):
         c.add(f"file:{f}", os.path.isfile(os.path.join(root, f)), f"{f} is there (bakes on the server need it)")
     mgr = os.path.join(out_dir, "f2o77_maps")
