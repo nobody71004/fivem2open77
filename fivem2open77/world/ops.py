@@ -9,6 +9,10 @@ around.  Terrain is the same with a ``worldTerrainCollisionNode`` at the terrain
 Deleting or moving an object deletes or moves those too; otherwise the player would walk into an
 invisible wall where the object was (or through the object where it went).
 
+An entity (a sign, a lamp, a device) has a stand-in for far views: a ``worldEntityProxyMeshNode`` in a
+coarser sector, exactly at the entity's place, shown until the entity itself is loaded.  It goes and
+moves with its entity too, or the sign would still be seen from down the street.
+
 Every operation returns the edits of one action (one ``group``), ready for the edit list.
 """
 from __future__ import annotations
@@ -22,6 +26,7 @@ from . import sector as S
 MESH_TYPES = ("worldStaticMeshNode", "worldMeshNode", "worldBendedMeshNode", "worldInstancedMeshNode",
               "worldInstancedDestructibleMeshNode", "worldTerrainMeshNode", "worldStaticOccluderMeshNode",
               "worldFoliageNode", "worldPhysicalDestructionNode", "worldRoadProxyMeshNode")
+PROXY_TYPES = ("worldEntityProxyMeshNode", "worldDestructibleEntityProxyMeshNode")
 POS_TOL = 0.02          # metres
 ROT_TOL = 0.0005        # 1 - |cos(half angle)|
 
@@ -52,23 +57,36 @@ def _label(e: dict, element=None) -> str:
     return f"{s} #{element}" if element is not None else s
 
 
+def is_entity(node_type: str) -> bool:
+    return node_type == "worldDeviceNode" or (node_type.endswith("EntityNode") and "Proxy" not in node_type)
+
+
 def companions(index, sec: dict, e: dict, element=None) -> dict:
     """What stands exactly where an object stands: {collision: [the collision that belongs to it:
     actors of collision nodes, or for terrain the terrain collision nodes], sharers: [other meshes at
-    the same place and rotation]}.  Each item: {sector, index, type, expectedNodes, element?,
-    expectedElements?, pos, rot, label?}.
+    the same place and rotation], proxies: [an entity's far-view stand-ins]}.  Each item: {sector,
+    index, type, expectedNodes, element?, expectedElements?, pos, rot, label?}.
 
     Collision found at a place several meshes share cannot be told apart: it belongs to all of them."""
-    if e["type"] not in MESH_TYPES:
-        return {"collision": [], "sharers": []}
+    none = {"collision": [], "sharers": [], "proxies": []}
+    entity = is_entity(e["type"])
+    if (e["type"] not in MESH_TYPES and not entity) or (entity and element is not None):
+        return none
     pos, rot = _point(e, element)
     rows = index.sectors_at(pos[0], pos[1], 2.0, categories={"Exterior", "Interior"})
     secs = index.sectors([r[0] for r in rows])
-    col, share = [], []
+    col, share, prox = [], [], []
 
     def here(p, q):
         return (abs(p[0] - pos[0]) <= POS_TOL and abs(p[1] - pos[1]) <= POS_TOL and abs(p[2] - pos[2]) <= POS_TOL
                 and S.same_rotation(q or [0, 0, 0, 1], rot, ROT_TOL))
+
+    if entity:
+        for s in secs.values():
+            for c in s["entries"]:
+                if c["type"] in PROXY_TYPES and here(c["pos"], c["rot"]):
+                    prox.append(dict(_ref(s, c), pos=c["pos"], rot=c["rot"], label=_label(c)))
+        return dict(none, proxies=prox)
 
     for s in secs.values():
         for c in s["entries"]:
@@ -93,7 +111,7 @@ def companions(index, sec: dict, e: dict, element=None) -> dict:
                                           rot=it.get("rot"), label=_label(c, k)))
             elif not (s["path"] == sec["path"] and c["i"] == e["i"] and element is None) and here(c["pos"], c["rot"]):
                 share.append(dict(_ref(s, c), pos=c["pos"], rot=c["rot"], label=_label(c)))
-    return {"collision": col, "sharers": share}
+    return {"collision": col, "sharers": share, "proxies": prox}
 
 
 def collision_of(index, sec: dict, e: dict, element=None) -> list:
@@ -125,6 +143,7 @@ def delete(index, sector: str, i: int, element=None, with_collision=True, notes=
         out.append(dict(_ref(sec, e), op="delete", group=g, role="object", label=_label(e), kind=e["kind"], was=_was(e)))
     if with_collision:
         comp = companions(index, sec, e, element)
+        out += _proxy_deletions(comp, g, _label(e, element))
         if comp["sharers"] and comp["collision"]:
             if notes is not None:
                 notes.append(f"{_label(e, element)}: its collision stays: {len(comp['sharers'])} other object(s) stand at "
@@ -138,6 +157,12 @@ def delete(index, sector: str, i: int, element=None, with_collision=True, notes=
             out.append(dict(d, op="delete", group=g, role="collision", label=f"collision of {_label(e, element)}",
                             kind="collision", was={"pos": c["pos"], "rot": c["rot"]}))
     return out
+
+
+def _proxy_deletions(comp, group, label) -> list:
+    return [dict({k: p[k] for k in ("sector", "index", "type", "expectedNodes")}, op="delete", group=group, role="proxy",
+                 label=f"far view of {label}", kind="other", was={"pos": p["pos"], "rot": p["rot"]})
+            for p in comp.get("proxies") or []]
 
 
 def delete_many(index, targets, with_collision=True, notes=None) -> list:
@@ -158,6 +183,11 @@ def delete_many(index, targets, with_collision=True, notes=None) -> list:
         if not with_collision:
             continue
         comp = companions(index, sec, e, element)
+        for d in _proxy_deletions(comp, g, _label(e, element)):
+            key = (d["sector"].lower(), d["index"], None)
+            if key not in seen and key not in gone:
+                seen.add(key)
+                out.append(d)
         left = [x for x in comp["sharers"] if (x["sector"].lower(), x["index"], x.get("element")) not in gone]
         if left and comp["collision"]:
             if notes is not None:
@@ -218,6 +248,11 @@ def move(index, sector: str, i: int, element=None, pos=None, yaw=None, rot=None,
     if with_collision:
         dq = S.quat_mul(q1, S.quat_inv(q0))                  # the turn the object makes
         comp = companions(index, sec, e, element)
+        for p in comp["proxies"]:                            # an entity's far view stands where it stands
+            d = {k: p[k] for k in ("sector", "index", "type", "expectedNodes")}
+            out.append(dict(d, op="move", group=g, role="proxy", label=f"far view of {_label(e, element)}", kind="other",
+                            was={"pos": p["pos"], "rot": p["rot"]}, pos=[round(v, 4) for v in p1],
+                            rot=[round(v, 7) for v in S.quat_norm(S.quat_mul(dq, p["rot"] or [0, 0, 0, 1]))]))
         if comp["sharers"] and comp["collision"]:
             if notes is not None:
                 notes.append(f"{_label(e, element)}: its collision stays where it is: {len(comp['sharers'])} other "
@@ -278,14 +313,17 @@ def describe(edits) -> list:
         groups.setdefault(e.get("group") or e.get("id"), []).append(e)
     out = []
     for g, items in groups.items():
-        obj = next((x for x in items if x.get("role") != "collision"), items[0])
+        obj = next((x for x in items if x.get("role") not in ("collision", "proxy")), items[0])
         cols = sum(1 for x in items if x.get("role") == "collision")
+        proxies = sum(1 for x in items if x.get("role") == "proxy")
         verb = {"delete": "delete", "move": "move", "replace": "replace", "add": "add"}[obj["op"]]
         text = f"{verb} {obj.get('label') or obj.get('res') or obj.get('type')}"
         if obj["op"] == "move" and obj.get("pos"):
             text += f" to {', '.join(f'{v:.2f}' for v in obj['pos'])}"
         if cols:
             text += f" (+ its collision: {cols} piece{'s' if cols > 1 else ''})"
+        if proxies:
+            text += " (+ its far view)"
         out.append({"group": g, "text": text, "edits": [x.get("id") for x in items], "op": obj["op"]})
     return out
 

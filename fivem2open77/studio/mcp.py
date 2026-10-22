@@ -278,7 +278,7 @@ class McpHub:
         from .agent.maptools import MAP_TOOLS
         from .agent.worldtools import WORLD_TOOLS
         self.project_tools = set(CAR_TOOLS) | set(MAP_TOOLS) | (set(WORLD_TOOLS) - {"new_world_edit", "world_prepare", "world_find",
-                                                                                 "world_object"})
+                                                                                 "world_object", "night_city"})
         self.last_activity = 0.0
         try:
             ensure_token(studio.workspace)      # made by the Studio at its start, before any bridge reads it

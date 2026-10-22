@@ -467,7 +467,8 @@ def api_projects(h, q):
 def api_project_create(h, q):
     b = h.body_json()
     p, job = h.studio.create_project(path=b.get("path"), upload_id=b.get("upload_id"), name=b.get("name"),
-                                     kind=b.get("kind") or "car", display=b.get("display"), center=b.get("center"))
+                                     kind=b.get("kind") or "car", display=b.get("display"), center=b.get("center"),
+                                     city=b.get("city"))
     h.json({"project": p.summary(), "job": job.summary() if job is not None and hasattr(job, "summary") else None})
 
 
@@ -678,6 +679,20 @@ def api_citymap_file(h, q, name):
     h.file(h.studio.citymap_file(name), ctype, immutable=bool(q.get("k")))
 
 
+@route("GET", r"/api/city/detail")
+def api_city_detail(h, q):
+    cam = None
+    if all(k in q for k in ("cx", "cy", "cz")):
+        cam = (_num(q, "cx", 0.0), _num(q, "cy", 0.0), _num(q, "cz", 0.0))
+    h.json(h.studio.city_detail(_num(q, "x", 0.0), _num(q, "y", 0.0), near=_num(q, "near"), far=_num(q, "far"),
+                                cam=cam, k=_num(q, "k"), reach=_num(q, "reach")))
+
+
+@route("GET", r"/api/city/geo/([0-9a-f]{16})")
+def api_city_geo(h, q, gid):
+    h.file(h.studio.geo_file(gid), "application/octet-stream", immutable=True)
+
+
 # ---------------------------------------------------------------- world edits
 @route("GET", r"/api/world/status")
 def api_world_status(h, q):
@@ -706,6 +721,11 @@ def api_world_query(h, q):
                                 kinds=kinds or None, text=q.get("text") or None, limit=int(_num(q, "limit", 400))))
 
 
+@route("GET", r"/api/world/city")
+def api_world_city(h, q):
+    h.json(h.studio.night_city())
+
+
 @route("GET", r"/api/world/object")
 def api_world_object(h, q):
     el = q.get("element")
@@ -720,7 +740,8 @@ def api_world_state(h, q, pid):
 @route("PATCH", r"/api/projects/([a-f0-9]{12})/world")
 def api_world_patch(h, q, pid):
     b = h.body_json()
-    h.json(h.studio.world_set(pid, name=b.get("name"), display=b.get("display"), center=b.get("center")))
+    h.json(h.studio.world_set(pid, name=b.get("name"), display=b.get("display"), center=b.get("center"),
+                              city=b.get("city")))
 
 
 @route("POST", r"/api/projects/([a-f0-9]{12})/world/edits")

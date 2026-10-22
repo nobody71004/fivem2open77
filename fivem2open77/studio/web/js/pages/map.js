@@ -850,6 +850,23 @@ function gameTab(root, ctx) {
   const builds = (ctx.state.builds || []).filter((b) => b.ok);
   const out = h("div");
   const buildSel = h("select", builds.map((b) => h("option", { value: b.n }, `#${b.n} - ${fmtTime(b.time)}${b.baked ? "" : " (not baked)"}`)));
+  // where it will stand: the spot in Options (baked for it on install when the build was baked
+  // elsewhere or not at all), else where the build was baked; neither -> nothing would show
+  const spot = (ctx.state.normalized || {}).place || null;
+  const same = (a, b) => a && b && ["x", "y", "z"].every((k) => Math.abs(Number(a[k]) - Number(b[k])) < 0.01)
+    && Math.abs(Number(a.yaw || 0) - Number(b.yaw || 0)) < 0.01;
+  const where = h("div.help", { style: { marginTop: "8px" } });
+  const installBtn = h("button.btn.primary", { onclick: () => run({ build: Number(buildSel.value) }) }, "Install in my game");
+  function showWhere() {
+    const b = builds.find((x) => x.n === Number(buildSel.value));
+    const baked = b && b.baked ? b.baked.anchor : null;
+    installBtn.disabled = !g.game || (!spot && !baked);
+    clear(where).append(spot ? h("span", "It will stand at ", h("b", fmtSpot(spot)), " (the spot in Options",
+      same(baked, spot) ? ")." : "; its sector is baked for that spot when you install, the build stays as it is).")
+      : baked ? h("span", "It will stand where build #", String(b.n), " is baked: ", h("b", fmtSpot(baked)), ".")
+        : h("span.warn", "Not placed: this build was never baked and Options has no spot, so nothing of it would show in your game. Set its spot first."));
+  }
+  buildSel.onchange = showWhere;
   async function run(body) {
     try {
       const job = await api.post(`/projects/${ctx.pid}/map/game`, body);
@@ -865,16 +882,20 @@ function gameTab(root, ctx) {
       h("p.help", "Writes the build's packages into your game's archive\\pc\\mod (only this map's fivem2open77_map_ files), for a direct test boot of the game. ",
         "Players of a server get the map from the server instead: there the packages download with the launcher."),
       g.game ? h("div.kv", h("span", "game"), h("code", g.game), h("span", "installed"),
-        h("span", g.files && g.files.length ? `${g.files.length} file(s)${g.build ? ` from build #${g.build}` : ""}` : "nothing of this map")) :
+        h("span", g.files && g.files.length ? `${g.files.length} file(s)${g.build ? ` from build #${g.build}` : ""}${g.spot ? `, standing at ${fmtSpot(g.spot)}` : ""}` : "nothing of this map")) :
         h("div.banner", h("span", "Cyberpunk 2077 was not found."), h("div.grow"), h("a.btn.small", { href: "#/settings/tools" }, "Settings")),
-      builds.length ? h("div.row", { style: { marginTop: "12px" } }, h("span.muted", "Build"), buildSel,
-        h("button.btn.primary", { disabled: !g.game, onclick: () => run({ build: Number(buildSel.value) }) }, "Install in my game"),
+      !spot && !builds.some((b) => b.baked) && builds.length ? h("div.banner", { style: { marginTop: "10px" } },
+        h("span", "This map has no spot yet: set where in Night City it stands, then install it."), h("div.grow"),
+        h("a.btn.small", { href: `#/map/${ctx.pid}/options` }, "Set the spot")) : null,
+      builds.length ? h("div.row", { style: { marginTop: "12px" } }, h("span.muted", "Build"), buildSel, installBtn,
         g.files && g.files.length ? h("button.btn.danger", { onclick: () => run({ uninstall: true }) }, "Remove from my game") : null)
         : h("p.muted", "Build the map first."),
+      builds.length ? where : null,
       g.files && g.files.length ? h("div.help", { style: { marginTop: "10px" } }, g.files.join(", ")) : null),
     h("div.card", h("h3", "What you see in game"),
-      h("div.help", "The map stands at the spot it was baked at. Doors and gates open as you walk up to them; open windows have glass. ",
+      h("div.help", "The map stands at its spot. Doors and gates open as you walk up to them; open windows have glass. ",
         "Moving it needs the map manager on a server (F9 in game, or Placement here), which rebuilds it for the new spot."))), out);
+  if (builds.length) showWhere();
 }
 
 // ------------------------------------------------------------------ servers

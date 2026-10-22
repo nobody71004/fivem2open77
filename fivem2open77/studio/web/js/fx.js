@@ -349,7 +349,7 @@ function drawCursor(now, t, full) {
   // shockwaves
   for (let i = st.waves.length - 1; i >= 0; i--) {
     const w = st.waves[i];
-    const k = (now - w.t) / 650;
+    const k = Math.max(0, (now - w.t) / 650);          // (a frame's time can be a little before the click's)
     if (k >= 1) { st.waves.splice(i, 1); continue; }
     const e = 1 - Math.pow(1 - k, 3);
     g.strokeStyle = `rgba(${A},${(1 - k).toFixed(3)})`;

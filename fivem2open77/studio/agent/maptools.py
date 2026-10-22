@@ -303,8 +303,9 @@ def t_game(ctx, args):
     p = _map_project(ctx)
     job = ctx.studio.map_game(p.id, build=args.get("build"), uninstall=bool(args.get("uninstall")))
     ctx.session.attach_job(job)
-    r = ctx.wait_job(job, 600)
-    return text({"written": len(r["written"]), "unchanged": len(r["unchanged"]), "removed": len(r["removed"]), "dir": r["modDir"]})
+    r = ctx.wait_job(job, 900)
+    return text({"written": len(r["written"]), "unchanged": len(r["unchanged"]), "removed": len(r["removed"]), "dir": r["modDir"],
+                 "spot": r.get("spot"), "imports": r.get("extra") or []})
 
 
 def t_deploy_map(ctx, args):
@@ -324,7 +325,10 @@ def t_deploy_map(ctx, args):
     res = ctx.wait_job(job, 3600)
     return text({"servers": [{"name": x["name"], "exit": x["code"], "result": x["result"],
                               "last_lines": [l for l in x["lines"] if l.strip()][-12:]} for x in res["servers"]],
-                 "baker_upload": res["toolkit"]})
+                 "baker_upload": res["toolkit"],
+                 **({"not_placed_on": res["unplaced"], "note": "players see nothing of it there until it has a spot: "
+                     "set_map_spot / place it in game, or set the place option and deploy again"}
+                    if res.get("unplaced") else {})})
 
 
 # ----------------------------------------------------------------------------- live
@@ -548,7 +552,9 @@ def registry() -> dict:
              "map-local metres, doors, glass, packages, QA checks, warnings.",
              _obj({"build": {"type": "integer"}}), "read", t_build_report),
         Tool("install_map_in_game", "Write (or uninstall=true: remove) a build's packages in the local game's archive/pc/mod for "
-             "a direct test boot. Only this map's files are touched.",
+             "a direct test boot. Only this map's files are touched. The map stands at the spot in its options (its sector "
+             "is baked for that spot here when the build was baked elsewhere or not at all), else where the build was "
+             "baked; with neither it is refused (set_map_options place first). Returns the spot it stands at.",
              _obj({"build": {"type": "integer"}, "uninstall": {"type": "boolean"}}), "change", t_game),
         Tool("deploy_map", "Install the latest (or given) map build on a server with the map manager and the map baker. "
              "keep_placement (default true): a map already there is rebuilt at the spot it was moved to. restart (default "

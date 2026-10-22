@@ -167,34 +167,47 @@ def installed(game_dir: str, name: str) -> list:
                   or f.startswith(prefix + "_"))
 
 
-def install_game(map_dir: str, game_dir: str, uninstall: bool = False) -> dict:
+def install_game(map_dir: str, game_dir: str, uninstall: bool = False, sector: str | None = None,
+                 previous=()) -> dict:
     """Write (or remove) the map's packages in a game folder.  Files of an older build of the same
-    map that the current packages no longer contain are removed."""
+    map that the current packages no longer contain are removed.
+
+    ``sector``: a sector package to use instead of the build's own (baked elsewhere for the spot the
+    map should stand at).  NCWE asset imports ship their own archive names: those are written too,
+    reported as ``extra``, and removed again when ``previous`` (an earlier result's ``extra``) names
+    them and the new packages do not."""
     map_dir = os.path.abspath(map_dir)
     with open(os.path.join(map_dir, "layout.json"), encoding="utf-8") as f:
         layout = json.load(f)
     name = layout["name"]
+    prefix = f"fivem2open77_map_{name}"
     mod_dir = _game_mod_dir(game_dir)
-    before = installed(game_dir, name)
+    before = installed(game_dir, name) + sorted(
+        b for b in set(previous or ()) if not b.startswith(prefix) and os.path.isfile(os.path.join(mod_dir, b)))
+    imported = set(a for a in layout.get("archives", []) if not a.startswith(prefix))
     wanted = {}
     if not uninstall:
-        packages = list(layout.get("packages", []))
-        if os.path.isfile(os.path.join(map_dir, "dist", f"{name}_sector.zip")):
-            packages.append(f"{name}_sector.zip")
-        for zname in packages:
-            with zipfile.ZipFile(os.path.join(map_dir, "dist", zname)) as z:
+        sources = [(os.path.join(map_dir, "dist", z), z) for z in layout.get("packages", [])]
+        own = os.path.join(map_dir, "dist", f"{name}_sector.zip")
+        if sector:
+            sources.append((sector, f"{name}_sector.zip"))
+        elif os.path.isfile(own):
+            sources.append((own, f"{name}_sector.zip"))
+        for zpath, zname in sources:
+            with zipfile.ZipFile(zpath) as z:
                 for info in z.infolist():
                     if info.is_dir():
                         continue
                     if not info.filename.startswith("archive/pc/mod/"):
                         raise RuntimeError(f"{zname}: unexpected entry {info.filename}")
                     base = info.filename.split("/")[-1]
-                    if not base.startswith(f"fivem2open77_map_{name}"):
+                    if not base.startswith(prefix) and not (zname.startswith(f"{name}_ncwe_") and (
+                            base in imported or base.endswith(".xl") and base[:-3] in imported)):
                         raise RuntimeError(f"{zname}: {base} is not one of this map's files")
-                    wanted[base] = (zname, info.filename)
+                    wanted[base] = (zpath, info.filename)
     written, unchanged, removed = [], [], []
-    for base, (zname, arc) in sorted(wanted.items()):
-        with zipfile.ZipFile(os.path.join(map_dir, "dist", zname)) as z:
+    for base, (zpath, arc) in sorted(wanted.items()):
+        with zipfile.ZipFile(zpath) as z:
             data = z.read(arc)
         dst = os.path.join(mod_dir, base)
         if os.path.isfile(dst) and os.path.getsize(dst) == len(data):
@@ -211,4 +224,5 @@ def install_game(map_dir: str, game_dir: str, uninstall: bool = False) -> dict:
         if base not in wanted:
             os.remove(os.path.join(mod_dir, base))
             removed.append(base)
-    return {"map": name, "modDir": mod_dir, "written": written, "unchanged": unchanged, "removed": removed}
+    return {"map": name, "modDir": mod_dir, "written": written, "unchanged": unchanged, "removed": removed,
+            "extra": sorted(b for b in wanted if not b.startswith(prefix))}

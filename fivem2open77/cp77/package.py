@@ -402,6 +402,48 @@ def _crc64_xz(data: bytes) -> int:
 FIXED_FILETIME = 133801920000000000   # 2025-01-01T00:00:00Z
 
 
+def depot_hash(path: str) -> int:
+    """The 64-bit FNV-1a hash an archive indexes a file by: its depot path, lower case, backslashes
+    (what WolvenKit writes; checked against packed map archives)."""
+    h = 0xCBF29CE484222325
+    for b in str(path).replace("/", "\\").lower().encode("utf-8"):
+        h = ((h ^ b) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return h
+
+
+def _read_index(f) -> tuple:
+    """(file entries [(hash, first segment, end segment)], segments [(offset, packed, size)]) of an
+    open archive.  Index layout: u32 table offset, u32 table size, u64 crc, then the table: u32
+    files, u32 segments, u32 dependencies, 56-byte file entries, 16-byte segments."""
+    import struct
+    head = f.read(40)
+    magic, _ver, index_pos, _index_size = struct.unpack_from("<4sIQI", head, 0)
+    if magic != b"RDAR":
+        raise ValueError("not a Cyberpunk archive")
+    f.seek(index_pos)
+    _table_off, table_size, _crc = struct.unpack("<IIQ", f.read(16))
+    table = f.read(table_size - 8)
+    n_files, n_segs, _n_deps = struct.unpack_from("<III", table, 0)
+    files = []
+    for i in range(n_files):
+        off = 12 + i * 56          # u64 hash, i64 time, u32 inline buffers, u32 first segment, u32 end segment, ...
+        files.append(struct.unpack_from("<Q", table, off) + struct.unpack_from("<II", table, off + 20))
+    base = 12 + n_files * 56
+    segs = [struct.unpack_from("<QII", table, base + i * 16) for i in range(n_segs)]
+    return files, segs
+
+
+def archive_costs(path: str) -> dict:
+    """Bytes each file takes in a packed archive (its packed segments plus its index entries), by
+    depot hash: what the file adds to the package wherever it is packed again."""
+    with open(path, "rb") as f:
+        files, segs = _read_index(f)
+    out = {}
+    for h, s0, s1 in files:
+        out[h] = sum(segs[i][1] for i in range(s0, s1)) + 56 + 16 * (s1 - s0)
+    return out
+
+
 def normalize_archive(path: str, filetime: int = FIXED_FILETIME) -> int:
     """WolvenKit stamps every file entry with the packing time, so the same input packs to a
     different archive (and Open77 hands players a new required-mod hash) on every run.  Pin the

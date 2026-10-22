@@ -18,7 +18,7 @@ from . import sector as S
 BLOCK_PATH = "base\\worlds\\03_night_city\\_compiled\\default\\blocks\\all.streamingblock"
 SECTOR_RX = re.compile(r"^[a-z0-9_\\.\-]+\.streamingsector$", re.I)
 INDEX_VERSION = 1
-SECTOR_VERSION = 2              # 2: every element of a node, with its rotation
+SECTOR_VERSION = 3              # 2: every element of a node, with its rotation; 3: foliage spans
 
 
 def build_block_index(block_doc: dict) -> dict:

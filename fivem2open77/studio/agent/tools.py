@@ -397,5 +397,5 @@ def tools_for(kind: str | None) -> tuple:
         return MAP_TOOLS + LIVE_TOOLS + CITY_TOOLS + COMMON_TOOLS + STUDIO_TOOLS + NCWE_TOOLS
     if kind == "world":
         return WORLD_TOOLS + COMMON_TOOLS + STUDIO_TOOLS + LIVE_TOOLS + CITY_TOOLS + NCWE_TOOLS
-    return STUDIO_TOOLS + COMMON_TOOLS + LIVE_TOOLS + CITY_TOOLS + ("new_world_edit", "world_status", "world_find",
-                                                                    "world_prepare", "remove_world_edit") + NCWE_TOOLS
+    return STUDIO_TOOLS + COMMON_TOOLS + LIVE_TOOLS + CITY_TOOLS + ("new_world_edit", "night_city", "world_status",
+                                                                    "world_find", "world_prepare", "remove_world_edit") + NCWE_TOOLS

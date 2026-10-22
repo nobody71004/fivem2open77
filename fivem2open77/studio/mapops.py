@@ -484,20 +484,38 @@ class MapOps:
             files = installed(tb.game_dir, name) if name else []
         except (OSError, RuntimeError):
             files = []
+        g = p.data.get("game") or {}
         return {"game": tb.game_dir, "files": files, "name": name,
-                "build": (p.data.get("game") or {}).get("build") if files else None}
+                "build": g.get("build") if files else None, "spot": g.get("spot") if files else None}
 
     def map_game(self, pid, build=None, uninstall=False):
         """Write (or remove) a build's packages in the local game's archive/pc/mod, for direct test
-        boots.  Only the map's own fivem2open77_map_<map>* files are touched."""
+        boots.  Only the map's own fivem2open77_map_<map>* files are touched.
+
+        The map stands at the spot in its Options: a build baked somewhere else (or not baked at
+        all) gets a sector package baked for that spot here, the build itself unchanged.  Without a
+        spot in Options it stands where the build was baked; a build that was never baked and has no
+        spot would put nothing in the game, so that is refused with the way out."""
+        from ..mlo import bake as bake_mod
         from ..mlo.deploy import install_game
         p = self._map(pid)
         b = None if uninstall else self._map_build(p, build)
+        spot = None
+        if not uninstall:
+            try:
+                spot = (p.map_options() or {}).get("place")
+            except maps_mod.MapOptionsError:
+                spot = None
+            if not spot and not b.get("baked"):
+                raise ProjectError(f"{p.data['name']} has no spot yet, so nothing of it would show in your game: set "
+                                   "the Night City spot it stands at (Options > Placement, or the 3D city), then "
+                                   "install it again")
 
         def run(job):
             tb = self.toolbox(refresh=True)
             if not tb.game_dir:
                 raise RuntimeError("Cyberpunk 2077 was not found: set its folder in Settings > Tools")
+            at = None
             if uninstall:
                 name = (p.data.get("map") or {}).get("name")
                 if not name:
@@ -509,17 +527,47 @@ class MapOps:
                         break
                 if not bdir:
                     raise RuntimeError("no build of this map to know its files by")
-                r = install_game(bdir, tb.game_dir, uninstall=True)
+                r = install_game(bdir, tb.game_dir, uninstall=True,
+                                 previous=(p.data.get("game") or {}).get("extra") or ())
             else:
                 mdir, _ = maps_mod.map_dirs(os.path.join(p.build_dir(b["n"]), "out"))
-                r = install_game(mdir, tb.game_dir)
+                baked = (b.get("baked") or {}).get("anchor")
+                previous = (p.data.get("game") or {}).get("extra") or ()
+                stage = None
+                try:
+                    if spot and (not baked or bake_mod.normalize_anchor(baked) != bake_mod.normalize_anchor(spot)):
+                        if not tb.wolvenkit:
+                            raise RuntimeError("WolvenKit CLI not found: set it up in Settings > Tools")
+                        job.log(f"build #{b['n']} is " + (f"baked at {_spot_text(baked)}" if baked else "not baked") +
+                                f": baking it for its spot {_spot_text(spot)} for your game (the build stays as it is)")
+                        job.set_progress(0.1, "baking the sector for the spot")
+                        wk = tb.wolvenkit_obj(log=job.log)
+                        job.on_cancel.append(wk.kill)
+                        stage = tempfile.mkdtemp(prefix="f2o77-game-")
+                        name = b.get("name") or os.path.basename(mdir)
+                        bake_mod.bake(mdir, spot, wk, log=job.log, out_dir=stage,
+                                      bake_id=bake_mod.new_bake_id(name, "game"))
+                        at = bake_mod.normalize_anchor(spot)
+                        job.set_progress(0.7, "writing the packages")
+                        r = install_game(mdir, tb.game_dir, sector=os.path.join(stage, "dist", f"{name}_sector.zip"),
+                                         previous=previous)
+                    else:
+                        at = bake_mod.normalize_anchor(baked)
+                        r = install_game(mdir, tb.game_dir, previous=previous)
+                finally:
+                    if stage:
+                        shutil.rmtree(stage, ignore_errors=True)
             for f in r["written"]:
                 job.log(f"written {f}")
             for f in r["removed"]:
                 job.log(f"removed {f}")
             job.log(f"{len(r['written'])} written, {len(r['unchanged'])} unchanged, {len(r['removed'])} removed in {r['modDir']}")
+            if at:
+                job.log(f"it stands at {_spot_text(at)}: start the game and go there")
+                r["spot"] = at
             with p.lock:
-                p.data["game"] = None if uninstall else {"build": b["n"], "time": time.time(), "dir": tb.game_dir}
+                p.data["game"] = None if uninstall else {"build": b["n"], "time": time.time(), "dir": tb.game_dir,
+                                                         "spot": at, "extra": r.get("extra") or []}
                 p.save()
             return r
 
@@ -579,6 +627,13 @@ class MapOps:
         mdir, _ = maps_mod.map_dirs(out)
 
         def run(job):
+            from ..cp77 import package as package_mod
+            name = b.get("name") or os.path.basename(mdir)
+            n_pkgs = len(b.get("packages") or [])
+            if not b.get("baked") and n_pkgs + 1 > package_mod.MAX_PACKAGES:
+                job.log(f"!! build #{b['n']} has {n_pkgs} packages: Open77 allows {package_mod.MAX_PACKAGES} per resource and "
+                        "placing the map adds its sector package, so it cannot be placed on the server. Rebuild it "
+                        "with this Studio (it packs big maps into fewer packages) and deploy that build")
             tmp = tempfile.mkdtemp(prefix="f2o77-map-")
             try:
                 bundle = mlo_deploy.bundle(mdir, os.path.join(tmp, "bundle.tgz"))
@@ -588,6 +643,13 @@ class MapOps:
                                             keep_placement=keep_placement, restart=restart, log=job.log, job=job)
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
+            if not b.get("baked"):
+                # an unplaced build stays unplaced unless the server had it placed (then it is rebuilt there)
+                res["unplaced"] = [x["name"] for x in res["servers"]
+                                   if x.get("code") == 0 and name not in ((x.get("result") or {}).get("kept") or [])]
+                for srv in res["unplaced"]:
+                    job.log(f"!! {name} is on {srv} but not placed: players see nothing of it until it has a spot. Set "
+                            "its spot in Options and deploy again, or place it in game (F9, then Apply)")
             self.links.forget(sid)            # the manager may have a new token / listener
             entry = {"time": time.time(), "server": sid, "names": res["names"], "build": b["n"], "version": b.get("version"),
                      "kind": "map", "results": [{"name": x["name"], "code": x["code"], **(x["result"] or {})}
@@ -671,6 +733,11 @@ class MapOps:
 
         return self.jobs.submit("map-wait", f"Wait for {map_name} on {link.name} ({until})", run,
                                 meta={"server": sid, "map": map_name})
+
+
+def _spot_text(a) -> str:
+    a = a or {}
+    return f"{float(a.get('x', 0)):.1f} {float(a.get('y', 0)):.1f} {float(a.get('z', 0)):.1f} yaw {float(a.get('yaw') or 0):.0f}"
 
 
 def _extent_size(ext):

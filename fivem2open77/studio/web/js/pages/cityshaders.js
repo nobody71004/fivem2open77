@@ -21,6 +21,8 @@ uniform vec3 uFogColor;
 uniform float uFogDensity;
 uniform vec4 uPulse;      // x, y (game), start time, strength
 uniform vec3 uCursor;     // x, y (game), on
+uniform vec4 uCut;        // x, y (game), radius, on: where the real city stands in for the map's blocks
+float cutAt(vec2 g) { return uCut.w > 0.5 ? 1.0 - smoothstep(uCut.z - 25.0, uCut.z, distance(g, uCut.xy)) : 0.0; }
 float hash12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
 float hash13(vec3 p3) { p3 = fract(p3 * .1031); p3 += dot(p3, p3.zyx + 31.32); return fract((p3.x + p3.y) * p3.z); }
 // lines every 'step' metres, 'halfw' metres wide (at least a pixel), fading out before they alias
@@ -66,10 +68,14 @@ const FHEAD = /* glsl */ `
 
 // ---------------------------------------------------------------- terrain and water
 export const terrainVS = VHEAD + /* glsl */ `
+uniform vec4 uCut;
 varying vec3 vG; varying vec3 vN; varying float vDist;
 void main() {
   vG = position; vN = normal;
-  vec4 wp = modelMatrix * vec4(position, 1.0);
+  vec3 p = position;
+  // under the real city the map's own ground steps down: the game's ground meshes are the floor there
+  if (uCut.w > 0.5) p.z -= 2.5 * (1.0 - smoothstep(uCut.z, uCut.z + 60.0, distance(p.xy, uCut.xy)));
+  vec4 wp = modelMatrix * vec4(p, 1.0);
   vDist = distance(wp.xyz, cameraPosition);
   gl_Position = projectionMatrix * viewMatrix * wp;
   #include <logdepthbuf_vertex>
@@ -161,6 +167,7 @@ uniform vec3 uColor; uniform vec3 uColor2; uniform float uIntensity; uniform flo
 varying vec3 vG; varying float vDist; varying vec4 vC;
 void main() {
   #include <logdepthbuf_fragment>
+  if (cutAt(vG.xy) > hash12(floor(vG.xy * 0.5))) discard;          // the game's own streets are there
   float major = smoothstep(0.5, 0.9, vC.r) * (1.0 - smoothstep(0.2, 0.5, vC.g));
   if (uLook > 0.5) {
     // the map screen's streets: pale lines over the ground, the highways a little brighter
@@ -188,6 +195,7 @@ uniform float uIntensity; uniform float uLook;
 varying vec3 vG; varying float vDist; varying vec4 vC;
 void main() {
   #include <logdepthbuf_fragment>
+  if (cutAt(vG.xy) > hash12(floor(vG.xy * 0.5))) discard;          // the game's own tracks are there
   // NCART lines keep the game's colours (red, green, blue in the data)
   vec3 c = vC.r > 0.5 ? vec3(1.0, 0.14, 0.38) : (vC.g > 0.5 ? vec3(0.22, 1.0, 0.5) : vec3(0.2, 0.62, 1.0));
   if (uLook > 0.5) {               // the map screen: the lines in their colours, quietly
@@ -203,10 +211,11 @@ void main() {
 
 // ---------------------------------------------------------------- solid holograms (cliffs, landmarks)
 export const solidFS = FHEAD + LIB + /* glsl */ `
-uniform vec3 uColor; uniform vec3 uRim; uniform float uLook;
+uniform vec3 uColor; uniform vec3 uRim; uniform float uLook; uniform float uCuts;
 varying vec3 vG; varying vec3 vN; varying float vDist;
 void main() {
   #include <logdepthbuf_fragment>
+  if (uCuts > 0.5 && cutAt(vG.xy) > hash12(floor(vG.xy * 0.5))) discard;   // (landmarks, cliffs: not the pins)
   vec3 n = safeNormalize(vN);
   float diff = max(dot(n, normalize(vec3(-0.38, 0.42, 0.82))), 0.0);
   if (uLook > 0.5) {               // landmarks and cliffs in the blocks' slate
@@ -247,6 +256,7 @@ varying vec3 vL; varying vec3 vS; varying vec3 vNl; varying vec3 vG; varying vec
 varying float vDist; varying float vSeed; varying float vId; varying vec3 vTint;
 void main() {
   #include <logdepthbuf_fragment>
+  if (cutAt(vG.xy) > hash12(floor(vG.xy * 0.5))) discard;
   vec3 m = (vL + 0.5) * vS;                  // metres from the box's own corner
   vec3 an = abs(vNl);
   vec2 uv; vec2 sz;
@@ -331,6 +341,7 @@ varying vec3 vL; varying vec3 vS; varying vec3 vNl; varying vec3 vG; varying vec
 varying float vDist; varying float vSeed; varying float vId; varying vec3 vTint; varying float vShade;
 void main() {
   #include <logdepthbuf_fragment>
+  if (cutAt(vG.xy) > hash12(floor(vG.xy * 0.5))) discard;
   vec3 m = (vL + 0.5) * vS;
   vec3 an = abs(vNl);
   vec2 uv; vec2 sz;
