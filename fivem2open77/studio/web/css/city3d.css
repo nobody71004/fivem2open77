@@ -162,8 +162,4 @@
 .c3-results button { all: unset; cursor: pointer; display: flex; justify-content: space-between; gap: 10px; padding: 6px 10px; font: 11px var(--mono, monospace); color: #cfe9f0; }
 .c3-results button span { color: #7f9ea8; text-transform: uppercase; letter-spacing: .08em; font-size: 10px; }
 .c3-results button.on, .c3-results button:hover { background: #9ef3ed1f; color: #fff; }
-/* the minimap */
-.c3-br { position: absolute; right: 12px; bottom: 12px; pointer-events: none; }
-.c3-br > * { pointer-events: auto; }
-.c3-mini { width: 200px; height: 200px; display: block; cursor: crosshair; border: 1px solid #9ef3ed33; box-shadow: 0 0 18px #0008; }
-@media (max-width: 900px) { .c3-mini { width: 140px; height: 140px; } .c3-search { width: 170px; } }
+@media (max-width: 900px) { .c3-search { width: 170px; } }

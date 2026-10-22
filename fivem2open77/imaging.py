@@ -8,7 +8,7 @@ import zlib
 import numpy as np
 
 from .gta.texture import (FMT_A1R5G5B5, FMT_A8, FMT_A8B8G8R8, FMT_A8R8G8B8, FMT_ATI1,
-                          FMT_ATI2, FMT_DXT1, FMT_DXT3, FMT_DXT5, FMT_L8, FMT_X8R8G8B8)
+                          FMT_ATI2, FMT_BC7, FMT_DXT1, FMT_DXT3, FMT_DXT5, FMT_L8, FMT_X8R8G8B8)
 
 
 def png_bytes(rgba: np.ndarray) -> bytes:
@@ -81,9 +81,12 @@ def _bc4_channel(blocks):
 
 
 def decode(fmt: int, w: int, h: int, data: bytes) -> np.ndarray | None:
-    """One mip level -> uint8 (h, w, 4) RGBA, or None for formats not handled (BC7)."""
+    """One mip level -> uint8 (h, w, 4) RGBA, or None for formats not handled."""
     bw, bh = max(1, (w + 3) // 4), max(1, (h + 3) // 4)
     buf = np.frombuffer(data, dtype=np.uint8)
+    if fmt == FMT_BC7:
+        from . import bc7
+        return bc7.decode(data, w, h)
     if fmt == FMT_DXT1:
         px = _bc1_color(buf[:bw * bh * 8].reshape(-1, 8))
     elif fmt in (FMT_DXT3, FMT_DXT5):

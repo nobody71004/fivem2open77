@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import base64
 import math
+import re
 
 import numpy as np
 
@@ -31,6 +32,7 @@ PROXY_TYPES = {"worldBuildingProxyMeshNode", "worldGenericProxyMeshNode", "world
                "worldEntityProxyMeshNode", "worldDestructibleEntityProxyMeshNode", "worldRoadProxyMeshNode"}
 FAR_REAL_LEVEL = 3            # real meshes of this level and up are big enough for the far ring too
 SKIP_RES = ("engine\\meshes\\editor\\", "base\\fx\\", "\\_proxyhelper\\collision", "\\occluder")
+OCCLUDER_RX = re.compile(r"_occ\d*\.mesh$")       # (the roads' occluders: never drawn, often not even files)
 DEFAULT_NEAR, DEFAULT_FAR = 200.0, 900.0
 MAX_INSTANCES = 100000
 MAX_MESHES = 2500
@@ -56,7 +58,7 @@ def matrix(pos, rot, scale) -> np.ndarray:
 
 def wanted(res: str) -> bool:
     low = (res or "").lower()
-    return low.endswith(".mesh") and not any(k in low for k in SKIP_RES)
+    return low.endswith(".mesh") and not any(k in low for k in SKIP_RES) and not OCCLUDER_RX.search(low)
 
 
 def sectors_for(index, x: float, y: float, near: float, far: float) -> list:
@@ -74,7 +76,8 @@ def sectors_for(index, x: float, y: float, near: float, far: float) -> list:
 
 # ----------------------------------------------------------------------------- one sector, as arrays
 KIND_NEAR, KIND_FAR, KIND_BOTH = 0, 1, 2      # real meshes; stand-ins; big real meshes (level 3 and up)
-ROWS_VERSION = 1
+LEVEL_REACH = 128.0                             # metres a level 0 sector's nodes stream at (twice that a level up)
+ROWS_VERSION = 3                                # 2: streaming distances, stand-ins' hide distance and ids; 3: terrain
 
 
 class Strings:
@@ -113,8 +116,8 @@ def rows_of(sec: dict) -> dict:
             local.append(v)
         return i
     ok = {}
-    R = {k: [] for k in ("rid", "aid", "kind", "pos", "rot", "scl", "dist")}
-    F = {k: [] for k in ("rid", "aid", "pos", "rot", "scl", "res", "begin", "count")}
+    R = {k: [] for k in ("rid", "aid", "kind", "pos", "rot", "scl", "dist", "hide", "pid", "par", "terr")}
+    F = {k: [] for k in ("rid", "aid", "pos", "rot", "scl", "res", "begin", "count", "dist", "par")}
     for e in sec.get("entries") or []:
         t, res = e.get("type"), e.get("res") or ""
         w = ok.get(res)
@@ -122,6 +125,8 @@ def rows_of(sec: dict) -> dict:
             w = ok[res] = wanted(res)
         if not w:
             continue
+        if e.get("bend") and sec.get("path"):
+            res = bend_name(sec["path"], e["i"], res)   # bent its own way: a mesh of its own (geocache.bend_geo)
         if t in PROXY_TYPES:
             kind = KIND_FAR
         elif t in NEAR_TYPES:
@@ -140,10 +145,17 @@ def rows_of(sec: dict) -> dict:
                 F["res"].append(sid(fo["res"]))
                 F["begin"].append(int(fo.get("begin") or 0))
                 F["count"].append(int(fo.get("count") or 0))
+                F["dist"].append(float(e.get("dist") or 0.0) or LEVEL_REACH * 2.0 ** level)
+                F["par"].append(_hex64(e.get("par")))
             continue
         el = e.get("elements")
         items = el.get("items") if el and el.get("kind") == "instances" else None
         dist = float(e.get("dist") or 0.0)
+        if dist <= 0.0:
+            dist = LEVEL_REACH * 2.0 ** level         # (no streaming distance: what its level streams at)
+        hide = float(e.get("hide") if e.get("hide") is not None else -1.0)
+        pid, par = _hex64(e.get("pid")), _hex64(e.get("par"))
+        terr = t == "worldTerrainProxyMeshNode"
         for it in (items if items is not None else [e]):
             R["rid"].append(r)
             R["aid"].append(a)
@@ -152,14 +164,47 @@ def rows_of(sec: dict) -> dict:
             R["rot"].append(it["rot"][:4])
             R["scl"].append((it.get("scale") or [1.0, 1.0, 1.0])[:3])
             R["dist"].append(dist)
+            R["hide"].append(hide)
+            R["pid"].append(pid)
+            R["par"].append(par)
+            R["terr"].append(terr)
     out = {"strings": local, "level": level}
     for k, dt, w in (("rid", np.int32, 0), ("aid", np.int32, 0), ("kind", np.uint8, 0), ("pos", np.float64, 3),
-                     ("rot", np.float64, 4), ("scl", np.float32, 3), ("dist", np.float32, 0)):
+                     ("rot", np.float64, 4), ("scl", np.float32, 3), ("dist", np.float32, 0), ("hide", np.float32, 0),
+                     ("pid", np.uint64, 0), ("par", np.uint64, 0), ("terr", np.bool_, 0)):
         out[k] = np.asarray(R[k], dtype=dt).reshape((-1, w) if w else (-1,))
     for k, dt, w in (("rid", np.int32, 0), ("aid", np.int32, 0), ("pos", np.float64, 3), ("rot", np.float64, 4),
-                     ("scl", np.float32, 0), ("res", np.int32, 0), ("begin", np.int32, 0), ("count", np.int32, 0)):
+                     ("scl", np.float32, 0), ("res", np.int32, 0), ("begin", np.int32, 0), ("count", np.int32, 0),
+                     ("dist", np.float32, 0), ("par", np.uint64, 0)):
         out["f" + k] = np.asarray(F[k], dtype=dt).reshape((-1, w) if w else (-1,))
     return out
+
+
+BEND = "#bend:"
+
+
+def bend_name(sector: str, i: int, res: str) -> str:
+    """The name of one bent instance of a mesh (a road, a rail, a cable): its sector, its node
+    instance and the mesh it bends."""
+    return f"{BEND}{sector}:{int(i)}:{res}"
+
+
+def bend_of(name: str):
+    """bend_name's (sector, instance, mesh), else None."""
+    if not isinstance(name, str) or not name.startswith(BEND):
+        return None
+    try:
+        sector, i, res = name[len(BEND):].split(":", 2)
+        return sector, int(i), res
+    except ValueError:
+        return None
+
+
+def _hex64(v) -> int:
+    try:
+        return int(v, 16) if v else 0
+    except (TypeError, ValueError):
+        return 0
 
 
 def globalize(rows: dict, strings: Strings) -> dict:
@@ -172,22 +217,24 @@ def globalize(rows: dict, strings: Strings) -> dict:
     return out
 
 
-def save_rows(fp: str, rows: dict, tag: int = 0) -> None:
-    """rows_of's arrays to a file (``tag``: the version of the sector they were read from)."""
+def save_rows(fp: str, rows: dict, tag=0) -> None:
+    """rows_of's arrays to a file (``tag``: what the sector they were read from was read from --
+    its version and the game's)."""
     import os
     tmp = fp + ".tmp.npz"
     arrays = {k: v for k, v in rows.items() if isinstance(v, np.ndarray)}
-    np.savez(tmp, v=np.array([ROWS_VERSION, int(tag)]), level=np.array([rows["level"]]),
-             strings=np.frombuffer("\n".join(rows["strings"]).encode("utf-8"), np.uint8), **arrays)
+    np.savez(tmp, v=np.array([ROWS_VERSION]), tag=np.frombuffer(str(tag).encode("utf-8") or b" ", np.uint8),
+             level=np.array([rows["level"]]), strings=np.frombuffer("\n".join(rows["strings"]).encode("utf-8"), np.uint8),
+             **arrays)
     os.replace(tmp, fp)
 
 
-def load_rows(fp: str, tag: int = 0) -> dict | None:
+def load_rows(fp: str, tag=0) -> dict | None:
     try:
         with np.load(fp, allow_pickle=False) as z:
-            if len(z["v"]) < 2 or int(z["v"][0]) != ROWS_VERSION or int(z["v"][1]) != int(tag):
+            if int(z["v"][0]) != ROWS_VERSION or "tag" not in z.files or bytes(z["tag"]).decode("utf-8") != (str(tag) or " "):
                 return None
-            out = {k: z[k] for k in z.files if k not in ("v", "level", "strings")}
+            out = {k: z[k] for k in z.files if k not in ("v", "tag", "level", "strings")}
             out["level"] = int(z["level"][0])
             out["strings"] = bytes(z["strings"]).decode("utf-8").split("\n")
             return out
@@ -375,6 +422,254 @@ def plan_rows(rows: list, strings: Strings, x: float, y: float, near: float = DE
     return {"groups": groups, "meshes": meshes, "pending": pending, "area": area, "near_area": near_area,
             "instances": kept, "dropped": total - kept,
             "culled": culled, "center": [x, y], "near": near, "far": far}
+
+
+# ----------------------------------------------------------------------------- the game's own way
+# What the game shows from where the camera is: the sectors whose streaming box holds the camera
+# (each level's boxes are twice as big: from high up only the coarse levels stream), and in them
+# every node instance nearer than its streaming distance -- except the ones under a far-view
+# stand-in that shows: a stand-in shows from its hide distance on (nearer, what it stands for does),
+# up to its streaming distance; the stand-ins themselves are under coarser ones.  ``detail`` scales
+# every distance (and the boxes): more than 1 shows more than the game does.
+DETAIL = 1.0
+MAX_ANCESTORS = 6
+COARSE_LEVEL = 6
+CAM_TOP = 2500.0               # metres: higher up, the city is shown as from this high (the game streams nothing finer)
+
+
+def lod_camera(cam) -> np.ndarray:
+    """Where the camera is for what streams and shows: at most CAM_TOP metres up."""
+    c = np.asarray(cam, np.float64)[:3].copy()
+    c[2] = min(c[2], CAM_TOP)
+    return c
+
+
+def streaming_rows(index_rows: list, categories=("Exterior",)):
+    """The world index's sector rows as arrays for sectors_streaming (keep it: it is reused)."""
+    keep = [r for r in index_rows if not categories or r[8] in categories]
+    box = np.array([r[1:7] for r in keep], np.float64).reshape(-1, 6)
+    return {"paths": [r[0] for r in keep], "box": box, "level": np.array([int(r[7]) for r in keep], np.int16)}
+
+
+def sectors_streaming(srows: dict, cam, detail: float = DETAIL, reach: float = 0.0, max_level: int = 9) -> list:
+    """The sectors streamed in with the camera at ``cam`` (game metres): those whose streaming box,
+    grown ``detail`` times about its middle (plus ``reach`` metres), holds it; finest level first.
+    From above every box (the top of the coarsest is kilometres up) the coarsest level streams."""
+    box = srows["box"]
+    if not len(box):
+        return []
+    c = lod_camera(cam)
+    mid = (box[:, :3] + box[:, 3:]) * 0.5
+    half = (box[:, 3:] - box[:, :3]) * 0.5 * max(0.1, detail) + reach
+    top = float((mid[:, 2] + half[:, 2]).max())
+    c[2] = min(c[2], top - 1.0)                     # above everything: as from the top of the highest box
+    inside = np.all(np.abs(mid - c[None, :]) <= half, axis=1) & (srows["level"] <= max_level)
+    sel = np.nonzero(inside)[0]
+    order = np.lexsort((np.abs(mid[sel, 0] - c[0]) + np.abs(mid[sel, 1] - c[1]), srows["level"][sel]))
+    return [srows["paths"][i] for i in sel[order]]
+
+
+def _world_centres(pos, rot, scl, rid, info):
+    """(world centre (n, 3), world radius (n,)) of each instance's mesh from ``info(rid) -> (cx, cy,
+    cz, r) | None`` (its local bounds' middle and half diagonal); the pivot and 0 when unknown."""
+    centre, rad = pos.copy(), np.zeros(len(pos))
+    if info is None or not len(pos):
+        return centre, rad
+    uniq = np.unique(rid)
+    lut = np.full((int(uniq.max()) + 1, 4), np.nan)
+    for u in uniq:
+        got = info(int(u))
+        if got is not None:
+            lut[int(u)] = got
+    li = lut[rid]
+    known = ~np.isnan(li[:, 3])
+    if known.any():
+        k = np.nonzero(known)[0]
+        local = li[k, :3] * scl[k].astype(np.float64)
+        centre[k] = pos[k] + np.einsum("nij,nj->ni", quats_matrix(rot[k]), local)
+        rad[k] = li[k, 3] * np.abs(scl[k]).max(axis=1)
+    return centre, rad
+
+
+def _ancestors_allow(par, ids, dc, hide, ppar, detail, ok_parent):
+    """Per row with a stand-in over it (``par``): whether every stand-in above lets it show (the
+    camera nearer than that one's hide distance, or that one not drawable)."""
+    allow = np.ones(len(par), bool)
+    if not len(ids):
+        return allow
+    cur = par.copy()
+    for _ in range(MAX_ANCESTORS):
+        has = cur != 0
+        if not has.any():
+            break
+        j = np.searchsorted(ids, cur)
+        j = np.minimum(j, len(ids) - 1)
+        found = has & (ids[j] == cur)
+        lets = ~found | ~ok_parent[j] | (dc[j] < np.maximum(hide[j], 0.0) * detail)
+        allow &= lets
+        cur = np.where(found, ppar[j], 0).astype(np.uint64)
+    return allow
+
+
+def plan_lod(rows: list, strings: Strings, cam, detail: float = DETAIL, foliage=None, info=None, drawable=None,
+             failed=(), max_instances: int = MAX_INSTANCES, max_meshes: int = MAX_MESHES, min_z: float = MIN_Z) -> dict:
+    """What the game shows from ``cam`` (x, y, z: game metres) in these sectors' rows (rows_of +
+    globalize; sectors_streaming picks the sectors), each instance a 3x4 matrix, nearest first,
+    grouped by mesh and appearance (plan_rows' answer).  ``info(rid) -> (cx, cy, cz, r) | None``: a
+    read mesh's bounds (distances are to its bounds, not its pivot); ``drawable(res)``: the meshes
+    read (the others are ``pending``, nearest first); a stand-in not drawable (or ``failed``) does
+    not hide what it stands for."""
+    cam = lod_camera(cam)
+    rows = [r for r in rows if r is not None]
+    detail = max(0.1, float(detail))
+    parts = []
+    culled = 0
+    failed = {f.lower() for f in failed} if failed else set()
+    ready_memo = {}
+
+    def ready(rid):
+        got = ready_memo.get(rid)
+        if got is None:
+            res = strings.list[rid]
+            got = ready_memo[rid] = bool(drawable(res)) if drawable is not None else True
+            if got and res.lower() in failed:
+                got = ready_memo[rid] = False
+        return got
+    if rows:
+        cat = lambda k: np.concatenate([r[k] for r in rows])     # noqa: E731
+        pos = cat("pos")
+        if len(pos):
+            rid, aid, rot, scl = cat("rid"), cat("aid"), cat("rot"), cat("scl")
+            kind, dist = cat("kind"), cat("dist").astype(np.float64)
+            hide = np.concatenate([r["hide"] if "hide" in r else np.full(len(r["pos"]), -1.0, np.float32) for r in rows]).astype(np.float64)
+            pid = np.concatenate([r["pid"] if "pid" in r else np.zeros(len(r["pos"]), np.uint64) for r in rows])
+            par = np.concatenate([r["par"] if "par" in r else np.zeros(len(r["pos"]), np.uint64) for r in rows])
+            centre, rad = _world_centres(pos, rot, scl, rid, info)
+            dc = np.maximum(0.0, np.sqrt(((centre - cam[None, :]) ** 2).sum(axis=1)) - rad)
+            size = np.where(rad > 0, rad, 2.0)                  # (a mesh not read yet: a couple of metres)
+            far = kind == KIND_FAR
+            lvl = np.concatenate([np.full(len(r["pos"]), int(r.get("level") or 0), np.int16) for r in rows])
+            terr = np.concatenate([r["terr"] if "terr" in r else np.zeros(len(r["pos"]), bool) for r in rows])
+            # a stand-in shows from its hide distance on, up to its streaming distance -- the
+            # coarsest (level 6, and the terrain's, whose stand-ins stand in for each other) however
+            # far, its sector's streaming box bounding it: a map is looked at from higher up than
+            # the game, and they are then the city and its ground; what is under a stand-in shows
+            # nearer (the parents' rule)
+            free = (lvl >= COARSE_LEVEL) | terr                 # (the terrain's stand-ins: its parents' rule is enough)
+            own = np.where(far, (dc >= np.maximum(hide, 0.0) * detail) & (free | (dc <= dist * detail)), dc <= dist * detail)
+            # the stand-ins (by id) and whether each lets what is under it show
+            isp = pid != 0
+            order = np.argsort(pid[isp], kind="stable")
+            ids = pid[isp][order]
+            p_dc, p_hide, p_par = dc[isp][order], hide[isp][order], par[isp][order]
+            p_ok = np.array([ready(int(r)) for r in rid[isp][order]], bool) if len(ids) else np.zeros(0, bool)
+            allow = _ancestors_allow(par, ids, p_dc, p_hide, p_par, detail, p_ok)
+            vis = own & allow
+            culled = int(len(vis) - vis.sum())
+            sel = np.nonzero(vis)[0]
+            parts.append((rid[sel], aid[sel], pos[sel], rot[sel], scl[sel], dc[sel], size[sel]))
+            fol_allow = (ids, p_dc, p_hide, p_par, p_ok)
+        else:
+            fol_allow = None
+        # foliage: the populations of the foliage nodes nearer than their streaming distance
+        for rw in rows:
+            if not len(rw.get("frid", ())) or foliage is None:
+                continue
+            fp = rw["fpos"]
+            fd = np.sqrt(((fp - cam[None, :]) ** 2).sum(axis=1))
+            fdist = rw["fdist"].astype(np.float64) if "fdist" in rw else np.full(len(fp), 150.0)
+            ok = fd <= fdist * detail + 30.0
+            if fol_allow is not None and "fpar" in rw:
+                ok &= _ancestors_allow(rw["fpar"], fol_allow[0], fol_allow[1], fol_allow[2], fol_allow[3], detail, fol_allow[4])
+            sel = np.nonzero(ok)[0]
+            if not len(sel):
+                continue
+            by_res = {}
+            for i in sel:
+                by_res.setdefault(int(rw["fres"][i]), []).append(int(i))
+            for res_id, nodes in by_res.items():
+                pops = foliage(strings.list[res_id])
+                if pops is None:
+                    continue
+                ppos, prot, pscl = pops["pos"], pops["rot"], pops["scale"]
+                if not isinstance(ppos, np.ndarray):
+                    ppos, prot, pscl = (np.asarray(ppos, np.float64).reshape(-1, 3), np.asarray(prot, np.float64).reshape(-1, 4),
+                                        np.asarray(pscl, np.float64).reshape(-1))
+                npop = len(ppos)
+                idx, owner = [], []
+                for i in nodes:
+                    b = int(rw["fbegin"][i])
+                    e = min(b + int(rw["fcount"][i]), npop)
+                    if e > b:
+                        idx.append(np.arange(b, e))
+                        owner.append(np.full(e - b, i))
+                if not idx:
+                    continue
+                idx, owner = np.concatenate(idx), np.concatenate(owner)
+                nrot = rw["frot"][owner]
+                fpos = rw["fpos"][owner] + np.einsum("nij,nj->ni", quats_matrix(nrot), ppos[idx])
+                frot = quats_mul(nrot, prot[idx])
+                fs = (pscl[idx] * rw["fscl"][owner]).astype(np.float64)
+                fdc = np.sqrt(((fpos - cam[None, :]) ** 2).sum(axis=1))
+                keep = fdc <= rw["fdist"][owner].astype(np.float64) * detail + 30.0 if "fdist" in rw else np.ones(len(fdc), bool)
+                k = np.nonzero(keep)[0]
+                parts.append((rw["frid"][owner][k], rw["faid"][owner][k], fpos[k], frot[k],
+                              np.repeat(fs[k, None], 3, axis=1).astype(np.float32), fdc[k], 3.0 * np.abs(fs[k])))
+    if parts:
+        rid = np.concatenate([p[0] for p in parts]).astype(np.int64)
+        aid = np.concatenate([p[1] for p in parts]).astype(np.int64)
+        pos = np.concatenate([p[2] for p in parts])
+        rot = np.concatenate([p[3] for p in parts])
+        scl = np.concatenate([p[4] for p in parts]).astype(np.float64)
+        dcs = np.concatenate([p[5] for p in parts]).astype(np.float64)
+        size = np.concatenate([p[6] for p in parts]).astype(np.float64)
+    else:
+        rid = aid = np.zeros(0, np.int64)
+        pos, rot, scl, dcs, size = np.zeros((0, 3)), np.zeros((0, 4)), np.zeros((0, 3)), np.zeros(0), np.zeros(0)
+    ok = pos[:, 2] >= min_z if len(pos) else np.zeros(0, bool)
+    sel = np.nonzero(ok)[0]
+    rid, aid, pos, rot, scl, dcs = rid[sel], aid[sel], pos[sel], rot[sel], scl[sel], dcs[sel]
+    # what matters most first (the budgets keep it): the biggest on screen -- size over distance
+    order = np.argsort(-(size[sel] / np.maximum(dcs, 5.0)), kind="stable")
+    rid, aid, pos, rot, scl, dcs = rid[order], aid[order], pos[order], rot[order], scl[order], dcs[order]
+    total = len(rid)
+    pending, area = [], None
+    if total:
+        u, first = np.unique(rid, return_index=True)
+        by_first = u[np.argsort(first)]
+        ok_mesh = np.array([ready(int(r)) for r in by_first], dtype=bool)
+        area = (int(ok_mesh.sum()), len(by_first))
+        pending = [strings.list[int(r)] for r in by_first[~ok_mesh][:max_meshes]]       # (failed ones too: to_json counts them)
+        total -= int(np.isin(rid, by_first[~ok_mesh]).sum())
+        allowed = by_first[ok_mesh][:max_meshes]
+        m = np.isin(rid, allowed)
+        sel = np.nonzero(m)[0][:max_instances]
+        rid, aid, pos, rot, scl, dcs = rid[sel], aid[sel], pos[sel], rot[sel], scl[sel], dcs[sel]
+    kept = len(rid)
+    groups, meshes = [], []
+    if kept:
+        mats = np.empty((kept, 3, 4), np.float32)
+        mats[:, :, :3] = quats_matrix(rot) * scl[:, None, :]
+        mats[:, :, 3] = pos
+        key = rid * (int(aid.max()) + 1) + aid
+        uk, first, inv = np.unique(key, return_index=True, return_inverse=True)
+        inv = inv.reshape(-1)
+        by = np.argsort(inv, kind="stable")
+        counts = np.bincount(inv, minlength=len(uk))
+        starts = np.concatenate([[0], np.cumsum(counts)[:-1]])
+        seen_mesh = set()
+        for gi in np.argsort(first, kind="stable"):
+            idx = by[starts[gi]:starts[gi] + counts[gi]]
+            i0 = idx[0]
+            res = strings.list[int(rid[i0])]
+            groups.append({"res": res, "app": strings.list[int(aid[i0])], "ring": "near", "count": int(counts[gi]),
+                           "matrices": mats[idx]})
+            if res.lower() not in seen_mesh:
+                seen_mesh.add(res.lower())
+                meshes.append(res)
+    return {"groups": groups, "meshes": meshes, "pending": pending, "area": area, "near_area": area,
+            "instances": kept, "dropped": total - kept, "culled": culled, "center": [float(cam[0]), float(cam[1])],
+            "near": 0.0, "far": 0.0}
 
 
 def plan(sectors: dict, x: float, y: float, near: float = DEFAULT_NEAR, far: float = DEFAULT_FAR,

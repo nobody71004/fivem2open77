@@ -1,5 +1,47 @@
 # Changelog
 
+## Studio 1.7.5 · converter 1.6.0 (2026-10-22)
+
+### Cyberpunk 2077 2.5: no more WolvenKit errors
+
+* Update 2.5 cooks Night City's sectors into a new form that WolvenKit (up to 9.1) cannot read, so
+  every job that read the city from the game failed, and each failure popped a red error. The Studio
+  now reads the game's files itself, straight out of the archives: the sector list, the sectors
+  (2.5's cooked form; one in the older form still goes through WolvenKit), foliage, meshes, their
+  materials and textures. It decompresses with the Kraken decoder that comes with WolvenKit, or the
+  game's own Oodle. Nothing runs WolvenKit for the real city any more, and it reads about fifty
+  meshes a second.
+* What the Studio kept from before a game update is read again (the update moved the sectors' nodes).
+  The world edits' object search reads sectors the same way.
+* Background reads never pop errors. A read that fails is not tried again in a loop: the map's chip
+  says why, and it tries again a minute later.
+
+### Live maps: all of Night City, the game's own way
+
+* The real city now covers the whole city. From where the camera is, the 3D city shows what the game
+  itself would show: the sectors streamed in there, every building, wall, prop, street, terrain piece
+  and tree within its streaming distance, and further out the game's far-view stand-ins in place of
+  what they stand for (the game says which stands for what). From high up you see the whole city and
+  the badlands in the game's coarsest stand-ins; going down, finer ones take over, then the real
+  meshes.
+* Colours: the stand-ins and the terrain keep the detail of their baked textures (a colour per face,
+  or per vertex for the terrain), materials take their template's defaults, and BC7 textures (the road
+  network's, among others) are read. Multilayered surfaces keep their layers' colours.
+* Streets: bent road pieces (roads with sidewalks, metro rails, cables) are bent the way the game bends
+  them.
+* 2.5 names a mesh's appearance by hash; the Studio finds the name again.
+* The layer menu's *Real city* detail: *Less detail*, *Like the game* or *More detail* (the game's
+  distances times 0.75, 1 or 1.6). *Fast* quality draws fewer meshes.
+* The map's own blocks and streets give way to the real city everywhere once what is in view is read.
+  Where the game streams nothing finer from high up, the ground shows in a dusty tone instead of black.
+* The minimap box in the corner ("the whole city") is gone: the search box, Home and the real city
+  now cover what it did.
+
+### Tests
+
+* The game's files read without WolvenKit (sectors, archives, meshes, materials, textures, BC7), the
+  game's level of detail, and the Studio reading the real city in a job, from small hand-made files.
+
 ## Studio 1.7.4 · converter 1.6.0 (2026-10-22)
 
 ### Big maps go into the game (Liberty City)

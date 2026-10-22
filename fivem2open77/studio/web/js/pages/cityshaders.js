@@ -88,6 +88,18 @@ void main() {
   #include <logdepthbuf_fragment>
   vec3 n = safeNormalize(vN);
   float h = vG.z;
+  if (uCut.w > 0.5 && uCut.z > 1e5) {
+    // the real city over everything: this ground shows only through its gaps (far out, where the
+    // game streams nothing finer): the dusty ground of the game's own, in its light
+    vec3 g = mix(vec3(0.16, 0.15, 0.135), vec3(0.30, 0.255, 0.20), smoothstep(5.0, 160.0, h));
+    float lit = max(dot(n, normalize(vec3(-0.45, 0.35, 0.85))), 0.0);
+    g *= 0.45 + 0.7 * lit;
+    g *= mix(0.35, 1.0, smoothstep(-12.0, -2.0, h));
+    g += vec3(0.25, 0.95, 1.0) * pulseAt(vG.xy) * 0.5;
+    g += vec3(0.3, 1.0, 0.9) * cursorAt(vG.xy);
+    gl_FragColor = vec4(fogged(g, vDist), 1.0);
+    return;
+  }
   if (uLook > 0.5) {
     // the map screen: a cool grey ground, its relief in soft light, the hills a shade lighter
     vec3 g = mix(vec3(0.0075, 0.0105, 0.0135), vec3(0.020, 0.026, 0.031), smoothstep(-20.0, 380.0, h));
